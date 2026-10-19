@@ -22,6 +22,8 @@ for a in "$@"; do
 done
 [ ${#arches[@]} -gt 0 ] || arches=(x86_64)
 
+# Releases enthalten das Minimal-Image; das Desktop-Image (6 GiB) passt nicht in ein GitHub-Release.
+export CLOKEOS_FLAVOR=minimal
 source "$here/config.sh"
 need xz shasum git
 repo_dir="$(cd "$here/.." && pwd)"

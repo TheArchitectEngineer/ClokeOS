@@ -1,0 +1,2212 @@
+/*
+ * CloakServer: der Fensterserver von ClokeOS.
+ *
+ * Ein X11-Fenstermanager mit der Oberfläche aus clokeos.html: Hintergrundbild "Goldenes Tor",
+ * Menüleiste mit ClokeOS-Menü, App-Menüs, Netzwerk, Erscheinungsbild und Uhr, Dock mit den
+ * Icons aus dem Prototyp und Laufanzeigen, Fenster mit Titelleiste und Ampelknöpfen (schließen,
+ * ins Dock, zoomen). Er läuft auf Xorg mit PureDarwins GOP-Treiber; die Programme hinter den
+ * Dock-Symbolen sind die des PureDarwin-Desktop-Images (Thunar, NetSurf, xfce4-terminal …).
+ *
+ *   CloakServer [--theme auto|hell|dunkel]
+ *
+ * Ressourcen (Icons, Logo) liegen in Resources/ neben dem Programm, erzeugt von resources.py
+ * aus clokeos.html.
+ */
+#include "cloakserver.h"
+
+#include <X11/Xatom.h>
+#include <X11/Xcursor/Xcursor.h>
+#include <X11/Xlib.h>
+#include <X11/Xutil.h>
+#include <X11/extensions/shape.h>
+#include <X11/keysym.h>
+#include <cairo-xlib.h>
+#include <librsvg/rsvg.h>
+#include <pango/pangocairo.h>
+
+#include <arpa/inet.h>
+#include <dirent.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <libgen.h>
+#include <limits.h>
+#include <math.h>
+#include <signal.h>
+#include <stdarg.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/select.h>
+#include <sys/stat.h>
+#include <sys/sysctl.h>
+#include <sys/utsname.h>
+#include <time.h>
+#include <sys/socket.h>
+#include <unistd.h>
+
+#if __has_include(<ifaddrs.h>)
+#include <ifaddrs.h>
+#else
+/* PureDarwins Header haben kein ifaddrs.h; libSystem hat getifaddrs (Layout wie bei Darwin). */
+struct ifaddrs {
+  struct ifaddrs *ifa_next;
+  char *ifa_name;
+  unsigned int ifa_flags;
+  struct sockaddr *ifa_addr, *ifa_netmask, *ifa_dstaddr;
+  void *ifa_data;
+};
+int getifaddrs(struct ifaddrs **);
+void freeifaddrs(struct ifaddrs *);
+#endif
+
+/* ---------------------------------------------------------------------------------------- */
+/* Maße wie in clokeos.html                                                                   */
+
+#define MENUBAR_H 28
+#define TITLE_H   36   /* Prototyp: 38; auf 800 Pixel Höhe etwas knapper */
+#define BORDER    1
+#define RADIUS    10
+#define DS        50   /* Dock-Symbolgröße */
+#define DOCK_PAD_X 8
+#define DOCK_PAD_Y 6
+#define DOCK_GAP  5
+#define DOCK_H    (DS + 2 * DOCK_PAD_Y)
+#define DOCK_BOTTOM 6
+#define DOCK_RESERVED (DOCK_H + DOCK_BOTTOM + 6)
+#define GLASS_O   .43  /* --glass-o bei "Liquid Glass" 50 */
+
+typedef struct { double r, g, b, a; } RGBA;
+
+typedef struct {
+  RGBA fg, fg2, fg3, menubar_fg, tint, win, line, line_strong, hover, rim, rim_low, edge, pill, light_off;
+} Theme;
+
+static const Theme LIGHT = {
+  .fg = {0x1e / 255., 0x1a / 255., 0x27 / 255., 1}, .fg2 = {0x6d / 255., 0x67 / 255., 0x79 / 255., 1},
+  .fg3 = {0x9a / 255., 0x94 / 255., 0xa6 / 255., 1}, .menubar_fg = {0x16 / 255., 0x13 / 255., 0x1e / 255., 1},
+  .tint = {248 / 255., 247 / 255., 252 / 255., GLASS_O}, .win = {0xf6 / 255., 0xf5 / 255., 0xf9 / 255., 1},
+  .line = {40 / 255., 25 / 255., 70 / 255., .12}, .line_strong = {40 / 255., 25 / 255., 70 / 255., .22},
+  .hover = {40 / 255., 25 / 255., 70 / 255., .12}, .rim = {1, 1, 1, .9}, .rim_low = {1, 1, 1, .35},
+  .edge = {30 / 255., 20 / 255., 60 / 255., .14}, .pill = {1, 1, 1, GLASS_O + .18},
+  .light_off = {0xd6 / 255., 0xd2 / 255., 0xdc / 255., 1},
+};
+static const Theme DARK = {
+  .fg = {0xf1 / 255., 0xee / 255., 0xf6 / 255., 1}, .fg2 = {0xaa / 255., 0xa4 / 255., 0xb6 / 255., 1},
+  .fg3 = {0x77 / 255., 0x71 / 255., 0x84 / 255., 1}, .menubar_fg = {0xf6 / 255., 0xf3 / 255., 0xfa / 255., 1},
+  .tint = {30 / 255., 28 / 255., 40 / 255., GLASS_O}, .win = {0x23 / 255., 0x21 / 255., 0x2b / 255., 1},
+  .line = {1, 1, 1, .1}, .line_strong = {1, 1, 1, .2}, .hover = {1, 1, 1, .13}, .rim = {1, 1, 1, .34},
+  .rim_low = {1, 1, 1, .1}, .edge = {0, 0, 0, .5}, .pill = {1, 1, 1, GLASS_O * .2 + .07},
+  .light_off = {0x4a / 255., 0x46 / 255., 0x53 / 255., 1},
+};
+static const RGBA ACCENT = {0x7c / 255., 0x5c / 255., 0xff / 255., 1};
+static const RGBA L_CLOSE = {0xff / 255., 0x5f / 255., 0x57 / 255., 1};
+static const RGBA L_MIN = {0xfe / 255., 0xbc / 255., 0x2e / 255., 1};
+static const RGBA L_ZOOM = {0x28 / 255., 0xc8 / 255., 0x40 / 255., 1};
+
+/* ---------------------------------------------------------------------------------------- */
+/* Programme im Dock: Icon und Name aus clokeos.html, dahinter echte Programme des Images.    */
+
+typedef struct {
+  const char *id, *name, *cmd;
+  const char *classes; /* WM_CLASS (res_class), durch Leerzeichen getrennt, * = beliebiger Teil */
+} App;
+
+/* Programme, die im Terminal laufen, erkennt CloakServer an der Fensterrolle clokeos-<id>. */
+#define TERM_APP(id, title, size, cmd) \
+  "xfce4-terminal --disable-server --role=clokeos-" id " --title='" title "' --dynamic-title-mode=none --geometry=" size " -x " cmd
+
+static const App APPS[] = {
+  {"dateien", "Fundus", "thunar", "Thunar"},
+  {"programme", "Programme", "xfce4-appfinder", "Xfce4-appfinder"},
+  {"search", "Search", "netsurf-gtk3", "Netsurf-gtk3 Netsurf* NetSurf*"},
+  {"terminal", "Terminal", "xfce4-terminal", "Xfce4-terminal XTerm UXTerm"},
+  {"notizen", "Notizen", TERM_APP("notizen", "Notizen", "84x28", "nano /var/root/Notizen.txt"), ""},
+  {"rechner", "Rechner", "xcalc", "XCalc"},
+  {"kalender", "Kalender", TERM_APP("kalender", "Kalender", "72x22", "/usr/libexec/clokeos-kalender"), ""},
+  {"aktivitaet", "Aktivitätsanzeige", TERM_APP("aktivitaet", "Aktivitätsanzeige", "92x30", "/usr/libexec/clokeos-aktivitaet"), ""},
+  {"einstellungen", "Systemeinstellungen", "xfce4-settings-manager", "Xfce4-settings* Xfce4-*-settings Xfwm4-settings"},
+  {NULL, NULL, NULL, NULL}, /* Trennstrich */
+  {"papierkorb", "Papierkorb", "mkdir -p /var/root/.Trash && thunar /var/root/.Trash", ""},
+};
+#define NAPPS ((int)(sizeof APPS / sizeof APPS[0]))
+#define APP_DATEIEN 0
+
+/* ---------------------------------------------------------------------------------------- */
+
+typedef struct Client Client;
+struct Client {
+  Window win, frame, grip;
+  int x, y, w, h;      /* Inhalt in Bildschirmkoordinaten */
+  int th, bw;          /* Titelleiste und Rand; 0, wenn das Programm selbst zeichnet */
+  int minw, minh;
+  char title[256];
+  char cls[128];
+  int app;             /* Index in APPS oder -1 */
+  bool minimized, zoomed, can_delete, can_focus, take_focus;
+  int zx, zy, zw, zh;  /* Lage vor dem Zoomen */
+  int hover, pressed;  /* Ampelknopf: 0 keiner, 1 schließen, 2 ins Dock, 3 zoomen */
+  int ignore_unmaps;
+  void (*draw)(Client *, cairo_t *); /* eigene Fenster (Über ClokeOS, Rückfragen) */
+  void (*click)(Client *, int x, int y);
+  long data;
+  Client *next;        /* zuletzt nach vorn geholt zuerst */
+};
+
+typedef struct {
+  char label[160];
+  char key[48];
+  int kind;            /* 0 Eintrag, 1 Trennlinie, 2 Überschrift */
+  bool disabled, checked;
+  void (*fn)(long);
+  long arg;
+} MenuItem;
+
+static Display *dpy;
+static int scr, SW, SH;
+static Window root, menubar, dock, tipwin, checkwin, menuwin;
+static Visual *vis;
+static Colormap cmap;
+static Client *clients, *focused;
+static bool dark;
+static int theme_mode; /* 0 automatisch, 1 hell, 2 dunkel */
+static const Theme *T = &LIGHT;
+static char resdir[PATH_MAX];
+static cairo_surface_t *wall_img, *wall_blur; /* ganzer Bildschirm, Unschärfe in 1/4 Größe */
+static Pixmap wall_pm;
+static cairo_surface_t *icons[NAPPS], *icon_trash_full;
+static int cal_day = -1;
+static Cursor cur_arrow, cur_resize, cur_move;
+static int cascade;
+
+static Atom WM_PROTOCOLS, WM_WINDOW_ROLE, WM_DELETE_WINDOW, WM_TAKE_FOCUS, WM_STATE, WM_CHANGE_STATE, UTF8_STRING,
+  NET_SUPPORTED, NET_WM_NAME, NET_ACTIVE_WINDOW, NET_CLIENT_LIST, NET_WORKAREA, NET_SUPPORTING_WM_CHECK,
+  NET_WM_WINDOW_TYPE, NET_WM_WINDOW_TYPE_DOCK, NET_WM_WINDOW_TYPE_DESKTOP, NET_WM_WINDOW_TYPE_SPLASH,
+  NET_WM_WINDOW_TYPE_NOTIFICATION, NET_WM_WINDOW_TYPE_TOOLTIP, NET_WM_WINDOW_TYPE_MENU,
+  NET_WM_WINDOW_TYPE_POPUP_MENU, NET_WM_WINDOW_TYPE_DROPDOWN_MENU, NET_WM_WINDOW_TYPE_COMBO,
+  NET_WM_WINDOW_TYPE_DND, NET_CLOSE_WINDOW, NET_FRAME_EXTENTS, NET_NUMBER_OF_DESKTOPS,
+  NET_CURRENT_DESKTOP, MOTIF_WM_HINTS, XROOTPMAP_ID, ESETROOT_PMAP_ID;
+
+/* Menü, das gerade offen ist */
+static MenuItem menu[48];
+static int nmenu, menu_hover = -1, menu_w, menu_h, menu_owner = -1; /* Menüleisten-Eintrag oder -1 */
+
+/* Menüleiste: Einträge mit ihrer Lage */
+enum { MB_LOGO, MB_APP, MB_FILE, MB_WINDOW, MB_WIFI, MB_SPOT, MB_CC, MB_CLOCK, MB_N };
+static int mb_x[MB_N], mb_w[MB_N];
+
+/* Dock */
+static int dock_x, dock_y, dock_w, dock_hover = -1, dock_item_x[NAPPS];
+
+/* Bewegen und Größe ändern */
+static Client *drag;
+static int drag_mode; /* 1 bewegen, 2 Größe */
+static int drag_px, drag_py, drag_x, drag_y, drag_w, drag_h;
+static Time last_title_click;
+static Client *last_title_client;
+
+static void redraw_all(void);
+static void draw_menubar(void);
+static void draw_dock(void);
+static void draw_frame(Client *c);
+static void focus_client(Client *c);
+static void raise_client(Client *c);
+static void close_menu(void);
+
+static void warn(const char *fmt, ...) {
+  va_list ap;
+  va_start(ap, fmt);
+  fputs("CloakServer: ", stderr);
+  vfprintf(stderr, fmt, ap);
+  fputc('\n', stderr);
+  va_end(ap);
+}
+
+static int xerror(Display *d, XErrorEvent *e) {
+  (void)d;
+  /* Fenster verschwinden oft zwischen zwei Anfragen; das ist kein Fehler des Fenstermanagers. */
+  if (e->error_code == BadWindow || e->error_code == BadMatch || e->error_code == BadDrawable)
+    return 0;
+  char msg[128];
+  XGetErrorText(dpy, e->error_code, msg, sizeof msg);
+  warn("X-Fehler %s (Anfrage %d)", msg, e->request_code);
+  return 0;
+}
+
+static bool other_wm;
+static int xerror_start(Display *d, XErrorEvent *e) {
+  (void)d; (void)e;
+  other_wm = true;
+  return 0;
+}
+
+/* ---------------------------------------------------------------------------------------- */
+/* Zeichenhilfen                                                                              */
+
+static void set(cairo_t *cr, RGBA c) { cairo_set_source_rgba(cr, c.r, c.g, c.b, c.a); }
+static void seta(cairo_t *cr, RGBA c, double a) { cairo_set_source_rgba(cr, c.r, c.g, c.b, c.a * a); }
+
+static void rrect(cairo_t *cr, double x, double y, double w, double h, double r) {
+  r = fmin(r, fmin(w, h) / 2);
+  cairo_new_sub_path(cr);
+  cairo_arc(cr, x + w - r, y + r, r, -M_PI / 2, 0);
+  cairo_arc(cr, x + w - r, y + h - r, r, 0, M_PI / 2);
+  cairo_arc(cr, x + r, y + h - r, r, M_PI / 2, M_PI);
+  cairo_arc(cr, x + r, y + r, r, M_PI, 3 * M_PI / 2);
+  cairo_close_path(cr);
+}
+
+/* Text mit Pango; px = Schriftgröße in Pixeln. Gibt die Breite zurück. */
+static int text(cairo_t *cr, double x, double y, const char *s, double px, bool bold, RGBA col, int maxw, int align) {
+  PangoLayout *l = pango_cairo_create_layout(cr);
+  PangoFontDescription *f = pango_font_description_from_string(bold ? "DejaVu Sans Bold" : "DejaVu Sans");
+  pango_font_description_set_absolute_size(f, px * PANGO_SCALE);
+  pango_layout_set_font_description(l, f);
+  pango_layout_set_text(l, s, -1);
+  if (maxw > 0) {
+    pango_layout_set_width(l, maxw * PANGO_SCALE);
+    pango_layout_set_ellipsize(l, PANGO_ELLIPSIZE_END);
+  }
+  int w, h;
+  pango_layout_get_pixel_size(l, &w, &h);
+  if (cr && col.a > 0) {
+    double tx = x;
+    if (align == 1) tx = x - w / 2.0;
+    else if (align == 2) tx = x - w;
+    cairo_move_to(cr, tx, y - h / 2.0);
+    set(cr, col);
+    pango_cairo_show_layout(cr, l);
+  }
+  pango_font_description_free(f);
+  g_object_unref(l);
+  return w;
+}
+
+static int text_width(const char *s, double px, bool bold) {
+  cairo_surface_t *s0 = cairo_image_surface_create(CAIRO_FORMAT_A8, 1, 1);
+  cairo_t *cr = cairo_create(s0);
+  RGBA none = {0, 0, 0, 0};
+  int w = text(cr, 0, 0, s, px, bold, none, 0, 0);
+  cairo_destroy(cr);
+  cairo_surface_destroy(s0);
+  return w;
+}
+
+static char *read_file(const char *path) {
+  FILE *f = fopen(path, "rb");
+  if (!f) return NULL;
+  fseek(f, 0, SEEK_END);
+  long n = ftell(f);
+  fseek(f, 0, SEEK_SET);
+  char *b = malloc(n + 1);
+  if (fread(b, 1, n, f) != (size_t)n) n = 0;
+  b[n] = 0;
+  fclose(f);
+  return b;
+}
+
+/* SVG aus Resources/ laden, Platzhalter @KEY@ ersetzen und in size x size Pixel zeichnen. */
+static cairo_surface_t *svg_render(const char *name, int w, int h, const char *const *subst) {
+  char path[PATH_MAX];
+  snprintf(path, sizeof path, "%s/%s", resdir, name);
+  char *src = read_file(path);
+  if (!src) {
+    warn("fehlt: %s", path);
+    return NULL;
+  }
+  for (int i = 0; subst && subst[i]; i += 2) {
+    const char *k = subst[i], *v = subst[i + 1];
+    char *p;
+    while ((p = strstr(src, k))) {
+      size_t kl = strlen(k), vl = strlen(v), n = strlen(src);
+      char *t = malloc(n - kl + vl + 1);
+      memcpy(t, src, p - src);
+      memcpy(t + (p - src), v, vl);
+      strcpy(t + (p - src) + vl, p + kl);
+      free(src);
+      src = t;
+    }
+  }
+  GError *err = NULL;
+  RsvgHandle *hd = rsvg_handle_new_from_data((const guint8 *)src, strlen(src), &err);
+  free(src);
+  if (!hd) {
+    warn("SVG %s: %s", name, err ? err->message : "?");
+    return NULL;
+  }
+  RsvgDimensionData dim;
+  rsvg_handle_get_dimensions(hd, &dim);
+  cairo_surface_t *s = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, w, h);
+  cairo_t *cr = cairo_create(s);
+  cairo_scale(cr, (double)w / dim.width, (double)h / dim.height);
+  rsvg_handle_render_cairo(hd, cr);
+  cairo_destroy(cr);
+  g_object_unref(hd);
+  return s;
+}
+
+static void rgba_hex(char *buf, RGBA c) {
+  snprintf(buf, 16, "#%02x%02x%02x", (int)(c.r * 255 + .5), (int)(c.g * 255 + .5), (int)(c.b * 255 + .5));
+}
+
+/* Doppelt gepuffert in ein Fenster zeichnen. */
+typedef void (*painter)(cairo_t *, int w, int h, void *);
+static void paint_window(Window w, int width, int height, painter fn, void *arg) {
+  cairo_surface_t *s = cairo_xlib_surface_create(dpy, w, vis, width, height);
+  cairo_t *cr = cairo_create(s);
+  cairo_push_group(cr);
+  fn(cr, width, height, arg);
+  cairo_pop_group_to_source(cr);
+  cairo_set_operator(cr, CAIRO_OPERATOR_SOURCE);
+  cairo_paint(cr);
+  cairo_destroy(cr);
+  cairo_surface_destroy(s);
+}
+
+/* Fensterform mit runden Ecken (XShape), damit darunter Hintergrund oder Fenster sichtbar sind. */
+static void shape_round(Window w, int width, int height, double r, bool top_only) {
+  Pixmap pm = XCreatePixmap(dpy, w, width, height, 1);
+  cairo_surface_t *s = cairo_xlib_surface_create_for_bitmap(dpy, pm, ScreenOfDisplay(dpy, scr), width, height);
+  cairo_t *cr = cairo_create(s);
+  cairo_set_operator(cr, CAIRO_OPERATOR_CLEAR);
+  cairo_paint(cr);
+  cairo_set_operator(cr, CAIRO_OPERATOR_SOURCE);
+  cairo_set_antialias(cr, CAIRO_ANTIALIAS_NONE);
+  cairo_set_source_rgba(cr, 0, 0, 0, 1);
+  rrect(cr, 0, 0, width, top_only ? height + r : height, r);
+  cairo_fill(cr);
+  cairo_destroy(cr);
+  cairo_surface_destroy(s);
+  XShapeCombineMask(dpy, w, ShapeBounding, 0, 0, pm, ShapeSet);
+  XFreePixmap(dpy, pm);
+}
+
+/* Hintergrund als Glas: unscharfer Ausschnitt des Hintergrundbilds plus Tönung. */
+static void glass(cairo_t *cr, int sx, int sy, double alpha) {
+  cairo_save(cr);
+  cairo_translate(cr, -sx, -sy);
+  cairo_scale(cr, 4, 4);
+  cairo_set_source_surface(cr, wall_blur, 0, 0);
+  cairo_pattern_set_filter(cairo_get_source(cr), CAIRO_FILTER_BILINEAR);
+  cairo_paint(cr);
+  cairo_restore(cr);
+  RGBA t = T->tint;
+  cairo_set_source_rgba(cr, t.r, t.g, t.b, alpha);
+  cairo_paint(cr);
+}
+
+/* Glanzkante: Verlauf von hell oben links über durchsichtig zu schwächer unten rechts. */
+static void rim(cairo_t *cr, double x, double y, double w, double h, double r) {
+  cairo_pattern_t *g = cairo_pattern_create_linear(x, y, x + w * .64, y + h * 1.2);
+  RGBA a = T->rim, b = T->rim_low;
+  cairo_pattern_add_color_stop_rgba(g, 0, a.r, a.g, a.b, a.a);
+  cairo_pattern_add_color_stop_rgba(g, .32, 1, 1, 1, 0);
+  cairo_pattern_add_color_stop_rgba(g, .68, 1, 1, 1, 0);
+  cairo_pattern_add_color_stop_rgba(g, 1, b.r, b.g, b.b, b.a);
+  rrect(cr, x + .5, y + .5, w - 1, h - 1, r - .5);
+  cairo_set_source(cr, g);
+  cairo_set_line_width(cr, 1);
+  cairo_stroke(cr);
+  cairo_pattern_destroy(g);
+}
+
+/* ---------------------------------------------------------------------------------------- */
+/* Hintergrundbild, Thema                                                                     */
+
+static void blur_box(unsigned char *p, int w, int h, int stride, int r, bool horiz) {
+  int n = horiz ? w : h, m = horiz ? h : w;
+  int *acc = malloc(sizeof(int) * (n + 1) * 4);
+  for (int j = 0; j < m; j++) {
+    unsigned char *base = horiz ? p + j * stride : p + j * 4;
+    int step = horiz ? 4 : stride;
+    for (int c = 0; c < 4; c++) acc[c] = 0;
+    for (int i = 0; i < n; i++)
+      for (int c = 0; c < 4; c++) acc[(i + 1) * 4 + c] = acc[i * 4 + c] + base[i * step + c];
+    for (int i = 0; i < n; i++) {
+      int a = i - r < 0 ? 0 : i - r, b = i + r + 1 > n ? n : i + r + 1;
+      for (int c = 0; c < 4; c++) base[i * step + c] = (acc[b * 4 + c] - acc[a * 4 + c]) / (b - a);
+    }
+  }
+  free(acc);
+}
+
+static bool want_dark(void) {
+  if (theme_mode == 1) return false;
+  if (theme_mode == 2) return true;
+  time_t t = time(NULL);
+  struct tm tm;
+  localtime_r(&t, &tm);
+  return tm.tm_hour >= 19 || tm.tm_hour < 7; /* hell am Tag, dunkel am Abend */
+}
+
+static void render_icons(void);
+
+static void apply_theme(void) {
+  dark = want_dark();
+  T = dark ? &DARK : &LIGHT;
+  setenv("GTK_THEME", dark ? "Adwaita:dark" : "Adwaita", 1);
+
+  if (wall_img) cairo_surface_destroy(wall_img);
+  wall_img = cairo_image_surface_create(CAIRO_FORMAT_RGB24, SW, SH);
+  cairo_t *cr = cairo_create(wall_img);
+  wall_draw(cr, SW, SH, dark);
+  cairo_destroy(cr);
+
+  if (wall_blur) cairo_surface_destroy(wall_blur);
+  int bw = (SW + 3) / 4, bh = (SH + 3) / 4;
+  wall_blur = cairo_image_surface_create(CAIRO_FORMAT_RGB24, bw, bh);
+  cr = cairo_create(wall_blur);
+  cairo_scale(cr, .25, .25);
+  cairo_set_source_surface(cr, wall_img, 0, 0);
+  cairo_paint(cr);
+  cairo_destroy(cr);
+  cairo_surface_flush(wall_blur);
+  unsigned char *p = cairo_image_surface_get_data(wall_blur);
+  int stride = cairo_image_surface_get_stride(wall_blur);
+  for (int k = 0; k < 3; k++) { /* drei Kastenfilter ~ Gauß, Radius ~ 24 px am Bildschirm */
+    blur_box(p, bw, bh, stride, 2, true);
+    blur_box(p, bw, bh, stride, 2, false);
+  }
+  cairo_surface_mark_dirty(wall_blur);
+
+  Pixmap old = wall_pm;
+  wall_pm = XCreatePixmap(dpy, root, SW, SH, DefaultDepth(dpy, scr));
+  cairo_surface_t *ps = cairo_xlib_surface_create(dpy, wall_pm, vis, SW, SH);
+  cr = cairo_create(ps);
+  cairo_set_source_surface(cr, wall_img, 0, 0);
+  cairo_paint(cr);
+  cairo_destroy(cr);
+  cairo_surface_destroy(ps);
+  XSetWindowBackgroundPixmap(dpy, root, wall_pm);
+  XClearWindow(dpy, root);
+  XChangeProperty(dpy, root, XROOTPMAP_ID, XA_PIXMAP, 32, PropModeReplace, (unsigned char *)&wall_pm, 1);
+  XChangeProperty(dpy, root, ESETROOT_PMAP_ID, XA_PIXMAP, 32, PropModeReplace, (unsigned char *)&wall_pm, 1);
+  if (old) XFreePixmap(dpy, old);
+  render_icons();
+}
+
+static void set_theme_mode(long mode) {
+  theme_mode = (int)mode;
+  bool was = dark;
+  if (want_dark() != was || !wall_img) apply_theme();
+  redraw_all();
+}
+
+/* ---------------------------------------------------------------------------------------- */
+/* Icons, Programme starten                                                                   */
+
+static const char *MONTHS[] = {"JAN", "FEB", "MÄRZ", "APR", "MAI", "JUNI", "JULI", "AUG", "SEPT", "OKT", "NOV", "DEZ"};
+
+static void render_icons(void) {
+  time_t t = time(NULL);
+  struct tm tm;
+  localtime_r(&t, &tm);
+  char day[8];
+  snprintf(day, sizeof day, "%d", tm.tm_mday);
+  const char *cal[] = {"@MON@", MONTHS[tm.tm_mon], "@DAY@", day, NULL};
+  cal_day = tm.tm_mday;
+  for (int i = 0; i < NAPPS; i++) {
+    if (!APPS[i].id) continue;
+    if (icons[i]) cairo_surface_destroy(icons[i]);
+    char name[64];
+    snprintf(name, sizeof name, "icons/%s.svg", APPS[i].id);
+    icons[i] = svg_render(name, DS, DS, strcmp(APPS[i].id, "kalender") ? NULL : cal);
+  }
+  if (icon_trash_full) cairo_surface_destroy(icon_trash_full);
+  icon_trash_full = svg_render("icons/papierkorb-voll.svg", DS, DS, NULL);
+}
+
+static void spawn(const char *cmd) {
+  char buf[1024];
+  snprintf(buf, sizeof buf, "cd \"$HOME\" && exec %s", cmd);
+  pid_t pid = fork();
+  if (pid == 0) {
+    setsid();
+    signal(SIGCHLD, SIG_DFL);
+    execl("/bin/sh", "sh", "-c", buf, (char *)NULL);
+    _exit(127);
+  }
+  if (pid < 0) warn("kann %s nicht starten: %s", cmd, strerror(errno));
+}
+
+static int app_for_class(const char *cls) {
+  for (int i = 0; i < NAPPS; i++) {
+    if (!APPS[i].id || !APPS[i].classes[0]) continue;
+    char list[256];
+    snprintf(list, sizeof list, "%s", APPS[i].classes);
+    for (char *tok = strtok(list, " "); tok; tok = strtok(NULL, " ")) {
+      size_t n = strlen(tok);
+      char *star = strchr(tok, '*');
+      if (star && star == tok + n - 1) {
+        if (!strncasecmp(cls, tok, n - 1)) return i;
+      } else if (star) { /* Präfix*Suffix */
+        size_t pre = star - tok, suf = n - pre - 1, cl = strlen(cls);
+        if (cl >= pre + suf && !strncasecmp(cls, tok, pre) && !strcasecmp(cls + cl - suf, star + 1)) return i;
+      } else if (!strcasecmp(cls, tok)) {
+        return i;
+      }
+    }
+  }
+  return -1;
+}
+
+static int app_for_role(Window w) {
+  XTextProperty tp;
+  int app = -1;
+  if (XGetTextProperty(dpy, w, &tp, WM_WINDOW_ROLE) && tp.value) {
+    const char *r = (const char *)tp.value;
+    if (!strncmp(r, "clokeos-", 8))
+      for (int i = 0; i < NAPPS; i++)
+        if (APPS[i].id && !strcmp(APPS[i].id, r + 8)) app = i;
+    XFree(tp.value);
+  }
+  return app;
+}
+
+static bool trash_full(void) {
+  char path[PATH_MAX];
+  snprintf(path, sizeof path, "%s/.Trash", getenv("HOME") ? getenv("HOME") : "/var/root");
+  DIR *d = opendir(path);
+  if (!d) return false;
+  bool full = false;
+  for (struct dirent *e; !full && (e = readdir(d));) full = strcmp(e->d_name, ".") && strcmp(e->d_name, "..");
+  closedir(d);
+  return full;
+}
+
+/* ---------------------------------------------------------------------------------------- */
+/* Clients                                                                                    */
+
+static Client *find_client(Window w) {
+  for (Client *c = clients; c; c = c->next)
+    if (c->win == w || c->frame == w || c->grip == w) return c;
+  return NULL;
+}
+
+static bool get_atom_prop(Window w, Atom prop, Atom *out, int max, int *n) {
+  Atom type;
+  int fmt;
+  unsigned long cnt, after;
+  unsigned char *data = NULL;
+  *n = 0;
+  if (XGetWindowProperty(dpy, w, prop, 0, max, False, XA_ATOM, &type, &fmt, &cnt, &after, &data) != Success || !data)
+    return false;
+  for (unsigned long i = 0; i < cnt && (int)i < max; i++) out[(*n)++] = ((Atom *)data)[i];
+  XFree(data);
+  return *n > 0;
+}
+
+static void update_title(Client *c) {
+  c->title[0] = 0;
+  Atom type;
+  int fmt;
+  unsigned long cnt, after;
+  unsigned char *data = NULL;
+  if (XGetWindowProperty(dpy, c->win, NET_WM_NAME, 0, 256, False, UTF8_STRING, &type, &fmt, &cnt, &after, &data) == Success &&
+      data && cnt) {
+    snprintf(c->title, sizeof c->title, "%s", (char *)data);
+  } else {
+    char *name = NULL;
+    if (XFetchName(dpy, c->win, &name) && name) {
+      snprintf(c->title, sizeof c->title, "%s", name);
+      XFree(name);
+    }
+  }
+  if (data) XFree(data);
+}
+
+static void set_wm_state(Client *c, long state) {
+  long d[2] = {state, None};
+  XChangeProperty(dpy, c->win, WM_STATE, WM_STATE, 32, PropModeReplace, (unsigned char *)d, 2);
+}
+
+static void update_client_list(void) {
+  Window list[256];
+  int n = 0;
+  for (Client *c = clients; c && n < 256; c = c->next)
+    if (!c->draw) list[n++] = c->win;
+  XChangeProperty(dpy, root, NET_CLIENT_LIST, XA_WINDOW, 32, PropModeReplace, (unsigned char *)list, n);
+}
+
+static void send_configure(Client *c) {
+  XConfigureEvent ce = {0};
+  ce.type = ConfigureNotify;
+  ce.display = dpy;
+  ce.event = c->win;
+  ce.window = c->win;
+  ce.x = c->x;
+  ce.y = c->y;
+  ce.width = c->w;
+  ce.height = c->h;
+  ce.above = None;
+  XSendEvent(dpy, c->win, False, StructureNotifyMask, (XEvent *)&ce);
+}
+
+static int work_bottom(void) { return SH - DOCK_RESERVED; }
+
+static void apply_geometry(Client *c) {
+  int fw = c->w + 2 * c->bw, fh = c->h + c->th + 2 * c->bw;
+  XMoveResizeWindow(dpy, c->frame, c->x - c->bw, c->y - c->th - c->bw, fw, fh);
+  XMoveResizeWindow(dpy, c->win, c->bw, c->th + c->bw, c->w, c->h);
+  if (c->grip) XMoveWindow(dpy, c->grip, fw - 16, fh - 16);
+  if (c->th) shape_round(c->frame, fw, fh, RADIUS, false);
+  send_configure(c);
+  long ext[4] = {c->bw, c->bw, c->th + c->bw, c->bw};
+  if (!c->draw) XChangeProperty(dpy, c->win, NET_FRAME_EXTENTS, XA_CARDINAL, 32, PropModeReplace, (unsigned char *)ext, 4);
+}
+
+static void place(Client *c, Window transient_for, bool has_pos) {
+  int top = MENUBAR_H + c->th + c->bw + 4, bottom = work_bottom();
+  if (c->w > SW - 2 * c->bw) c->w = SW - 2 * c->bw;
+  if (c->h > bottom - top) c->h = bottom - top;
+  Client *p = transient_for ? find_client(transient_for) : NULL;
+  if (p) {
+    c->x = p->x + (p->w - c->w) / 2;
+    c->y = p->y + (p->h - c->h) / 2;
+  } else if (!has_pos || (c->x == 0 && c->y == 0)) {
+    /* mittig, jedes neue Fenster etwas weiter rechts unten */
+    c->x = (SW - c->w) / 2 + (cascade - 2) * 48;
+    c->y = top + 16 + cascade * 32;
+    cascade = (cascade + 1) % 5;
+    if (c->x < c->bw) c->x = c->bw;
+  }
+  if (c->x + c->w > SW) c->x = SW - c->w - c->bw;
+  if (c->x < c->bw) c->x = c->bw;
+  if (c->y + c->h > bottom) c->y = bottom - c->h;
+  if (c->y < top) c->y = top;
+}
+
+static void grab_buttons(Client *c, bool focused_now) {
+  XUngrabButton(dpy, AnyButton, AnyModifier, c->win);
+  if (!focused_now) XGrabButton(dpy, AnyButton, AnyModifier, c->win, False, ButtonPressMask, GrabModeSync, GrabModeAsync, None, None);
+}
+
+static bool window_type_unmanaged(Window w, bool *splash) {
+  Atom types[8];
+  int n;
+  *splash = false;
+  if (!get_atom_prop(w, NET_WM_WINDOW_TYPE, types, 8, &n)) return false;
+  for (int i = 0; i < n; i++) {
+    Atom t = types[i];
+    if (t == NET_WM_WINDOW_TYPE_SPLASH) *splash = true;
+    if (t == NET_WM_WINDOW_TYPE_DOCK || t == NET_WM_WINDOW_TYPE_DESKTOP || t == NET_WM_WINDOW_TYPE_NOTIFICATION ||
+        t == NET_WM_WINDOW_TYPE_TOOLTIP || t == NET_WM_WINDOW_TYPE_MENU || t == NET_WM_WINDOW_TYPE_POPUP_MENU ||
+        t == NET_WM_WINDOW_TYPE_DROPDOWN_MENU || t == NET_WM_WINDOW_TYPE_COMBO || t == NET_WM_WINDOW_TYPE_DND ||
+        t == NET_WM_WINDOW_TYPE_SPLASH)
+      return true;
+  }
+  return false;
+}
+
+static bool wants_no_decoration(Window w) {
+  Atom type;
+  int fmt;
+  unsigned long cnt, after;
+  unsigned char *data = NULL;
+  bool none = false;
+  if (XGetWindowProperty(dpy, w, MOTIF_WM_HINTS, 0, 5, False, AnyPropertyType, &type, &fmt, &cnt, &after, &data) == Success &&
+      data && cnt >= 3) {
+    long *h = (long *)data;
+    if ((h[0] & 2) && h[2] == 0) none = true;
+  }
+  if (data) XFree(data);
+  return none;
+}
+
+static Client *manage(Window w, bool already_mapped) {
+  XWindowAttributes wa;
+  if (!XGetWindowAttributes(dpy, w, &wa) || wa.override_redirect) return NULL;
+  bool splash;
+  if (window_type_unmanaged(w, &splash)) {
+    if (splash) XMoveWindow(dpy, w, (SW - wa.width) / 2, (SH - wa.height) / 2);
+    XMapWindow(dpy, w);
+    return NULL;
+  }
+
+  Client *c = calloc(1, sizeof *c);
+  c->win = w;
+  c->app = -1;
+  c->x = wa.x;
+  c->y = wa.y;
+  c->w = wa.width;
+  c->h = wa.height;
+  c->th = wants_no_decoration(w) ? 0 : TITLE_H;
+  c->bw = c->th ? BORDER : 0;
+  c->can_focus = true;
+  c->minw = 120;
+  c->minh = 40;
+
+  XClassHint ch;
+  if (XGetClassHint(dpy, w, &ch)) {
+    snprintf(c->cls, sizeof c->cls, "%s", ch.res_class ? ch.res_class : "");
+    if (ch.res_name) XFree(ch.res_name);
+    if (ch.res_class) XFree(ch.res_class);
+  }
+  c->app = app_for_role(w);
+  if (c->app < 0) c->app = app_for_class(c->cls);
+  if (c->app < 0 && strstr(c->cls, "ettings")) c->app = 8;
+  update_title(c);
+
+  Atom *protos;
+  int np;
+  if (XGetWMProtocols(dpy, w, &protos, &np)) {
+    for (int i = 0; i < np; i++) {
+      if (protos[i] == WM_DELETE_WINDOW) c->can_delete = true;
+      if (protos[i] == WM_TAKE_FOCUS) c->take_focus = true;
+    }
+    XFree(protos);
+  }
+  XWMHints *hints = XGetWMHints(dpy, w);
+  if (hints) {
+    if ((hints->flags & InputHint) && !hints->input) c->can_focus = false;
+    XFree(hints);
+  }
+  XSizeHints sh;
+  long supplied;
+  bool has_pos = false;
+  if (XGetWMNormalHints(dpy, w, &sh, &supplied)) {
+    has_pos = sh.flags & (USPosition | PPosition);
+    if (sh.flags & PMinSize) {
+      c->minw = sh.min_width > 40 ? sh.min_width : 40;
+      c->minh = sh.min_height > 20 ? sh.min_height : 20;
+    }
+  }
+  Window tf = None;
+  XGetTransientForHint(dpy, w, &tf);
+  place(c, tf, has_pos);
+
+  XSetWindowAttributes sa = {0};
+  sa.event_mask = ExposureMask | ButtonPressMask | ButtonReleaseMask | PointerMotionMask | EnterWindowMask |
+                  LeaveWindowMask | SubstructureRedirectMask | SubstructureNotifyMask;
+  sa.background_pixel = 0;
+  sa.cursor = cur_arrow;
+  int fw = c->w + 2 * c->bw, fh = c->h + c->th + 2 * c->bw;
+  c->frame = XCreateWindow(dpy, root, c->x - c->bw, c->y - c->th - c->bw, fw, fh, 0, CopyFromParent, InputOutput,
+                           CopyFromParent, CWEventMask | CWBackPixel | CWCursor, &sa);
+  XSetWindowBorderWidth(dpy, w, 0);
+  XAddToSaveSet(dpy, w);
+  if (already_mapped) c->ignore_unmaps++;
+  XReparentWindow(dpy, w, c->frame, c->bw, c->th + c->bw);
+  XSelectInput(dpy, w, PropertyChangeMask);
+  if (c->th && (sh.flags & PMinSize ? !(sh.flags & PMaxSize) || sh.max_width != sh.min_width : true)) {
+    XSetWindowAttributes ga = {.cursor = cur_resize};
+    c->grip = XCreateWindow(dpy, c->frame, fw - 16, fh - 16, 16, 16, 0, 0, InputOnly, CopyFromParent, CWCursor, &ga);
+    XSelectInput(dpy, c->grip, ButtonPressMask | ButtonReleaseMask | PointerMotionMask);
+    XMapRaised(dpy, c->grip);
+  }
+  c->next = clients;
+  clients = c;
+  apply_geometry(c);
+  XMapWindow(dpy, w);
+  XMapWindow(dpy, c->frame);
+  set_wm_state(c, NormalState);
+  update_client_list();
+  raise_client(c);
+  focus_client(c);
+  return c;
+}
+
+static void unlink_client(Client *c) {
+  for (Client **p = &clients; *p; p = &(*p)->next)
+    if (*p == c) {
+      *p = c->next;
+      break;
+    }
+}
+
+static void unmanage(Client *c, bool destroyed) {
+  if (drag == c) drag = NULL;
+  if (last_title_client == c) last_title_client = NULL;
+  if (!destroyed) {
+    XGrabServer(dpy);
+    XUngrabButton(dpy, AnyButton, AnyModifier, c->win);
+    XReparentWindow(dpy, c->win, root, c->x, c->y);
+    XRemoveFromSaveSet(dpy, c->win);
+    set_wm_state(c, WithdrawnState);
+    XUngrabServer(dpy);
+  }
+  XDestroyWindow(dpy, c->frame);
+  unlink_client(c);
+  if (focused == c) {
+    focused = NULL;
+    Client *n = clients;
+    while (n && n->minimized) n = n->next;
+    focus_client(n);
+  }
+  free(c);
+  update_client_list();
+  draw_dock();
+  draw_menubar();
+}
+
+static void keep_ui_on_top(void) {
+  XRaiseWindow(dpy, dock);
+  XRaiseWindow(dpy, menubar);
+  if (menuwin) XRaiseWindow(dpy, menuwin);
+}
+
+static void raise_client(Client *c) {
+  if (!c) return;
+  unlink_client(c);
+  c->next = clients;
+  clients = c;
+  XRaiseWindow(dpy, c->frame);
+  keep_ui_on_top();
+}
+
+static void focus_client(Client *c) {
+  Client *old = focused;
+  if (c && c->minimized) c = NULL;
+  focused = c;
+  if (c) {
+    if (c->can_focus) XSetInputFocus(dpy, c->win, RevertToPointerRoot, CurrentTime);
+    else XSetInputFocus(dpy, c->frame, RevertToPointerRoot, CurrentTime);
+    if (c->take_focus) {
+      XEvent ev = {0};
+      ev.xclient.type = ClientMessage;
+      ev.xclient.window = c->win;
+      ev.xclient.message_type = WM_PROTOCOLS;
+      ev.xclient.format = 32;
+      ev.xclient.data.l[0] = WM_TAKE_FOCUS;
+      ev.xclient.data.l[1] = CurrentTime;
+      XSendEvent(dpy, c->win, False, NoEventMask, &ev);
+    }
+    XChangeProperty(dpy, root, NET_ACTIVE_WINDOW, XA_WINDOW, 32, PropModeReplace, (unsigned char *)&c->win, 1);
+  } else {
+    XSetInputFocus(dpy, PointerRoot, RevertToPointerRoot, CurrentTime);
+    Window none = None;
+    XChangeProperty(dpy, root, NET_ACTIVE_WINDOW, XA_WINDOW, 32, PropModeReplace, (unsigned char *)&none, 1);
+  }
+  for (Client *x = clients; x; x = x->next) grab_buttons(x, x == c);
+  if (old && old != c) draw_frame(old);
+  if (c) draw_frame(c);
+  draw_menubar();
+}
+
+static void close_client(Client *c) {
+  if (!c) return;
+  if (c->draw) {
+    XUnmapWindow(dpy, c->win);
+    XDestroyWindow(dpy, c->win);
+    unmanage(c, true);
+    return;
+  }
+  if (c->can_delete) {
+    XEvent ev = {0};
+    ev.xclient.type = ClientMessage;
+    ev.xclient.window = c->win;
+    ev.xclient.message_type = WM_PROTOCOLS;
+    ev.xclient.format = 32;
+    ev.xclient.data.l[0] = WM_DELETE_WINDOW;
+    ev.xclient.data.l[1] = CurrentTime;
+    XSendEvent(dpy, c->win, False, NoEventMask, &ev);
+  } else {
+    XKillClient(dpy, c->win);
+  }
+}
+
+static void minimize_client(Client *c) {
+  if (!c || c->minimized) return;
+  c->minimized = true;
+  XUnmapWindow(dpy, c->frame);
+  set_wm_state(c, IconicState);
+  if (focused == c) {
+    Client *n = clients;
+    while (n && (n->minimized || n == c)) n = n->next;
+    focus_client(n);
+  }
+  draw_dock();
+}
+
+static void restore_client(Client *c) {
+  if (!c) return;
+  if (c->minimized) {
+    c->minimized = false;
+    XMapWindow(dpy, c->frame);
+    set_wm_state(c, NormalState);
+  }
+  raise_client(c);
+  focus_client(c);
+}
+
+static void zoom_client(Client *c) {
+  if (!c || !c->th) return;
+  if (c->zoomed) {
+    c->x = c->zx; c->y = c->zy; c->w = c->zw; c->h = c->zh;
+    c->zoomed = false;
+  } else {
+    c->zx = c->x; c->zy = c->y; c->zw = c->w; c->zh = c->h;
+    c->x = c->bw + 4;
+    c->y = MENUBAR_H + 4 + c->th + c->bw;
+    c->w = SW - 2 * c->bw - 8;
+    c->h = work_bottom() - c->y - c->bw - 2;
+    c->zoomed = true;
+  }
+  apply_geometry(c);
+  draw_frame(c);
+}
+
+/* ---------------------------------------------------------------------------------------- */
+/* Rahmen                                                                                     */
+
+static void light_centers(Client *c, double *cx, double *cy) {
+  for (int i = 0; i < 3; i++) cx[i] = c->bw + 12 + 6 + i * 20;
+  *cy = c->bw + c->th / 2.0;
+}
+
+static int light_at(Client *c, int x, int y) {
+  double cx[3], cy;
+  light_centers(c, cx, &cy);
+  for (int i = 0; i < 3; i++)
+    if (fabs(x - cx[i]) <= 8 && fabs(y - cy) <= 9) return i + 1;
+  return 0;
+}
+
+static void paint_frame(cairo_t *cr, int w, int h, void *arg) {
+  Client *c = arg;
+  bool active = c == focused;
+  /* Kante (--edge) als 1-Pixel-Rand, darin der Fenstergrund */
+  cairo_set_source_rgb(cr, dark ? .06 : .78, dark ? .055 : .76, dark ? .075 : .83);
+  cairo_paint(cr);
+  set(cr, T->win);
+  rrect(cr, c->bw, c->bw, w - 2 * c->bw, h - 2 * c->bw, RADIUS - 1);
+  cairo_fill(cr);
+  /* Linie unter der Titelleiste */
+  set(cr, T->line);
+  cairo_rectangle(cr, c->bw, c->bw + c->th - 1, w - 2 * c->bw, 1);
+  cairo_fill(cr);
+  /* Glanzkante oben */
+  cairo_save(cr);
+  rrect(cr, 0, 0, w, h, RADIUS);
+  cairo_clip(cr);
+  RGBA rimc = T->rim;
+  cairo_set_source_rgba(cr, rimc.r, rimc.g, rimc.b, dark ? rimc.a * .6 : rimc.a * .8);
+  cairo_rectangle(cr, RADIUS, c->bw, w - 2 * RADIUS, 1);
+  cairo_fill(cr);
+  cairo_restore(cr);
+
+  double cx[3], cy;
+  light_centers(c, cx, &cy);
+  const RGBA lc[3] = {L_CLOSE, L_MIN, L_ZOOM};
+  bool show = active || c->hover;
+  for (int i = 0; i < 3; i++) {
+    cairo_new_path(cr);
+    cairo_arc(cr, cx[i], cy, 6, 0, 2 * M_PI);
+    set(cr, show ? lc[i] : T->light_off);
+    cairo_fill_preserve(cr);
+    cairo_set_source_rgba(cr, 0, 0, 0, .12);
+    cairo_set_line_width(cr, .5);
+    cairo_stroke(cr);
+    if (c->hover) { /* Symbole: × − + */
+      cairo_set_source_rgba(cr, 0, 0, 0, .55);
+      cairo_set_line_width(cr, 1.2);
+      cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND);
+      double s = 2.6;
+      if (i == 0) {
+        cairo_move_to(cr, cx[i] - s, cy - s); cairo_line_to(cr, cx[i] + s, cy + s);
+        cairo_move_to(cr, cx[i] + s, cy - s); cairo_line_to(cr, cx[i] - s, cy + s);
+      } else {
+        cairo_move_to(cr, cx[i] - s - .4, cy); cairo_line_to(cr, cx[i] + s + .4, cy);
+        if (i == 2) { cairo_move_to(cr, cx[i], cy - s - .4); cairo_line_to(cr, cx[i], cy + s + .4); }
+      }
+      cairo_stroke(cr);
+    }
+  }
+  const char *title = c->title[0] ? c->title : (c->app >= 0 ? APPS[c->app].name : c->cls);
+  if (w - 2 * 84 > 24) text(cr, w / 2.0, cy, title, 12.5, true, active ? T->fg : T->fg2, w - 2 * 84, 1);
+}
+
+static void draw_frame(Client *c) {
+  if (!c || !c->th) return;
+  paint_window(c->frame, c->w + 2 * c->bw, c->h + c->th + 2 * c->bw, paint_frame, c);
+}
+
+/* ---------------------------------------------------------------------------------------- */
+/* Eigene Fenster: Über ClokeOS, Rückfragen                                                   */
+
+static char sysinfo[8][2][96];
+static int nsysinfo;
+static char os_version[32] = "2.0", os_codename[32] = "Presidio", os_build[16] = "2A17";
+
+static void read_release(void) {
+  char *s = read_file("/etc/clokeos-release");
+  if (!s) return;
+  struct { const char *k; char *v; size_t n; } keys[] = {
+    {"VERSION=\"", os_version, sizeof os_version}, {"CODENAME=\"", os_codename, sizeof os_codename},
+    {"BUILD=\"", os_build, sizeof os_build}};
+  for (int i = 0; i < 3; i++) {
+    char *p = strstr(s, keys[i].k);
+    if (!p) continue;
+    p += strlen(keys[i].k);
+    char *e = strchr(p, '"');
+    if (e) snprintf(keys[i].v, keys[i].n, "%.*s", (int)(e - p), p);
+  }
+  free(s);
+}
+
+static void add_info(const char *k, const char *v) {
+  if (nsysinfo >= 8) return;
+  snprintf(sysinfo[nsysinfo][0], 96, "%s", k);
+  snprintf(sysinfo[nsysinfo][1], 96, "%s", v);
+  nsysinfo++;
+}
+
+static void collect_sysinfo(void) {
+  nsysinfo = 0;
+  struct utsname u;
+  char buf[128];
+  if (!uname(&u)) {
+    snprintf(buf, sizeof buf, "Darwin %s (XNU)", u.release);
+    add_info("Kernel", buf);
+    add_info("Architektur", u.machine);
+  }
+  char cpu[128] = "";
+  size_t n = sizeof cpu;
+  int ncpu = 0;
+  size_t ni = sizeof ncpu;
+  sysctlbyname("machdep.cpu.brand_string", cpu, &n, NULL, 0);
+  sysctlbyname("hw.ncpu", &ncpu, &ni, NULL, 0);
+  if (cpu[0] || ncpu) {
+    char *p = cpu;
+    while (*p == ' ') p++;
+    snprintf(buf, sizeof buf, "%s%s%d %s", p, *p ? ", " : "", ncpu, ncpu == 1 ? "Kern" : "Kerne");
+    add_info("Prozessor", buf);
+  }
+  uint64_t mem = 0;
+  size_t nm = sizeof mem;
+  if (!sysctlbyname("hw.memsize", &mem, &nm, NULL, 0) && mem) {
+    snprintf(buf, sizeof buf, "%.0f GB", mem / 1073741824.0);
+    add_info("Speicher", buf);
+  }
+  snprintf(buf, sizeof buf, "%d × %d", SW, SH);
+  add_info("Bildschirm", buf);
+  char host[128] = "";
+  gethostname(host, sizeof host);
+  add_info("Gerätename", host);
+  add_info("Build", os_build);
+}
+
+static cairo_surface_t *logo_big;
+
+static void paint_about(Client *c, cairo_t *cr) {
+  int w = c->w;
+  if (!logo_big) logo_big = svg_render("logo-gradient.svg", 96, 96, NULL);
+  if (logo_big) {
+    cairo_set_source_surface(cr, logo_big, (w - 96) / 2.0, 20);
+    cairo_paint(cr);
+  }
+  text(cr, w / 2.0, 140, "ClokeOS", 22, true, T->fg, 0, 1);
+  char ver[96];
+  snprintf(ver, sizeof ver, "„%s“ · Version %s", os_codename, os_version);
+  text(cr, w / 2.0, 166, ver, 12.5, false, T->fg2, 0, 1);
+  int y = 196;
+  for (int i = 0; i < nsysinfo; i++, y += 19) {
+    text(cr, w * .36, y, sysinfo[i][0], 11.5, true, T->fg, 0, 2);
+    text(cr, w * .36 + 12, y, sysinfo[i][1], 11.5, false, T->fg2, w * .64 - 30, 0);
+  }
+  /* Knopf "Weitere Informationen …" */
+  const char *b = "Weitere Informationen …";
+  int bwid = text_width(b, 12, false) + 28;
+  double bx = (w - bwid) / 2.0, by = c->h - 46;
+  rrect(cr, bx, by, bwid, 26, 13);
+  set(cr, T->pill.a > .3 ? (RGBA){1, 1, 1, .9} : (RGBA){1, 1, 1, .12});
+  cairo_fill_preserve(cr);
+  set(cr, T->line_strong);
+  cairo_set_line_width(cr, 1);
+  cairo_stroke(cr);
+  text(cr, w / 2.0, by + 13, b, 12, false, T->fg, 0, 1);
+}
+
+static void click_about(Client *c, int x, int y) {
+  if (y >= c->h - 48 && y <= c->h - 18 && fabs(x - c->w / 2.0) < 110) spawn(APPS[8].cmd);
+}
+
+static void paint_confirm(Client *c, cairo_t *cr) {
+  bool reboot = c->data == 1;
+  cairo_surface_t *lg = svg_render("logo-gradient.svg", 56, 56, NULL);
+  if (lg) {
+    cairo_set_source_surface(cr, lg, 22, 22);
+    cairo_paint(cr);
+    cairo_surface_destroy(lg);
+  }
+  text(cr, 94, 40, reboot ? "Möchtest du ClokeOS jetzt neu starten?" : "Möchtest du ClokeOS jetzt ausschalten?", 13, true,
+       T->fg, c->w - 110, 0);
+  text(cr, 94, 64, "Nicht gesicherte Änderungen in Programmen gehen verloren.", 11.5, false, T->fg2, c->w - 110, 0);
+  const char *ok = reboot ? "Neustart" : "Ausschalten";
+  int w2 = text_width(ok, 12.5, false) + 32, w1 = text_width("Abbrechen", 12.5, false) + 32;
+  double y = c->h - 44, x2 = c->w - 20 - w2, x1 = x2 - 10 - w1;
+  rrect(cr, x1, y, w1, 28, 14);
+  set(cr, dark ? (RGBA){1, 1, 1, .12} : (RGBA){1, 1, 1, .95});
+  cairo_fill_preserve(cr);
+  set(cr, T->line_strong);
+  cairo_stroke(cr);
+  text(cr, x1 + w1 / 2.0, y + 14, "Abbrechen", 12.5, false, T->fg, 0, 1);
+  rrect(cr, x2, y, w2, 28, 14);
+  set(cr, ACCENT);
+  cairo_fill(cr);
+  text(cr, x2 + w2 / 2.0, y + 14, ok, 12.5, false, (RGBA){1, 1, 1, 1}, 0, 1);
+}
+
+static void click_confirm(Client *c, int x, int y) {
+  bool reboot = c->data == 1;
+  const char *ok = reboot ? "Neustart" : "Ausschalten";
+  int w2 = text_width(ok, 12.5, false) + 32, w1 = text_width("Abbrechen", 12.5, false) + 32;
+  double by = c->h - 44, x2 = c->w - 20 - w2, x1 = x2 - 10 - w1;
+  if (y < by || y > by + 28) return;
+  if (x >= x2 && x <= x2 + w2) {
+    XSync(dpy, False);
+    spawn(reboot ? "/bin/reboot" : "/bin/poweroff");
+  } else if (x >= x1 && x <= x1 + w1) {
+    close_client(c);
+  }
+}
+
+static void paint_own(cairo_t *cr, int w, int h, void *arg) {
+  (void)w; (void)h;
+  Client *c = arg;
+  set(cr, T->win);
+  cairo_paint(cr);
+  c->draw(c, cr);
+}
+
+static void draw_own(Client *c) { paint_window(c->win, c->w, c->h, paint_own, c); }
+
+static Client *own_window(int w, int h, const char *title, void (*draw)(Client *, cairo_t *),
+                          void (*click)(Client *, int, int), long data) {
+  for (Client *c = clients; c; c = c->next)
+    if (c->draw == draw) {
+      c->data = data;
+      restore_client(c);
+      draw_own(c);
+      return c;
+    }
+  XSetWindowAttributes sa = {0};
+  sa.event_mask = ExposureMask | ButtonPressMask;
+  Window win = XCreateWindow(dpy, root, (SW - w) / 2, (SH - h) / 2 - 30, w, h, 0, CopyFromParent, InputOutput,
+                             CopyFromParent, CWEventMask, &sa);
+  XStoreName(dpy, win, title);
+  XChangeProperty(dpy, win, NET_WM_NAME, UTF8_STRING, 8, PropModeReplace, (unsigned char *)title, strlen(title));
+  XClassHint ch = {.res_name = "cloakserver", .res_class = "CloakServer"};
+  XSetClassHint(dpy, win, &ch);
+  XSizeHints sh = {.flags = PPosition | PMinSize | PMaxSize, .min_width = w, .max_width = w, .min_height = h, .max_height = h};
+  XSetWMNormalHints(dpy, win, &sh);
+  Client *c = manage(win, false);
+  if (c) {
+    c->draw = draw;
+    c->click = click;
+    c->data = data;
+    c->can_delete = false;
+    /* manage() hat die Ereignismaske auf PropertyChange gesetzt; eigene Fenster zeichnen selbst. */
+    XSelectInput(dpy, win, ExposureMask | ButtonPressMask | PropertyChangeMask);
+    update_client_list();
+    draw_frame(c);
+    draw_own(c);
+  }
+  return c;
+}
+
+static void show_about(long unused) {
+  (void)unused;
+  collect_sysinfo();
+  own_window(420, 400, "Über ClokeOS", paint_about, click_about, 0);
+}
+
+static void confirm_power(long reboot) {
+  own_window(440, 140, reboot ? "Neustart" : "Ausschalten", paint_confirm, click_confirm, reboot);
+}
+
+/* ---------------------------------------------------------------------------------------- */
+/* Menüs                                                                                      */
+
+static void add_item(const char *label, void (*fn)(long), long arg, bool disabled) {
+  if (nmenu >= 48) return;
+  MenuItem *m = &menu[nmenu++];
+  memset(m, 0, sizeof *m);
+  snprintf(m->label, sizeof m->label, "%s", label);
+  m->fn = fn;
+  m->arg = arg;
+  m->disabled = disabled || !fn;
+}
+static void add_sep(void) { if (nmenu < 48) { memset(&menu[nmenu], 0, sizeof menu[0]); menu[nmenu++].kind = 1; } }
+static void add_head(const char *label) {
+  if (nmenu >= 48) return;
+  memset(&menu[nmenu], 0, sizeof menu[0]);
+  snprintf(menu[nmenu].label, sizeof menu[0].label, "%s", label);
+  menu[nmenu++].kind = 2;
+}
+
+#define ITEM_H 24
+#define SEP_H 11
+#define HEAD_H 22
+
+static int item_y(int i) {
+  int y = 6;
+  for (int k = 0; k < i; k++) y += menu[k].kind == 1 ? SEP_H : menu[k].kind == 2 ? HEAD_H : ITEM_H;
+  return y;
+}
+
+static void paint_menu(cairo_t *cr, int w, int h, void *arg) {
+  (void)arg;
+  int sx, sy;
+  Window child;
+  XTranslateCoordinates(dpy, menuwin, root, 0, 0, &sx, &sy, &child);
+  glass(cr, sx, sy, dark ? .86 : .8);
+  rim(cr, 0, 0, w, h, 14);
+  for (int i = 0; i < nmenu; i++) {
+    MenuItem *m = &menu[i];
+    int y = item_y(i);
+    if (m->kind == 1) {
+      set(cr, T->line);
+      cairo_rectangle(cr, 15, y + 5, w - 30, 1);
+      cairo_fill(cr);
+      continue;
+    }
+    if (m->kind == 2) {
+      text(cr, 18, y + HEAD_H / 2.0, m->label, 11, true, T->fg3, w - 30, 0);
+      continue;
+    }
+    bool hl = i == menu_hover && !m->disabled;
+    if (hl) {
+      rrect(cr, 6, y, w - 12, ITEM_H, 8);
+      set(cr, ACCENT);
+      cairo_fill(cr);
+    }
+    RGBA col = m->disabled ? T->fg3 : hl ? (RGBA){1, 1, 1, 1} : T->fg;
+    if (m->checked) text(cr, 15, y + ITEM_H / 2.0, "✓", 12, false, col, 0, 0);
+    text(cr, 32, y + ITEM_H / 2.0, m->label, 12.5, false, col, w - 50, 0);
+  }
+}
+
+static void draw_menu(void) {
+  if (menuwin) paint_window(menuwin, menu_w, menu_h, paint_menu, NULL);
+}
+
+static void open_menu(int x, int y, int owner, bool above) {
+  close_menu();
+  int w = 200;
+  for (int i = 0; i < nmenu; i++) {
+    int tw = text_width(menu[i].label, menu[i].kind == 2 ? 11 : 12.5, menu[i].kind == 2) + 64;
+    if (tw > w) w = tw;
+  }
+  int h = item_y(nmenu) + 6;
+  if (above) y -= h;
+  if (x + w > SW - 4) x = SW - 4 - w;
+  if (x < 4) x = 4;
+  menu_w = w;
+  menu_h = h;
+  menu_owner = owner;
+  menu_hover = -1;
+  XSetWindowAttributes sa = {0};
+  sa.override_redirect = True;
+  sa.event_mask = ExposureMask | ButtonPressMask | ButtonReleaseMask | PointerMotionMask | LeaveWindowMask | KeyPressMask;
+  sa.cursor = cur_arrow;
+  menuwin = XCreateWindow(dpy, root, x, y, w, h, 0, CopyFromParent, InputOutput, CopyFromParent,
+                          CWOverrideRedirect | CWEventMask | CWCursor, &sa);
+  shape_round(menuwin, w, h, 14, false);
+  XMapRaised(dpy, menuwin);
+  XGrabPointer(dpy, menuwin, True, ButtonPressMask | ButtonReleaseMask | PointerMotionMask, GrabModeAsync, GrabModeAsync,
+               None, cur_arrow, CurrentTime);
+  XGrabKeyboard(dpy, menuwin, True, GrabModeAsync, GrabModeAsync, CurrentTime);
+  draw_menu();
+  if (owner >= 0) draw_menubar();
+}
+
+static void close_menu(void) {
+  if (!menuwin) return;
+  XUngrabPointer(dpy, CurrentTime);
+  XUngrabKeyboard(dpy, CurrentTime);
+  XDestroyWindow(dpy, menuwin);
+  menuwin = None;
+  int owner = menu_owner;
+  menu_owner = -1;
+  nmenu = 0;
+  if (owner >= 0) draw_menubar();
+  if (focused) focus_client(focused);
+}
+
+static int menu_item_at(int x, int y) {
+  if (x < 0 || x >= menu_w) return -1;
+  for (int i = 0; i < nmenu; i++) {
+    int y0 = item_y(i), y1 = item_y(i + 1);
+    if (y >= y0 && y < y1) return menu[i].kind == 0 && !menu[i].disabled ? i : -1;
+  }
+  return -1;
+}
+
+static void activate_item(int i) {
+  if (i < 0 || i >= nmenu || menu[i].disabled || !menu[i].fn) {
+    close_menu();
+    return;
+  }
+  void (*fn)(long) = menu[i].fn;
+  long arg = menu[i].arg;
+  close_menu();
+  fn(arg);
+}
+
+static void launch_app(long i) { spawn(APPS[i].cmd); }
+static void cmd_minimize(long unused) { (void)unused; minimize_client(focused); }
+static void cmd_zoom(long unused) { (void)unused; zoom_client(focused); }
+static void cmd_close(long unused) { (void)unused; close_client(focused); }
+static void cmd_activate(long p) {
+  for (Client *c = clients; c; c = c->next)
+    if ((long)c == p) restore_client(c);
+}
+static void cmd_hide_app(long app) {
+  for (Client *c = clients; c; c = c->next)
+    if (c->app == app && !c->draw) minimize_client(c);
+}
+static void cmd_quit_app(long app) {
+  for (Client *c = clients; c; c = c->next)
+    if (c->app == app && !c->draw) close_client(c);
+}
+static void cmd_spot(long unused) { (void)unused; spawn(APPS[1].cmd); }
+
+static int current_app(void) {
+  if (!focused) return APP_DATEIEN;
+  return focused->app;
+}
+
+static const char *current_app_name(void) {
+  if (!focused) return "Fundus";
+  if (focused->draw) return "ClokeOS";
+  if (focused->app >= 0) return APPS[focused->app].name;
+  return focused->cls[0] ? focused->cls : "Programm";
+}
+
+static void build_menu(int which) {
+  nmenu = 0;
+  int app = current_app();
+  char buf[160];
+  switch (which) {
+  case MB_LOGO:
+    add_item("Über ClokeOS", show_about, 0, false);
+    add_sep();
+    add_item("Systemeinstellungen …", launch_app, 8, false);
+    add_item("Aktivitätsanzeige", launch_app, 7, false);
+    add_item("Programme", launch_app, 1, false);
+    add_sep();
+    add_item("Neustart …", confirm_power, 1, false);
+    add_item("Ausschalten …", confirm_power, 0, false);
+    break;
+  case MB_APP: {
+    const char *name = current_app_name();
+    snprintf(buf, sizeof buf, "Über %s", name);
+    add_item(focused && app >= 0 ? buf : "Über ClokeOS", show_about, 0, false);
+    add_sep();
+    bool running = false;
+    for (Client *c = clients; c; c = c->next) running |= c->app == app && app >= 0 && !c->draw;
+    snprintf(buf, sizeof buf, "%s ausblenden", name);
+    add_item(buf, cmd_hide_app, app, !running);
+    snprintf(buf, sizeof buf, "%s beenden", name);
+    add_item(buf, cmd_quit_app, app, !running);
+    break;
+  }
+  case MB_FILE:
+    add_item("Neues Fenster", launch_app, app, app < 0);
+    add_item("Fenster schließen", cmd_close, 0, !focused);
+    break;
+  case MB_WINDOW: {
+    add_item("Ins Dock", cmd_minimize, 0, !focused || !focused->th);
+    add_item("Zoomen", cmd_zoom, 0, !focused || !focused->th);
+    bool any = false;
+    for (Client *c = clients; c; c = c->next) {
+      if (c->draw || (focused && c->app != focused->app) || (focused && focused->app < 0 && c != focused)) continue;
+      if (!any) add_sep();
+      any = true;
+      add_item(c->title[0] ? c->title : c->cls, cmd_activate, (long)c, false);
+      menu[nmenu - 1].checked = c == focused;
+    }
+    break;
+  }
+  case MB_WIFI: {
+    add_head("Netzwerk");
+    struct ifaddrs *ifa = NULL;
+    bool any = false;
+    if (!getifaddrs(&ifa)) {
+      for (struct ifaddrs *i = ifa; i; i = i->ifa_next) {
+        if (!i->ifa_addr || i->ifa_addr->sa_family != AF_INET || !strcmp(i->ifa_name, "lo0")) continue;
+        char ip[64];
+        inet_ntop(AF_INET, &((struct sockaddr_in *)i->ifa_addr)->sin_addr, ip, sizeof ip);
+        snprintf(buf, sizeof buf, "Ethernet (%s): %s", i->ifa_name, ip);
+        add_item(buf, NULL, 0, true);
+        any = true;
+      }
+      freeifaddrs(ifa);
+    }
+    if (!any) add_item("Nicht verbunden", NULL, 0, true);
+    break;
+  }
+  case MB_CC: {
+    add_head("Erscheinungsbild");
+    const char *names[3] = {"Automatisch (abends dunkel)", "Hell", "Dunkel"};
+    for (int i = 0; i < 3; i++) {
+      add_item(names[i], set_theme_mode, i, false);
+      menu[nmenu - 1].checked = theme_mode == i;
+    }
+    break;
+  }
+  case MB_CLOCK: {
+    static const char *wd[] = {"Sonntag", "Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag"};
+    static const char *mo[] = {"Januar", "Februar", "März", "April", "Mai", "Juni", "Juli", "August", "September",
+                               "Oktober", "November", "Dezember"};
+    time_t t = time(NULL);
+    struct tm tm;
+    localtime_r(&t, &tm);
+    snprintf(buf, sizeof buf, "%s, %d. %s %d", wd[tm.tm_wday], tm.tm_mday, mo[tm.tm_mon], tm.tm_year + 1900);
+    add_head(buf);
+    add_sep();
+    add_item("Kalender öffnen", launch_app, 6, false);
+    break;
+  }
+  }
+}
+
+/* ---------------------------------------------------------------------------------------- */
+/* Menüleiste                                                                                 */
+
+static void clock_text(char *buf, size_t n) {
+  static const char *wd[] = {"So.", "Mo.", "Di.", "Mi.", "Do.", "Fr.", "Sa."};
+  static const char *mo[] = {"Jan.", "Feb.", "März", "Apr.", "Mai", "Juni", "Juli", "Aug.", "Sept.", "Okt.", "Nov.", "Dez."};
+  time_t t = time(NULL);
+  struct tm tm;
+  localtime_r(&t, &tm);
+  snprintf(buf, n, "%s %d. %s  %02d:%02d", wd[tm.tm_wday], tm.tm_mday, mo[tm.tm_mon], tm.tm_hour, tm.tm_min);
+}
+
+static const char *mb_label(int i) {
+  switch (i) {
+  case MB_APP: return current_app_name();
+  case MB_FILE: return "Ablage";
+  case MB_WINDOW: return "Fenster";
+  }
+  return "";
+}
+
+static void layout_menubar(void) {
+  int x = 8;
+  for (int i = MB_LOGO; i <= MB_WINDOW; i++) {
+    mb_w[i] = i == MB_LOGO ? 35 : text_width(mb_label(i), 12.5, i == MB_APP) + 20;
+    mb_x[i] = x;
+    x += mb_w[i] + 1;
+  }
+  char clk[64];
+  clock_text(clk, sizeof clk);
+  int r = SW - 8;
+  mb_w[MB_CLOCK] = text_width(clk, 12.5, false) + 20;
+  for (int i = MB_CLOCK; i >= MB_WIFI; i--) {
+    if (i != MB_CLOCK) mb_w[i] = 36;
+    r -= mb_w[i];
+    mb_x[i] = r;
+    r -= 1;
+  }
+}
+
+static cairo_surface_t *mb_icons[4]; /* logo, wifi, spot, cc in der Farbe der Menüleiste */
+
+static void render_mb_icons(void) {
+  char col[16];
+  rgba_hex(col, T->menubar_fg);
+  const char *sub[] = {"@FILL@", col, NULL};
+  const char *names[4] = {"logo.svg", "wifi.svg", "spot.svg", "cc.svg"};
+  int sizes[4] = {15, 16, 16, 16};
+  for (int i = 0; i < 4; i++) {
+    if (mb_icons[i]) cairo_surface_destroy(mb_icons[i]);
+    mb_icons[i] = svg_render(names[i], sizes[i], sizes[i], sub);
+  }
+}
+
+static void paint_menubar(cairo_t *cr, int w, int h, void *arg) {
+  (void)arg;
+  cairo_set_source_surface(cr, wall_img, 0, 0);
+  cairo_paint(cr);
+  /* Leichter Schleier, damit die Schrift auf jedem Hintergrund lesbar bleibt */
+  cairo_pattern_t *g = cairo_pattern_create_linear(0, 0, 0, h);
+  if (dark) { cairo_pattern_add_color_stop_rgba(g, 0, 0, 0, 0, .28); cairo_pattern_add_color_stop_rgba(g, 1, 0, 0, 0, .1); }
+  else { cairo_pattern_add_color_stop_rgba(g, 0, 1, 1, 1, .32); cairo_pattern_add_color_stop_rgba(g, 1, 1, 1, 1, .12); }
+  cairo_set_source(cr, g);
+  cairo_rectangle(cr, 0, 0, w, h);
+  cairo_fill(cr);
+  cairo_pattern_destroy(g);
+
+  layout_menubar();
+  for (int i = 0; i < MB_N; i++) {
+    if (menu_owner == i) {
+      rrect(cr, mb_x[i], 3, mb_w[i], 22, 11);
+      set(cr, T->pill);
+      cairo_fill(cr);
+      rim(cr, mb_x[i], 3, mb_w[i], 22, 11);
+    }
+    double cx = mb_x[i] + mb_w[i] / 2.0, cy = h / 2.0;
+    cairo_surface_t *ic = i == MB_LOGO ? mb_icons[0] : i == MB_WIFI ? mb_icons[1] : i == MB_SPOT ? mb_icons[2]
+                        : i == MB_CC ? mb_icons[3] : NULL;
+    if (ic) {
+      int s = cairo_image_surface_get_width(ic);
+      cairo_set_source_surface(cr, ic, round(cx - s / 2.0), round(cy - s / 2.0));
+      cairo_paint(cr);
+    } else if (i == MB_CLOCK) {
+      char clk[64];
+      clock_text(clk, sizeof clk);
+      text(cr, cx, cy, clk, 12.5, false, T->menubar_fg, 0, 1);
+    } else {
+      text(cr, cx, cy, mb_label(i), 12.5, i == MB_APP, T->menubar_fg, 0, 1);
+    }
+  }
+}
+
+static void draw_menubar(void) { paint_window(menubar, SW, MENUBAR_H, paint_menubar, NULL); }
+
+static int menubar_item_at(int x) {
+  for (int i = 0; i < MB_N; i++)
+    if (x >= mb_x[i] && x < mb_x[i] + mb_w[i]) return i;
+  return -1;
+}
+
+static void menubar_open(int i) {
+  if (i == MB_SPOT) {
+    close_menu();
+    cmd_spot(0);
+    return;
+  }
+  build_menu(i);
+  open_menu(mb_x[i], MENUBAR_H - 1, i, false);
+}
+
+/* ---------------------------------------------------------------------------------------- */
+/* Dock                                                                                       */
+
+static void layout_dock(void) {
+  int x = DOCK_PAD_X, n = 0;
+  for (int i = 0; i < NAPPS; i++) {
+    if (n++) x += DOCK_GAP;
+    dock_item_x[i] = x;
+    x += APPS[i].id ? DS : 1 + 6;
+  }
+  dock_w = x + DOCK_PAD_X;
+  dock_x = (SW - dock_w) / 2;
+  dock_y = SH - DOCK_BOTTOM - DOCK_H;
+}
+
+static bool app_running(int i) {
+  for (Client *c = clients; c; c = c->next)
+    if (c->app == i && !c->draw) return true;
+  return false;
+}
+
+static void paint_dock(cairo_t *cr, int w, int h, void *arg) {
+  (void)arg;
+  double r = DS * .42 + 6;
+  rrect(cr, 0, 0, w, h, r);
+  cairo_clip(cr);
+  glass(cr, dock_x, dock_y, GLASS_O);
+  /* Lichtkante innen oben und unten, Kante außen */
+  cairo_reset_clip(cr);
+  RGBA a = T->rim, b = T->rim_low;
+  cairo_save(cr);
+  rrect(cr, 0, 0, w, h, r);
+  cairo_clip(cr);
+  cairo_set_source_rgba(cr, a.r, a.g, a.b, a.a);
+  cairo_rectangle(cr, r * .6, 0, w - 1.2 * r, 1);
+  cairo_fill(cr);
+  cairo_set_source_rgba(cr, b.r, b.g, b.b, b.a);
+  cairo_rectangle(cr, r * .6, h - 1, w - 1.2 * r, 1);
+  cairo_fill(cr);
+  cairo_restore(cr);
+  rim(cr, 0, 0, w, h, r);
+  rrect(cr, .25, .25, w - .5, h - .5, r);
+  set(cr, T->edge);
+  cairo_set_line_width(cr, .5);
+  cairo_stroke(cr);
+
+  bool full = trash_full();
+  for (int i = 0; i < NAPPS; i++) {
+    int x = dock_item_x[i];
+    if (!APPS[i].id) {
+      set(cr, T->line_strong);
+      cairo_rectangle(cr, x + 3, DOCK_PAD_Y + 2, 1, DS - 4);
+      cairo_fill(cr);
+      continue;
+    }
+    cairo_surface_t *ic = !strcmp(APPS[i].id, "papierkorb") && full ? icon_trash_full : icons[i];
+    if (ic) {
+      cairo_set_source_surface(cr, ic, x, DOCK_PAD_Y - (i == dock_hover ? 2 : 0));
+      cairo_paint(cr);
+    }
+    if (app_running(i)) {
+      cairo_new_path(cr);
+      cairo_arc(cr, x + DS / 2.0, DOCK_PAD_Y + DS + 3, 2, 0, 2 * M_PI);
+      seta(cr, T->fg, .7);
+      cairo_fill(cr);
+    }
+  }
+}
+
+static void draw_dock(void) {
+  layout_dock();
+  paint_window(dock, dock_w, DOCK_H, paint_dock, NULL);
+}
+
+static int dock_item_at(int x, int y) {
+  if (y < 0 || y > DOCK_H) return -1;
+  for (int i = 0; i < NAPPS; i++)
+    if (APPS[i].id && x >= dock_item_x[i] && x < dock_item_x[i] + DS) return i;
+  return -1;
+}
+
+static int tip_w;
+static const char *tip_text;
+
+static void paint_tip(cairo_t *cr, int w, int h, void *arg) {
+  (void)arg;
+  int sx, sy;
+  Window child;
+  XTranslateCoordinates(dpy, tipwin, root, 0, 0, &sx, &sy, &child);
+  glass(cr, sx, sy, dark ? .86 : .8);
+  rim(cr, 0, 0, w, h, h / 2.0);
+  text(cr, w / 2.0, h / 2.0, tip_text, 12, false, T->fg, 0, 1);
+}
+
+static void show_tip(int i) {
+  if (i < 0 || !APPS[i].id) {
+    if (tipwin) XUnmapWindow(dpy, tipwin);
+    return;
+  }
+  tip_text = APPS[i].name;
+  tip_w = text_width(tip_text, 12, false) + 24;
+  int th = 24;
+  int x = dock_x + dock_item_x[i] + DS / 2 - tip_w / 2, y = dock_y - th - 10;
+  if (!tipwin) {
+    XSetWindowAttributes sa = {.override_redirect = True};
+    tipwin = XCreateWindow(dpy, root, x, y, tip_w, th, 0, CopyFromParent, InputOutput, CopyFromParent, CWOverrideRedirect, &sa);
+    XSelectInput(dpy, tipwin, ExposureMask);
+  }
+  XMoveResizeWindow(dpy, tipwin, x, y, tip_w, th);
+  shape_round(tipwin, tip_w, th, th / 2.0, false);
+  XMapRaised(dpy, tipwin);
+  paint_window(tipwin, tip_w, th, paint_tip, NULL);
+}
+
+static void dock_click(int i) {
+  if (i < 0) return;
+  if (!strcmp(APPS[i].id, "papierkorb")) {
+    spawn(APPS[i].cmd);
+    return;
+  }
+  Client *top = NULL;
+  bool any_min = false;
+  for (Client *c = clients; c; c = c->next)
+    if (c->app == i && !c->draw) {
+      if (!top) top = c;
+      any_min |= c->minimized;
+    }
+  if (!top) {
+    spawn(APPS[i].cmd);
+    return;
+  }
+  if (any_min)
+    for (Client *c = clients; c; c = c->next)
+      if (c->app == i && c->minimized) restore_client(c);
+  restore_client(top);
+}
+
+static void dock_menu(int i) {
+  nmenu = 0;
+  add_head(APPS[i].name);
+  bool running = app_running(i);
+  add_item(running ? "Neues Fenster" : "Öffnen", launch_app, i, false);
+  if (running) {
+    add_sep();
+    add_item("Alle ausblenden", cmd_hide_app, i, false);
+    add_item("Beenden", cmd_quit_app, i, false);
+  }
+  open_menu(dock_x + dock_item_x[i], dock_y - 8, -1, true);
+}
+
+static void redraw_all(void) {
+  render_mb_icons();
+  draw_menubar();
+  draw_dock();
+  for (Client *c = clients; c; c = c->next) {
+    draw_frame(c);
+    if (c->draw) draw_own(c);
+  }
+  if (logo_big) {
+    cairo_surface_destroy(logo_big);
+    logo_big = NULL;
+  }
+}
+
+/* ---------------------------------------------------------------------------------------- */
+/* Ereignisse                                                                                 */
+
+static void on_button_press(XButtonEvent *e) {
+  if (menuwin) {
+    if (e->window == menuwin && e->x >= 0 && e->y >= 0 && e->x < menu_w && e->y < menu_h) return;
+    if (e->window == menubar) {
+      int i = menubar_item_at(e->x);
+      if (i == menu_owner || i < 0) close_menu();
+      else menubar_open(i);
+      return;
+    }
+    close_menu();
+    return;
+  }
+  if (e->window == menubar) {
+    int i = menubar_item_at(e->x);
+    if (i >= 0) menubar_open(i);
+    return;
+  }
+  if (e->window == dock) {
+    int i = dock_item_at(e->x, e->y);
+    show_tip(-1);
+    if (i < 0) return;
+    if (e->button == Button3) dock_menu(i);
+    else if (e->button == Button1) dock_click(i);
+    return;
+  }
+  if (e->window == root) {
+    focus_client(NULL);
+    return;
+  }
+  Client *c = find_client(e->window);
+  if (!c) return;
+  if (e->window == c->win) {
+    /* Klick in ein Fenster im Hintergrund: nach vorn holen und den Klick weitergeben */
+    raise_client(c);
+    focus_client(c);
+    XAllowEvents(dpy, ReplayPointer, CurrentTime);
+    if (c->draw && e->button == Button1) c->click(c, e->x, e->y);
+    return;
+  }
+  if (c != focused || clients != c) {
+    raise_client(c);
+    focus_client(c);
+  }
+  if (e->button != Button1) return;
+  if (e->window == c->grip) {
+    drag = c;
+    drag_mode = 2;
+  } else {
+    int l = light_at(c, e->x, e->y);
+    if (l) {
+      c->pressed = l;
+      return;
+    }
+    if (e->y > c->th + c->bw) return;
+    if (last_title_client == c && e->time - last_title_click < 400) {
+      last_title_client = NULL;
+      zoom_client(c);
+      return;
+    }
+    last_title_client = c;
+    last_title_click = e->time;
+    drag = c;
+    drag_mode = 1;
+  }
+  drag_px = e->x_root;
+  drag_py = e->y_root;
+  drag_x = c->x;
+  drag_y = c->y;
+  drag_w = c->w;
+  drag_h = c->h;
+  XGrabPointer(dpy, e->window, False, ButtonReleaseMask | PointerMotionMask, GrabModeAsync, GrabModeAsync, None,
+               drag_mode == 2 ? cur_resize : cur_move, CurrentTime);
+}
+
+static void on_button_release(XButtonEvent *e) {
+  if (menuwin) {
+    if (e->window == menuwin) {
+      int i = menu_item_at(e->x, e->y);
+      if (i >= 0) activate_item(i);
+    }
+    return;
+  }
+  if (drag) {
+    XUngrabPointer(dpy, CurrentTime);
+    Client *c = drag;
+    drag = NULL;
+    if (c->zoomed && drag_mode == 1) c->zoomed = false;
+    send_configure(c);
+    draw_frame(c);
+    return;
+  }
+  Client *c = find_client(e->window);
+  if (c && c->pressed) {
+    int l = light_at(c, e->x, e->y);
+    int p = c->pressed;
+    c->pressed = 0;
+    if (l == p) {
+      if (p == 1) close_client(c);
+      else if (p == 2) minimize_client(c);
+      else zoom_client(c);
+    }
+  }
+}
+
+static void on_motion(XMotionEvent *e) {
+  XEvent next;
+  while (XCheckTypedWindowEvent(dpy, e->window, MotionNotify, &next)) e = &next.xmotion; /* nur die letzte Lage */
+  if (menuwin) {
+    if (e->window == menuwin) {
+      int i = menu_item_at(e->x, e->y);
+      if (i != menu_hover) {
+        menu_hover = i;
+        draw_menu();
+      }
+    } else if (e->window == menubar && menu_owner >= 0) {
+      int i = menubar_item_at(e->x);
+      if (i >= 0 && i != menu_owner && i != MB_SPOT) menubar_open(i);
+    }
+    return;
+  }
+  if (drag) {
+    Client *c = drag;
+    int dx = e->x_root - drag_px, dy = e->y_root - drag_py;
+    if (drag_mode == 1) {
+      c->x = drag_x + dx;
+      c->y = drag_y + dy;
+      if (c->y - c->th < MENUBAR_H) c->y = MENUBAR_H + c->th;
+      XMoveWindow(dpy, c->frame, c->x - c->bw, c->y - c->th - c->bw);
+    } else {
+      c->w = drag_w + dx < c->minw ? c->minw : drag_w + dx;
+      c->h = drag_h + dy < c->minh ? c->minh : drag_h + dy;
+      apply_geometry(c);
+      draw_frame(c);
+    }
+    return;
+  }
+  if (e->window == dock) {
+    int i = dock_item_at(e->x, e->y);
+    if (i != dock_hover) {
+      dock_hover = i;
+      show_tip(i);
+      draw_dock();
+    }
+    return;
+  }
+  Client *c = find_client(e->window);
+  if (c && e->window == c->frame) {
+    bool h = e->y < c->th && e->x < 80;
+    if (h != (c->hover != 0)) {
+      c->hover = h;
+      draw_frame(c);
+    }
+  }
+}
+
+static void on_leave(XCrossingEvent *e) {
+  if (e->window == dock && dock_hover >= 0) {
+    dock_hover = -1;
+    show_tip(-1);
+    draw_dock();
+  }
+  if (e->window == menuwin && menu_hover >= 0) {
+    menu_hover = -1;
+    draw_menu();
+  }
+  Client *c = find_client(e->window);
+  if (c && e->window == c->frame && c->hover) {
+    c->hover = 0;
+    draw_frame(c);
+  }
+}
+
+static void on_expose(XExposeEvent *e) {
+  if (e->count) return;
+  if (e->window == menubar) draw_menubar();
+  else if (e->window == dock) draw_dock();
+  else if (e->window == menuwin) draw_menu();
+  else if (e->window == tipwin) paint_window(tipwin, tip_w, 24, paint_tip, NULL);
+  else {
+    Client *c = find_client(e->window);
+    if (!c) return;
+    if (e->window == c->frame) draw_frame(c);
+    else if (c->draw && e->window == c->win) draw_own(c);
+  }
+}
+
+static void on_configure_request(XConfigureRequestEvent *e) {
+  Client *c = find_client(e->window);
+  if (c && e->window == c->win) {
+    if (e->value_mask & CWX) c->x = e->x;
+    if (e->value_mask & CWY) c->y = e->y;
+    if (e->value_mask & CWWidth) c->w = e->width;
+    if (e->value_mask & CWHeight) c->h = e->height;
+    if (c->y - c->th < MENUBAR_H) c->y = MENUBAR_H + c->th + c->bw;
+    apply_geometry(c);
+    draw_frame(c);
+    return;
+  }
+  XWindowChanges wc = {.x = e->x, .y = e->y, .width = e->width, .height = e->height, .border_width = e->border_width,
+                       .sibling = e->above, .stack_mode = e->detail};
+  XConfigureWindow(dpy, e->window, e->value_mask, &wc);
+}
+
+static void on_client_message(XClientMessageEvent *e) {
+  Client *c = find_client(e->window);
+  if (!c) return;
+  if (e->message_type == NET_ACTIVE_WINDOW) restore_client(c);
+  else if (e->message_type == NET_CLOSE_WINDOW) close_client(c);
+  else if (e->message_type == WM_CHANGE_STATE && e->data.l[0] == IconicState) minimize_client(c);
+}
+
+static void on_key(XKeyEvent *e) {
+  KeySym ks = XLookupKeysym(e, 0);
+  if (menuwin) {
+    if (ks == XK_Escape) close_menu();
+    else if (ks == XK_Down || ks == XK_Up) {
+      int d = ks == XK_Down ? 1 : -1, i = menu_hover;
+      for (int k = 0; k < nmenu; k++) {
+        i = (i + d + nmenu) % nmenu;
+        if (menu[i].kind == 0 && !menu[i].disabled) break;
+      }
+      menu_hover = i;
+      draw_menu();
+    } else if (ks == XK_Return && menu_hover >= 0) {
+      activate_item(menu_hover);
+    }
+    return;
+  }
+  if (ks == XK_Tab && (e->state & Mod1Mask)) { /* Alt+Tab: nächstes Fenster */
+    Client *last = NULL;
+    for (Client *c = clients; c; c = c->next)
+      if (!c->minimized) last = c;
+    if (last && last != focused) restore_client(last);
+  } else if (ks == XK_F4 && (e->state & Mod1Mask)) {
+    close_client(focused);
+  }
+}
+
+static void tick(void) {
+  static int last_min = -1;
+  time_t t = time(NULL);
+  struct tm tm;
+  localtime_r(&t, &tm);
+  if (tm.tm_min == last_min) return;
+  last_min = tm.tm_min;
+  if (theme_mode == 0 && want_dark() != dark) {
+    apply_theme();
+    redraw_all();
+    return;
+  }
+  if (tm.tm_mday != cal_day) {
+    render_icons();
+    draw_dock();
+  }
+  draw_menubar();
+}
+
+/* ---------------------------------------------------------------------------------------- */
+
+static Atom atom(const char *name) { return XInternAtom(dpy, name, False); }
+
+static void setup_atoms(void) {
+  WM_PROTOCOLS = atom("WM_PROTOCOLS");
+  WM_WINDOW_ROLE = atom("WM_WINDOW_ROLE");
+  WM_DELETE_WINDOW = atom("WM_DELETE_WINDOW");
+  WM_TAKE_FOCUS = atom("WM_TAKE_FOCUS");
+  WM_STATE = atom("WM_STATE");
+  WM_CHANGE_STATE = atom("WM_CHANGE_STATE");
+  UTF8_STRING = atom("UTF8_STRING");
+  NET_SUPPORTED = atom("_NET_SUPPORTED");
+  NET_WM_NAME = atom("_NET_WM_NAME");
+  NET_ACTIVE_WINDOW = atom("_NET_ACTIVE_WINDOW");
+  NET_CLIENT_LIST = atom("_NET_CLIENT_LIST");
+  NET_WORKAREA = atom("_NET_WORKAREA");
+  NET_SUPPORTING_WM_CHECK = atom("_NET_SUPPORTING_WM_CHECK");
+  NET_WM_WINDOW_TYPE = atom("_NET_WM_WINDOW_TYPE");
+  NET_WM_WINDOW_TYPE_DOCK = atom("_NET_WM_WINDOW_TYPE_DOCK");
+  NET_WM_WINDOW_TYPE_DESKTOP = atom("_NET_WM_WINDOW_TYPE_DESKTOP");
+  NET_WM_WINDOW_TYPE_SPLASH = atom("_NET_WM_WINDOW_TYPE_SPLASH");
+  NET_WM_WINDOW_TYPE_NOTIFICATION = atom("_NET_WM_WINDOW_TYPE_NOTIFICATION");
+  NET_WM_WINDOW_TYPE_TOOLTIP = atom("_NET_WM_WINDOW_TYPE_TOOLTIP");
+  NET_WM_WINDOW_TYPE_MENU = atom("_NET_WM_WINDOW_TYPE_MENU");
+  NET_WM_WINDOW_TYPE_POPUP_MENU = atom("_NET_WM_WINDOW_TYPE_POPUP_MENU");
+  NET_WM_WINDOW_TYPE_DROPDOWN_MENU = atom("_NET_WM_WINDOW_TYPE_DROPDOWN_MENU");
+  NET_WM_WINDOW_TYPE_COMBO = atom("_NET_WM_WINDOW_TYPE_COMBO");
+  NET_WM_WINDOW_TYPE_DND = atom("_NET_WM_WINDOW_TYPE_DND");
+  NET_CLOSE_WINDOW = atom("_NET_CLOSE_WINDOW");
+  NET_FRAME_EXTENTS = atom("_NET_FRAME_EXTENTS");
+  NET_NUMBER_OF_DESKTOPS = atom("_NET_NUMBER_OF_DESKTOPS");
+  NET_CURRENT_DESKTOP = atom("_NET_CURRENT_DESKTOP");
+  MOTIF_WM_HINTS = atom("_MOTIF_WM_HINTS");
+  XROOTPMAP_ID = atom("_XROOTPMAP_ID");
+  ESETROOT_PMAP_ID = atom("ESETROOT_PMAP_ID");
+}
+
+static void setup_ewmh(void) {
+  Atom supported[] = {NET_SUPPORTED, NET_WM_NAME, NET_ACTIVE_WINDOW, NET_CLIENT_LIST, NET_WORKAREA,
+                      NET_SUPPORTING_WM_CHECK, NET_WM_WINDOW_TYPE, NET_CLOSE_WINDOW, NET_FRAME_EXTENTS,
+                      NET_NUMBER_OF_DESKTOPS, NET_CURRENT_DESKTOP};
+  XChangeProperty(dpy, root, NET_SUPPORTED, XA_ATOM, 32, PropModeReplace, (unsigned char *)supported,
+                  sizeof supported / sizeof supported[0]);
+  checkwin = XCreateSimpleWindow(dpy, root, -10, -10, 1, 1, 0, 0, 0);
+  XChangeProperty(dpy, checkwin, NET_SUPPORTING_WM_CHECK, XA_WINDOW, 32, PropModeReplace, (unsigned char *)&checkwin, 1);
+  XChangeProperty(dpy, checkwin, NET_WM_NAME, UTF8_STRING, 8, PropModeReplace, (unsigned char *)"CloakServer", 11);
+  XChangeProperty(dpy, root, NET_SUPPORTING_WM_CHECK, XA_WINDOW, 32, PropModeReplace, (unsigned char *)&checkwin, 1);
+  long one = 1, zero = 0;
+  XChangeProperty(dpy, root, NET_NUMBER_OF_DESKTOPS, XA_CARDINAL, 32, PropModeReplace, (unsigned char *)&one, 1);
+  XChangeProperty(dpy, root, NET_CURRENT_DESKTOP, XA_CARDINAL, 32, PropModeReplace, (unsigned char *)&zero, 1);
+  long wa[4] = {0, MENUBAR_H, SW, work_bottom() - MENUBAR_H};
+  XChangeProperty(dpy, root, NET_WORKAREA, XA_CARDINAL, 32, PropModeReplace, (unsigned char *)wa, 4);
+}
+
+static Window ui_window(int x, int y, int w, int h, long mask) {
+  XSetWindowAttributes sa = {0};
+  sa.override_redirect = True;
+  sa.event_mask = mask;
+  sa.cursor = cur_arrow;
+  Window win = XCreateWindow(dpy, root, x, y, w, h, 0, CopyFromParent, InputOutput, CopyFromParent,
+                             CWOverrideRedirect | CWEventMask | CWCursor, &sa);
+  XChangeProperty(dpy, win, NET_WM_WINDOW_TYPE, XA_ATOM, 32, PropModeReplace, (unsigned char *)&NET_WM_WINDOW_TYPE_DOCK, 1);
+  return win;
+}
+
+/* Bis das Hintergrundbild fertig ist, steht der Umhang da, wo ihn der Loader gezeichnet hat
+ * (weiß auf Schwarz, 12 % der kürzeren Bildschirmseite, mittig); Xorg hat ihn gerade gelöscht. */
+static void splash(void) {
+  int s = (SW < SH ? SW : SH) * 12 / 100; /* wie SPLASH_SIZE_PERCENT im Loader */
+  const char *white[] = {"@FILL@", "#ffffff", NULL};
+  cairo_surface_t *lg = svg_render("logo.svg", s, s, white);
+  XSetWindowBackground(dpy, root, BlackPixel(dpy, scr));
+  XClearWindow(dpy, root);
+  if (lg) {
+    cairo_surface_t *rs = cairo_xlib_surface_create(dpy, root, vis, SW, SH);
+    cairo_t *cr = cairo_create(rs);
+    cairo_set_source_surface(cr, lg, (SW - s) / 2, (SH - s) / 2);
+    cairo_paint(cr);
+    cairo_destroy(cr);
+    cairo_surface_destroy(rs);
+    cairo_surface_destroy(lg);
+  }
+  XFlush(dpy);
+}
+
+static void scan_existing(void) {
+  Window r, p, *kids = NULL;
+  unsigned n = 0;
+  if (!XQueryTree(dpy, root, &r, &p, &kids, &n)) return;
+  for (unsigned i = 0; i < n; i++) {
+    XWindowAttributes wa;
+    if (kids[i] == menubar || kids[i] == dock || kids[i] == checkwin) continue;
+    if (XGetWindowAttributes(dpy, kids[i], &wa) && !wa.override_redirect && wa.map_state == IsViewable)
+      manage(kids[i], true);
+  }
+  if (kids) XFree(kids);
+}
+
+int main(int argc, char **argv) {
+  for (int i = 1; i < argc; i++) {
+    if (!strcmp(argv[i], "--theme") && i + 1 < argc) {
+      i++;
+      theme_mode = !strcmp(argv[i], "hell") ? 1 : !strcmp(argv[i], "dunkel") ? 2 : 0;
+    } else {
+      fprintf(stderr, "Aufruf: %s [--theme auto|hell|dunkel]\n", argv[0]);
+      return 2;
+    }
+  }
+  char self[PATH_MAX];
+  if (!realpath(argv[0], self)) snprintf(self, sizeof self, "%s", argv[0]);
+  snprintf(resdir, sizeof resdir, "%s/Resources", dirname(self));
+  signal(SIGCHLD, SIG_IGN); /* gestartete Programme nicht als Zombies behalten */
+
+  dpy = XOpenDisplay(NULL);
+  if (!dpy) {
+    warn("kein X-Server (DISPLAY=%s)", getenv("DISPLAY") ? getenv("DISPLAY") : "");
+    return 1;
+  }
+  fcntl(ConnectionNumber(dpy), F_SETFD, FD_CLOEXEC);
+  scr = DefaultScreen(dpy);
+  root = RootWindow(dpy, scr);
+  SW = DisplayWidth(dpy, scr);
+  SH = DisplayHeight(dpy, scr);
+  vis = DefaultVisual(dpy, scr);
+  cmap = DefaultColormap(dpy, scr);
+
+  XSetErrorHandler(xerror_start);
+  XSelectInput(dpy, root, SubstructureRedirectMask | SubstructureNotifyMask | ButtonPressMask | PropertyChangeMask);
+  XSync(dpy, False);
+  if (other_wm) {
+    warn("es läuft schon ein Fenstermanager");
+    return 1;
+  }
+  XSetErrorHandler(xerror);
+  setup_atoms();
+
+  cur_arrow = XcursorLibraryLoadCursor(dpy, "left_ptr");
+  cur_resize = XcursorLibraryLoadCursor(dpy, "bottom_right_corner");
+  cur_move = XcursorLibraryLoadCursor(dpy, "fleur");
+  if (!cur_move) cur_move = cur_arrow;
+  if (cur_arrow) XDefineCursor(dpy, root, cur_arrow);
+
+  read_release();
+  splash();
+  apply_theme();
+  setup_ewmh();
+  layout_dock();
+  menubar = ui_window(0, 0, SW, MENUBAR_H, ExposureMask | ButtonPressMask | PointerMotionMask);
+  dock = ui_window(dock_x, dock_y, dock_w, DOCK_H,
+                   ExposureMask | ButtonPressMask | PointerMotionMask | LeaveWindowMask);
+  shape_round(dock, dock_w, DOCK_H, DS * .42 + 6, false);
+  XMapRaised(dpy, menubar);
+  XMapRaised(dpy, dock);
+  XGrabKey(dpy, XKeysymToKeycode(dpy, XK_Tab), Mod1Mask, root, True, GrabModeAsync, GrabModeAsync);
+  XGrabKey(dpy, XKeysymToKeycode(dpy, XK_F4), Mod1Mask, root, True, GrabModeAsync, GrabModeAsync);
+  render_mb_icons();
+  scan_existing();
+  focus_client(clients);
+  redraw_all();
+  warn("läuft auf %dx%d, Thema %s", SW, SH, dark ? "dunkel" : "hell");
+
+  int fd = ConnectionNumber(dpy);
+  for (;;) {
+    while (XPending(dpy)) {
+      XEvent ev;
+      XNextEvent(dpy, &ev);
+      switch (ev.type) {
+      case MapRequest: {
+        Client *c = find_client(ev.xmaprequest.window);
+        if (c) restore_client(c);
+        else manage(ev.xmaprequest.window, false);
+        draw_dock();
+        break;
+      }
+      case UnmapNotify: {
+        Client *c = find_client(ev.xunmap.window);
+        if (c && ev.xunmap.window == c->win) {
+          if (c->ignore_unmaps) c->ignore_unmaps--;
+          else unmanage(c, false);
+        }
+        break;
+      }
+      case DestroyNotify: {
+        Client *c = find_client(ev.xdestroywindow.window);
+        if (c && ev.xdestroywindow.window == c->win) unmanage(c, true);
+        break;
+      }
+      case ConfigureRequest: on_configure_request(&ev.xconfigurerequest); break;
+      case PropertyNotify: {
+        Client *c = find_client(ev.xproperty.window);
+        if (c && (ev.xproperty.atom == XA_WM_NAME || ev.xproperty.atom == NET_WM_NAME)) {
+          update_title(c);
+          draw_frame(c);
+        }
+        break;
+      }
+      case ButtonPress: on_button_press(&ev.xbutton); break;
+      case ButtonRelease: on_button_release(&ev.xbutton); break;
+      case MotionNotify: on_motion(&ev.xmotion); break;
+      case LeaveNotify: on_leave(&ev.xcrossing); break;
+      case Expose: on_expose(&ev.xexpose); break;
+      case ClientMessage: on_client_message(&ev.xclient); break;
+      case KeyPress: on_key(&ev.xkey); break;
+      }
+    }
+    tick();
+    XFlush(dpy);
+    fd_set fds;
+    FD_ZERO(&fds);
+    FD_SET(fd, &fds);
+    struct timeval tv = {1, 0};
+    select(fd + 1, &fds, NULL, NULL, &tv);
+  }
+}

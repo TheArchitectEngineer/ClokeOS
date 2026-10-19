@@ -73,6 +73,8 @@ if [ "$CLOKE_ARCH" = arm64 ]; then
 else
   # Wie PureDarwins Runner (nix run .#vm), nur ohne KVM. Netzwerkkarte: PureDarwins e1000-Treiber
   # (PDE1000) erkennt nur den 82545EM (8086:100f), nicht QEMUs Standardmodelle e1000/e1000e.
+  # Maus: PureDarwins HID-Treiber kennt nur Boot-Protokoll-Mäuse, also usb-mouse statt usb-tablet
+  # (im QEMU-Fenster fängt ein Klick die Maus ein, Strg+Alt+G gibt sie wieder frei).
   args=(
     -M q35
     -accel tcg
@@ -82,7 +84,7 @@ else
     -fw_cfg name=opt/ovmf/X-PciMmio64Mb,string=2048
     "${common[@]}"
     -drive id=root,format=raw,file="$image$snapshot"
-    -device usb-tablet,bus=xhci.0
+    -device usb-mouse,bus=xhci.0
     -nic user,model=e1000-82545em
   )
 fi

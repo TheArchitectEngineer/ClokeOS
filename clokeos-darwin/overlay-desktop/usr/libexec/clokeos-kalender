@@ -1,0 +1,48 @@
+#!/usr/bin/python3
+"""Kalender aus dem Dock: voriger, dieser und nächster Monat, heute hervorgehoben."""
+import calendar
+import datetime
+
+MONATE = ['Januar', 'Februar', 'März', 'April', 'Mai', 'Juni', 'Juli', 'August', 'September',
+          'Oktober', 'November', 'Dezember']
+TAGE = 'Mo Di Mi Do Fr Sa So'
+HEUTE = '\033[7m%2d\033[0m'
+BREITE = 20
+
+
+def monat(jahr, mon, heute):
+    zeilen = [('%s %d' % (MONATE[mon - 1], jahr)).center(BREITE), TAGE]
+    for woche in calendar.Calendar(0).monthdayscalendar(jahr, mon):
+        zelle = []
+        for tag in woche:
+            if not tag:
+                zelle.append('  ')
+            elif (jahr, mon, tag) == heute:
+                zelle.append(HEUTE % tag)
+            else:
+                zelle.append('%2d' % tag)
+        zeilen.append(' '.join(zelle))
+    while len(zeilen) < 8:
+        zeilen.append('')
+    return zeilen
+
+
+def sichtbar(s):
+    return len(s.replace('\033[7m', '').replace('\033[0m', ''))
+
+
+d = datetime.date.today()
+heute = (d.year, d.month, d.day)
+monate = []
+for delta in (-1, 0, 1):
+    m = d.month + delta
+    j = d.year + (m - 1) // 12
+    monate.append(monat(j, (m - 1) % 12 + 1, heute))
+wt = ['Montag', 'Dienstag', 'Mittwoch', 'Donnerstag', 'Freitag', 'Samstag', 'Sonntag'][d.weekday()]
+print('\n  \033[1m%s, %d. %s %d\033[0m\n' % (wt, d.day, MONATE[d.month - 1], d.year))
+for zeile in zip(*monate):
+    print('  ' + '   '.join(z + ' ' * (BREITE - sichtbar(z)) for z in zeile))
+try:
+    input('\n  Eingabetaste schließt den Kalender. ')
+except EOFError:
+    pass

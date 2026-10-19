@@ -1,0 +1,14 @@
+#!/bin/zsh
+# Läuft unter xinit: richtet die Sitzung ein und startet CloakServer mit einem D-Bus für die Sitzung.
+. /etc/profile
+[[ -r /etc/clokeos-release ]] && . /etc/clokeos-release
+export TZ=${TIMEZONE:-UTC}
+export XDG_CONFIG_DIRS=/etc/xdg:/etc
+# App-Defaults der X-Programme (xcalc, xclock) liegen bei PureDarwin unter /share/X11.
+export XFILESEARCHPATH=/share/X11/%T/%N%C%S:/share/X11/%T/%N%S:/usr/share/X11/%T/%N%S
+export XUSERFILESEARCHPATH=$HOME/%N%C:$HOME/%N
+print '*customization: -color' | /bin/xrdb -nocpp -merge
+cd $HOME
+cs=/System/Library/CoreServices/CloakServer/CloakServer
+[[ -x /bin/dbus-launch ]] && exec /bin/dbus-launch --exit-with-session $cs
+exec $cs

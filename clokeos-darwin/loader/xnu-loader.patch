@@ -1,6 +1,6 @@
 diff -ruN a/include/boot.h b/include/boot.h
 --- a/include/boot.h	2026-08-17 22:51:23
-+++ b/include/boot.h	2026-10-19 21:09:32
++++ b/include/boot.h	2026-10-19 21:53:40
 @@ -226,6 +226,8 @@
  
  EFI_STATUS boot_build_args(AppContext *ctx, const CHAR8 *cmdline, MachoLoadResult *load_result, BootArgsState *state);
@@ -12,7 +12,7 @@ diff -ruN a/include/boot.h b/include/boot.h
  typedef struct boot_video_info {
 diff -ruN a/include/console.h b/include/console.h
 --- a/include/console.h	2026-08-17 22:51:23
-+++ b/include/console.h	2026-10-19 21:09:32
++++ b/include/console.h	2026-10-19 21:53:40
 @@ -6,4 +6,8 @@
  VOID log_info(CONST CHAR16 *fmt, ...);
  VOID log_error(CONST CHAR16 *fmt, ...);
@@ -26,7 +26,7 @@ diff -ruN a/include/console.h b/include/console.h
 +#endif
 diff -ruN a/include/jump.h b/include/jump.h
 --- a/include/jump.h	2026-08-17 22:51:23
-+++ b/include/jump.h	2026-10-19 21:09:32
++++ b/include/jump.h	2026-10-19 21:53:40
 @@ -3,16 +3,25 @@
  
  #include "common.h"
@@ -59,7 +59,7 @@ diff -ruN a/include/jump.h b/include/jump.h
 +#endif
 diff -ruN a/src/boot.c b/src/boot.c
 --- a/src/boot.c	2026-08-17 22:51:23
-+++ b/src/boot.c	2026-10-19 21:09:32
++++ b/src/boot.c	2026-10-19 21:53:50
 @@ -250,7 +250,7 @@
    return EFI_SUCCESS;
  }
@@ -69,26 +69,29 @@ diff -ruN a/src/boot.c b/src/boot.c
    if (!cmdline || !flag)
      return FALSE;
  
-@@ -609,6 +609,16 @@
- 
-   if (!ctx || !args)
-       return EFI_INVALID_PARAMETER;
-+
-+  /* ClokeOS: without -v the boot logo stays on screen until power-off.
-+   * PureDarwin's kernel paints its progress bands and every byte of serial
-+   * output onto any framebuffer it is handed while the text console is off,
-+   * so a quiet boot hands over none and XNU runs on the serial console alone,
-+   * exactly as on a machine without GOP. */
-+  if (!boot_cmdline_has_flag(args->CommandLine, (const CHAR8 *)"-v")) {
-+    log_info(L"boot_fill_video: no -v, framebuffer kept for the boot logo\r\n");
-+    return EFI_SUCCESS;
-+  }
- 
+@@ -613,6 +613,19 @@
    status = boot_probe_video(ctx, args->CommandLine, &vi);
    if (EFI_ERROR(status) || !vi.found)
+     return status;
++
++  /* ClokeOS: without -v the boot logo stays on screen until a window server
++   * draws over it, and the kernel still gets the framebuffer (graphics mode)
++   * for IOGOPFramebuffer, /dev/fb0 and Xorg. But PureDarwin's kernel paints
++   * its progress bands and every byte of serial output onto a framebuffer
++   * while the text console is off. All of those painters, and XNU's video
++   * console, only draw at a depth of 32 bits, while IOGOPFramebuffer treats
++   * 24 exactly like 32 (32-bit pixels, same masks). So a quiet boot
++   * describes the same framebuffer as 24 bits deep. */
++  if (!boot_cmdline_has_flag(args->CommandLine, (const CHAR8 *)"-v")) {
++    vi.depth = 24;
++    log_info(L"boot_fill_video: no -v, framebuffer handed over as depth 24\r\n");
++  }
+ 
+   args->Video.v_display  = (UINT32)vi.display;
+   args->Video.v_rowBytes = (UINT32)vi.row_bytes;
 diff -ruN a/src/console.c b/src/console.c
 --- a/src/console.c	2026-08-17 22:51:23
-+++ b/src/console.c	2026-10-19 21:09:32
++++ b/src/console.c	2026-10-19 21:53:40
 @@ -2,15 +2,21 @@
  #include "serial.h"
  #include <stdarg.h>
@@ -131,7 +134,7 @@ diff -ruN a/src/console.c b/src/console.c
  }
 diff -ruN a/src/jump.S b/src/jump.S
 --- a/src/jump.S	2026-08-17 22:51:23
-+++ b/src/jump.S	2026-10-19 21:09:32
++++ b/src/jump.S	2026-10-19 21:53:40
 @@ -90,7 +90,9 @@
  .text
  .code64
@@ -164,7 +167,7 @@ diff -ruN a/src/jump.S b/src/jump.S
 \ No newline at end of file
 diff -ruN a/src/main.c b/src/main.c
 --- a/src/main.c	2026-08-17 22:51:23
-+++ b/src/main.c	2026-10-19 21:20:30
++++ b/src/main.c	2026-10-19 21:57:19
 @@ -6,6 +6,7 @@
  #include "macho.h"
  #include "jump.h"
@@ -173,7 +176,7 @@ diff -ruN a/src/main.c b/src/main.c
  
  static VOID   *g_jump_entry;
  static UINT64  g_jump_args;
-@@ -51,6 +52,69 @@
+@@ -51,6 +52,70 @@
    return EFI_SUCCESS;
  }
  
@@ -200,9 +203,10 @@ diff -ruN a/src/main.c b/src/main.c
 +
 +/*
 + * ClokeOS: V pressed during start-up turns a quiet boot into a verbose one,
-+ * as if -v were in boot-args.txt (the boot screen of clokeos.html offers the
-+ * same key). Appending -v makes boot_fill_video hand the kernel the
-+ * framebuffer again; the loader log comes back to the screen, which is
++ * as if -v gopconsole=1 were in boot-args.txt (the boot screen of
++ * clokeos.html offers the same key). With -v boot_fill_video hands the kernel
++ * the framebuffer as a text console, and gopconsole=1 keeps it one once
++ * IOGOPFramebuffer starts. The loader log comes back to the screen, which is
 + * cleared first so the log does not run over the boot logo.
 + * The firmware empties ConIn just before it starts the loader (EDK2's BDS
 + * reads all keys for its hotkeys), and the loader is done within a fraction
@@ -211,7 +215,7 @@ diff -ruN a/src/main.c b/src/main.c
 + */
 +static EFI_STATUS verbose_boot_on_key(
 +    AppContext *ctx, const CHAR8 **cmdline, BOOLEAN *owned) {
-+  const CHAR8 suffix[] = " -v";
++  const CHAR8 suffix[] = " -v gopconsole=1";
 +  UINTN len = 0;
 +  CHAR8 *copy = NULL;
 +
@@ -243,7 +247,7 @@ diff -ruN a/src/main.c b/src/main.c
  static EFI_STATUS load_ramdisk(AppContext *ctx) {
    EFI_FILE_PROTOCOL *root = NULL;
    FileBuffer image = {0};
-@@ -96,7 +160,7 @@
+@@ -96,7 +161,7 @@
  }
  
  #if defined(__x86_64__)
@@ -252,14 +256,14 @@ diff -ruN a/src/main.c b/src/main.c
    UINT64 *src64 = (UINT64 *)(UINTN)g_copy_src;
    UINT64 *dst64 = (UINT64 *)(UINTN)g_copy_dst;
    UINTN   words = (UINTN)((g_copy_bytes + 7) >> 3);
-@@ -246,6 +310,58 @@
+@@ -246,6 +311,58 @@
    if (EFI_ERROR(status))
      return status;
  
 +  /* ClokeOS: read the boot-args first, since they decide what the screen
 +   * shows from here on. Without -v (in the file or by key V) the loader
 +   * draws the boot logo and keeps its log on serial; the kernel then boots
-+   * without touching the screen (see boot_fill_video). */
++   * without painting on the screen (see boot_fill_video). */
 +  CONST CHAR8 *cmdline = "-v debug=0x219 -nogzalloc_mode keepsyms=1 serial=3 gopconsole=1";
 +  BOOLEAN cmdline_owned = FALSE;
 +  FileBuffer boot_args_file = {0};
@@ -311,7 +315,7 @@ diff -ruN a/src/main.c b/src/main.c
    log_info(L"XNU EFI loader start\r\n");
  
    {
-@@ -440,6 +556,14 @@
+@@ -440,6 +557,14 @@
  
    log_info(L"entry vm=0x%lx -> host=0x%lx\r\n", entry_vmaddr, (UINT64)(UINTN)host_entry);
  
@@ -326,7 +330,7 @@ diff -ruN a/src/main.c b/src/main.c
    //status = load_ramdisk(&ctx);
    //if (EFI_ERROR(status))
    //  return status;
-@@ -456,42 +580,6 @@
+@@ -456,42 +581,6 @@
    if (EFI_ERROR(status)) {
      log_error(L"failed to collect memory map: %r\r\n", status);
      return status;

@@ -1,6 +1,7 @@
 #!/bin/bash
 # Baut aus dem PureDarwin-Image ein ClokeOS-Image (~/ClokeOS-work/out/clokeos-<version>-<arch>.img).
-# Architektur wie bei run.sh mit CLOKEOS_ARCH=arm64 (Standard: x86_64).
+# Architektur wie bei run.sh mit CLOKEOS_ARCH=arm64 (Standard: x86_64), die Desktop-Variante mit
+# CLOKEOS_FLAVOR=desktop (Ergebnis: clokeos-<version>-x86_64-desktop.img).
 #
 # Das Basisimage bleibt unverändert. Das Wurzeldateisystem (ext4) wird mit debugfs bearbeitet,
 # dafür braucht es weder Linux noch Root-Rechte. Was geändert wird:
@@ -11,6 +12,8 @@
 #   - liegt eine RAM-Disk in der EFI-Partition (ramdisk.img, arm64-Minimal), bekommt sie dasselbe
 #   - x86_64: die EFI-Partition bekommt den Loader mit Bootlogo (loader/build.sh) und die
 #     Boot-Argumente aus config.sh, beides mit mtools
+#   - desktop: dazu overlay-desktop/ und CloakServer (cloakserver/build.sh), der beim Start
+#     Xorg mit dem ClokeOS-Desktop öffnet
 set -euo pipefail
 source "$(dirname "$0")/config.sh"
 need "$DEBUGFS" "$E2FSCK" "$TUNE2FS" python3 mcopy mtype mdir
@@ -22,7 +25,8 @@ export MTOOLS_SKIP_CHECK=1
 tmp="$WORK/tmp/brand"
 rm -rf "$tmp"
 mkdir -p "$tmp/stage" "$(dirname "$CLOKE_IMG")"
-cp "$PD_IMG" "$tmp/image.img"
+# Auf APFS ist -c ein Klon: kostet bei den 6 GiB des Desktop-Images weder Zeit noch Platz.
+cp -c "$PD_IMG" "$tmp/image.img" 2>/dev/null || cp "$PD_IMG" "$tmp/image.img"
 
 read -r root_start root_count < <(gpt_part "$tmp/image.img" "$GUID_LINUX_FS")
 root="$tmp/root.ext4"
@@ -30,6 +34,10 @@ dd if="$tmp/image.img" of="$root" bs=512 skip="$root_start" count="$root_count" 
 
 # --- Dateien zusammenstellen ---------------------------------------------------------------
 cp -R "$HERE/overlay/." "$tmp/stage/"
+if [ "$CLOKE_FLAVOR" = desktop ]; then
+  cp -R "$HERE/overlay-desktop/." "$tmp/stage/"
+  "$HERE/cloakserver/build.sh" "$tmp/stage"
+fi
 find "$tmp/stage" -name .DS_Store -delete
 
 mkdir -p "$tmp/stage/System/Library/CoreServices"
@@ -58,6 +66,7 @@ VERSION="$CLOKE_VERSION"
 CODENAME="$CLOKE_CODENAME"
 BUILD="$CLOKE_BUILD"
 HOSTNAME="$CLOKE_HOST"
+TIMEZONE="$CLOKE_TZ"
 BASE="PureDarwin $PD_VERSION"
 EOF
 
@@ -67,6 +76,7 @@ cat >> "$tmp/stage/etc/zshrc" <<'EOF'
 
 # ClokeOS
 export PS1='%n@%m %1~ %# '
+[[ -r /etc/clokeos-release ]] && export TZ=$(. /etc/clokeos-release; print -r -- $TIMEZONE)
 # Die Konsole startet oft, bevor com.clokeos.hostname den Namen gesetzt hat.
 _clokeos_host() { [[ $HOST == localhost* ]] && HOST=$(/bin/hostname) }
 precmd_functions+=(_clokeos_host)
@@ -128,6 +138,15 @@ if [ -n "$LOADER_EFI" ]; then
   mtype -i "$esp" "::/EFI/BOOT/$EFI_BINARY" | cmp -s - "$LOADER_EFI" ||
     { echo "Loader nicht in der EFI-Partition angekommen" >&2; exit 1; }
 fi
+if [ "$CLOKE_ARCH" = x86_64 ]; then
+  # PureDarwins Grafiktreiber legt /dev/fb0 und Xorgs Bild ein Byte neben den Framebuffer
+  # (falsche Farben). kcfix.py korrigiert das im Kernel Collection.
+  mcopy -n -i "$esp" ::/EFI/BOOT/kernel "$tmp/kernel"
+  python3 -I "$HERE/kcfix.py" "$tmp/kernel"
+  mcopy -o -i "$esp" "$tmp/kernel" ::/EFI/BOOT/kernel
+  mtype -i "$esp" ::/EFI/BOOT/kernel | cmp -s - "$tmp/kernel" ||
+    { echo "Kernel nicht in der EFI-Partition angekommen" >&2; exit 1; }
+fi
 if [ -n "$CLOKE_BOOT_ARGS" ]; then
   printf '%s\n' "$CLOKE_BOOT_ARGS" > "$tmp/boot-args.txt"
   mcopy -o -i "$esp" "$tmp/boot-args.txt" ::/EFI/BOOT/boot-args.txt
@@ -138,4 +157,7 @@ fi
 mv "$tmp/image.img" "$CLOKE_IMG"
 rm -rf "$tmp"
 echo "Fertig: $CLOKE_IMG"
-if [ "$CLOKE_ARCH" = x86_64 ]; then echo "Starten mit: $HERE/run.sh"; else echo "Starten mit: CLOKEOS_ARCH=$CLOKE_ARCH $HERE/run.sh"; fi
+env=""
+[ "$CLOKE_ARCH" = x86_64 ] || env+="CLOKEOS_ARCH=$CLOKE_ARCH "
+[ "$CLOKE_FLAVOR" = minimal ] || env+="CLOKEOS_FLAVOR=$CLOKE_FLAVOR "
+echo "Starten mit: $env$HERE/run.sh"

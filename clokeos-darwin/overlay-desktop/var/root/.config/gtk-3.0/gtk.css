@@ -1,0 +1,4 @@
+/* ClokeOS: Innenabstand im Terminal wie im Prototyp (clokeos.html) */
+vte-terminal {
+  padding: 8px 12px;
+}

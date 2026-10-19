@@ -8,13 +8,33 @@ WORK="${CLOKEOS_WORK:-$HOME/ClokeOS-work}"
 # Zielarchitektur: x86_64 (Standard) oder arm64 (QEMU virt), z. B. CLOKEOS_ARCH=arm64 ./brand.sh
 CLOKE_ARCH="${CLOKEOS_ARCH:-x86_64}"
 
+# Variante: minimal (Standard: nur die Shell, 262 MiB) oder desktop (PureDarwins Vorschau-Image mit
+# Xorg, Wayland und Xfce, 6,1 GiB; darauf startet CloakServer, der ClokeOS-Desktop), z. B.
+# CLOKEOS_FLAVOR=desktop ./brand.sh. Den Desktop gibt es bisher nur für x86_64.
+CLOKE_FLAVOR="${CLOKEOS_FLAVOR:-minimal}"
+case "$CLOKE_ARCH/$CLOKE_FLAVOR" in
+  */minimal|x86_64/desktop) ;;
+  *)
+    echo "Unbekannte Variante: $CLOKE_FLAVOR für $CLOKE_ARCH (minimal; desktop nur für x86_64)" >&2
+    exit 1
+    ;;
+esac
+
 # Basis: PureDarwin 20.5. Alle Images haben UEFI, xnu-loader und eine ext4-Wurzel.
 PD_VERSION="20.5"
 case "$CLOKE_ARCH" in
   x86_64)
-    PD_FILE="puredarwin-minimal.img"
-    PD_URL="https://github.com/PureDarwin/PureDarwin/releases/download/$PD_VERSION/$PD_FILE"
-    PD_SHA256="ef65a816395680ef9210f401cebe3783c131badca1a942cb80e56bec97e717ac"
+    if [ "$CLOKE_FLAVOR" = desktop ]; then
+      # Kein Release, sondern das Vorschau-Image von puredarwin.org (Stand 23.08.2026, wie 20.5):
+      # dieselbe Basis wie das Minimal-Image plus Xorg, Wayland/sway, Xfce, Wine und Compiler.
+      PD_FILE="puredarwin.img"
+      PD_URL="https://internal.lab004.dev/private/images/$PD_FILE"
+      PD_SHA256="5970582305ef495f046b55720711ee8d7065e00d8a56dbc55bd765887502a50b"
+    else
+      PD_FILE="puredarwin-minimal.img"
+      PD_URL="https://github.com/PureDarwin/PureDarwin/releases/download/$PD_VERSION/$PD_FILE"
+      PD_SHA256="ef65a816395680ef9210f401cebe3783c131badca1a942cb80e56bec97e717ac"
+    fi
     EFI_BINARY="BOOTX64.EFI"
     ;;
   arm64)
@@ -48,11 +68,13 @@ LOADER_EFI=""
 [ "$CLOKE_ARCH" = x86_64 ] && LOADER_EFI="$WORK/out/BOOTX64.EFI"
 
 # Kernel-Argumente (EFI/BOOT/boot-args.txt). Ohne -v zeigt der Loader das Bootlogo und gibt dem
-# Kernel keinen Framebuffer; Kernel-Log und Shell laufen dann nur über die serielle Konsole
-# (serial=3). Mit -v vorn dran sieht der Bildschirm wieder aus wie bei PureDarwin.
+# Kernel den Framebuffer so (24 Bit), dass PureDarwins Kernel kein Log darauf malt; Kernel-Log und
+# Shell laufen über die serielle Konsole (serial=3), auf dem Bildschirm folgt der Desktop.
+# Mit "-v gopconsole=1" vorn dran sieht der Bildschirm wieder aus wie bei PureDarwin (Taste V beim
+# Start hängt beides einmalig an). PureDarwins eigene Vorgabe hat gopconsole=1 immer dabei.
 # Leer = die Boot-Argumente des Basisimages bleiben (arm64, solange es dort keinen eigenen Loader gibt).
 CLOKE_BOOT_ARGS=""
-[ "$CLOKE_ARCH" = x86_64 ] && CLOKE_BOOT_ARGS="debug=0x218 -nogzalloc_mode keepsyms=1 serial=3 gopconsole=1 gen9_debug=1"
+[ "$CLOKE_ARCH" = x86_64 ] && CLOKE_BOOT_ARGS="debug=0x218 -nogzalloc_mode keepsyms=1 serial=3 gen9_debug=1"
 
 # ClokeOS-Version, passend zur Oberfläche in clokeos.html (OS-Objekt).
 CLOKE_NAME="ClokeOS"
@@ -60,7 +82,11 @@ CLOKE_VERSION="2.0"
 CLOKE_CODENAME="Presidio"
 CLOKE_BUILD="2A17"
 CLOKE_HOST="clokeos"
+# Zeitzone als POSIX-TZ-Regel: PureDarwin hat keine Zeitzonen-Datenbank, die Uhr der VM läuft in UTC.
+# Gilt für Shell und Desktop (Uhr in der Menüleiste). Mitteleuropa mit Sommerzeit:
+CLOKE_TZ="CET-1CEST,M3.5.0,M10.5.0/3"
 CLOKE_IMG="$WORK/out/clokeos-$CLOKE_VERSION-$CLOKE_ARCH.img"
+[ "$CLOKE_FLAVOR" = desktop ] && CLOKE_IMG="$WORK/out/clokeos-$CLOKE_VERSION-$CLOKE_ARCH-desktop.img"
 
 # Laufzeitdateien der VM (UEFI-Variablen, Sockets, Logs).
 VM_STATE="$WORK/vm/$CLOKE_ARCH"

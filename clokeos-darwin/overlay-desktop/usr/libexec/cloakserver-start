@@ -1,0 +1,12 @@
+#!/bin/zsh
+# Startet beim Hochfahren Xorg mit CloakServer (launchd-Dienst com.clokeos.cloakserver).
+# Xorg zeichnet über PureDarwins GOP-Treiber in den Framebuffer, den der Loader übergibt.
+. /etc/profile
+# Framebuffer, Tastatur und Maus erscheinen erst, wenn IOKit die Treiber gestartet hat.
+for i in {1..90}; do
+  [[ -e /dev/fb0 && -e /dev/usb_hid_kbd && -e /dev/usb_hid_mouse ]] && break
+  sleep 1
+done
+mkdir -p -m 0700 $XDG_RUNTIME_DIR
+print "cloakserver-start: $(date) Xorg startet"
+exec /bin/xinit /usr/libexec/cloakserver-session -- /bin/Xorg :0 -nolisten tcp

@@ -4,7 +4,7 @@
 #   loader/build.sh [ausgabe.efi]     Standard: ~/ClokeOS-work/out/BOOTX64.EFI
 #
 # Die Quellen von xnu-loader und gnu-efi lädt ../fetch.sh nach ~/ClokeOS-work/download. Dazu kommen:
-#   xnu-loader.patch   ohne -v: Log nur seriell, Logo zeigen, dem Kernel keinen Framebuffer geben;
+#   xnu-loader.patch   ohne -v: Log nur seriell, Logo zeigen, Framebuffer mit 24 Bit Farbtiefe übergeben;
 #                      Taste V beim Start hängt -v an (ausführlicher Start);
 #                      außerdem jump.S/jump.h, damit mingw-w64 den Loader bauen kann
 #   splash.c, splash.h zeichnen das Umhang-Logo über GOP
