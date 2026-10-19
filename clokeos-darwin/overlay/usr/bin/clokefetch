@@ -1,0 +1,50 @@
+#!/bin/zsh
+# clokefetch – Systemüberblick mit Umhang, wie im Terminal der ClokeOS-Oberfläche.
+
+NAME=ClokeOS VERSION= CODENAME= BASE=
+[[ -r /etc/clokeos-release ]] && source /etc/clokeos-release
+
+c=$'\e[1;35m' b=$'\e[1m' r=$'\e[0m'
+art=(
+  '        .--.        '
+  '      /  __  \      '
+  '     /  /  \  \     '
+  '    /   \__/   \    '
+  '   /     ()     \   '
+  '  /   /  ||  \   \  '
+  ' /   /   ||   \   \ '
+  '/___/____||____\___\'
+  '\/\/\/\/\/\/\/\/\/\/'
+  '                    '
+  '                    '
+)
+
+boot=$(sysctl -n kern.boottime 2>/dev/null)
+boot=${${boot#*sec = }%%,*}
+up=
+if [[ $boot == <-> ]]; then
+  s=$(( $(date +%s) - boot ))
+  up="$(( s / 3600 )) h $(( s % 3600 / 60 )) min"
+fi
+mem=$(sysctl -n hw.memsize 2>/dev/null)
+[[ $mem == <-> ]] && mem="$(( mem / 1048576 )) MB"
+user=${USER:-$(whoami)}
+host=$(hostname)
+
+info=(
+  "$c$user$r@$c$host$r"
+  "${(l:$(( ${#user} + ${#host} + 1 ))::-:)}"
+  "${b}OS$r: $NAME $VERSION $CODENAME $(uname -m)"
+  "${b}Kernel$r: Darwin $(uname -r) (XNU)"
+  "${b}Basis$r: $BASE"
+  "${b}Uptime$r: $up"
+  "${b}Shell$r: zsh $ZSH_VERSION"
+  "${b}CPU$r: $(sysctl -n machdep.cpu.brand_string 2>/dev/null)"
+  "${b}Speicher$r: $mem"
+  "${b}Volume$r: $(df -h / 2>/dev/null | awk 'NR==2 {print $3 " von " $2 " belegt"}')"
+  "$(for i in {1..7}; do printf '\e[4%dm   ' $i; done)$r"
+)
+
+for i in {1..$#art}; do
+  print -r -- "$c$art[i]$r   $info[i]"
+done

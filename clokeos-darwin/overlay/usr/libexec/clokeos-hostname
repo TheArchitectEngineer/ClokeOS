@@ -1,0 +1,5 @@
+#!/bin/sh
+# Setzt beim Start den Rechnernamen aus /etc/clokeos-release.
+HOSTNAME=clokeos
+test -r /etc/clokeos-release && . /etc/clokeos-release
+test -x /bin/hostname && /bin/hostname "$HOSTNAME"

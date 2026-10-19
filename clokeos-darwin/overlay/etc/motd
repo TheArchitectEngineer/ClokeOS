@@ -1,0 +1,11 @@
+
+        .--.
+      /  __  \        Willkommen bei ClokeOS
+     /  /  \  \       Darwin (XNU) mit PureDarwin als Basis
+    /   \__/   \
+   /     ()     \     clokefetch       Systeminfo
+  /   /  ||  \   \    sw_vers          Version
+ /   /   ||   \   \   uname -a         Kernel
+/___/____||____\___\  launchctl list   laufende Dienste
+\/\/\/\/\/\/\/\/\/\/  poweroff         ausschalten
+

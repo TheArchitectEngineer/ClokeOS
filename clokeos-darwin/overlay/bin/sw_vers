@@ -1,0 +1,23 @@
+#!/bin/zsh
+# sw_vers für ClokeOS: liest wie bei macOS /System/Library/CoreServices/SystemVersion.plist
+# (PureDarwins eigenes sw_vers hat die Werte fest einkompiliert).
+
+typeset -A v
+local key= line
+while IFS= read -r line; do
+  if [[ $line == *'<key>'* ]]; then
+    key=${${line#*<key>}%%</key>*}
+  elif [[ -n $key && $line == *'<string>'* ]]; then
+    v[$key]=${${line#*<string>}%%</string>*}
+    key=
+  fi
+done < /System/Library/CoreServices/SystemVersion.plist
+
+case $1 in
+  -productName) print -r -- $v[ProductName] ;;
+  -productVersion) print -r -- $v[ProductVersion] ;;
+  -buildVersion) print -r -- $v[ProductBuildVersion] ;;
+  '') printf 'ProductName:\t\t%s\nProductVersion:\t\t%s\nBuildVersion:\t\t%s\n' \
+        $v[ProductName] $v[ProductVersion] $v[ProductBuildVersion] ;;
+  *) print -u2 'usage: sw_vers [-productName|-productVersion|-buildVersion]'; exit 1 ;;
+esac

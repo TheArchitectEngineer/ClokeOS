@@ -1,0 +1,2277 @@
+<meta charset="utf-8">
+<title>ClokeOS</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+/* Layout: a full-screen desktop shell — wallpaper canvas, glass menubar on top, floating windows, dock at the bottom */
+:root{
+  --font-ui:"Figtree",-apple-system,"SF Pro Text","Segoe UI Variable Text","Segoe UI",system-ui,sans-serif;
+  --font-mono:"JetBrains Mono",ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+  --accent:#7c5cff;
+  --bg:#d9d0f0;
+  --fg:#1e1a27; --fg-2:#6d6779; --fg-3:#9a94a6;
+  --glass-o:.45;
+  --tint:248,247,252; --win-rgb:251,250,253; --side-rgb:240,238,246; --page:#ffffff;
+  --win:rgba(var(--win-rgb),min(.97,calc(var(--glass-o) + .42))); --win-bar:transparent;
+  --win-side:rgba(var(--side-rgb),min(.92,calc(var(--glass-o) + .2))); --field:rgba(255,255,255,.72);
+  --glass:rgba(var(--tint),var(--glass-o)); --glass-solid:rgba(var(--tint),min(.94,calc(var(--glass-o) + .32)));
+  --pill:rgba(255,255,255,min(.85,calc(var(--glass-o) + .18)));
+  --rim:rgba(255,255,255,.9); --rim-low:rgba(255,255,255,.35); --edge:rgba(30,20,60,.14);
+  --menubar:transparent; --menubar-fg:#16131e; --menubar-shadow:0 0 8px rgba(255,255,255,.45);
+  --line:rgba(40,25,70,.12); --line-strong:rgba(40,25,70,.22);
+  --hover:rgba(40,25,70,.06); --hover-strong:rgba(40,25,70,.12);
+  --light-off:#d6d2dc;
+  --shadow:0 24px 64px rgba(25,12,50,.28),0 0 0 .5px rgba(25,12,50,.2);
+  --pop-shadow:0 12px 36px rgba(25,12,50,.22),0 0 0 .5px rgba(25,12,50,.18);
+  --term-bg:#17151c; --term-fg:#ebe8f0; --term-bar:#2a2731;
+  --on-accent:#ffffff;
+  --desk-label:#ffffff;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#0e0c14;
+    --fg:#f1eef6; --fg-2:#aaa4b6; --fg-3:#777184;
+    --tint:30,28,40; --win-rgb:30,28,37; --side-rgb:40,37,52; --page:#1c1a22; --field:rgba(0,0,0,.25);
+    --pill:rgba(255,255,255,min(.22,calc(var(--glass-o) * .2 + .07)));
+    --rim:rgba(255,255,255,.34); --rim-low:rgba(255,255,255,.1); --edge:rgba(0,0,0,.5);
+    --menubar-fg:#f6f3fa; --menubar-shadow:0 1px 6px rgba(0,0,0,.35);
+    --line:rgba(255,255,255,.1); --line-strong:rgba(255,255,255,.2);
+    --hover:rgba(255,255,255,.06); --hover-strong:rgba(255,255,255,.13);
+    --light-off:#4a4653;
+    --shadow:0 24px 64px rgba(0,0,0,.55),0 0 0 .5px rgba(255,255,255,.12);
+    --pop-shadow:0 12px 36px rgba(0,0,0,.5),0 0 0 .5px rgba(255,255,255,.14);
+    color-scheme:dark;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#0e0c14;
+  --fg:#f1eef6; --fg-2:#aaa4b6; --fg-3:#777184;
+  --tint:30,28,40; --win-rgb:30,28,37; --side-rgb:40,37,52; --page:#1c1a22; --field:rgba(0,0,0,.25);
+  --pill:rgba(255,255,255,min(.22,calc(var(--glass-o) * .2 + .07)));
+  --rim:rgba(255,255,255,.34); --rim-low:rgba(255,255,255,.1); --edge:rgba(0,0,0,.5);
+  --menubar-fg:#f6f3fa; --menubar-shadow:0 1px 6px rgba(0,0,0,.35);
+  --line:rgba(255,255,255,.1); --line-strong:rgba(255,255,255,.2);
+  --hover:rgba(255,255,255,.06); --hover-strong:rgba(255,255,255,.13);
+  --light-off:#4a4653;
+  --shadow:0 24px 64px rgba(0,0,0,.55),0 0 0 .5px rgba(255,255,255,.12);
+  --pop-shadow:0 12px 36px rgba(0,0,0,.5),0 0 0 .5px rgba(255,255,255,.14);
+  color-scheme:dark;
+}
+[hidden]{display:none!important}
+html,body{height:100%;overflow:hidden}
+body{margin:0;background:var(--bg);color:var(--fg);font:13px/1.38 var(--font-ui);-webkit-font-smoothing:antialiased;user-select:none;-webkit-user-select:none;cursor:default}
+button{font:inherit;color:inherit;cursor:default}
+input,textarea,select{font:inherit;color:inherit}
+input,textarea{user-select:text;-webkit-user-select:text}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+svg{display:block}
+@media (prefers-reduced-motion: reduce){*,*::before,*::after{animation-duration:.01ms!important;transition-duration:.01ms!important}}
+
+#wall{position:fixed;inset:0;width:100%;height:100%}
+#dim{position:fixed;inset:0;background:#000;pointer-events:none;z-index:9900;opacity:0;transition:opacity .2s}
+
+/* ---------- boot / login / power ---------- */
+.screen{position:fixed;inset:0;z-index:9800;display:flex;flex-direction:column;align-items:center;justify-content:center}
+#boot,#power{background:#000;color:#fff}
+.boot-c{display:flex;flex-direction:column;align-items:center;gap:56px}
+.boot-logo{width:96px;height:96px;animation:fadeIn .9s ease-out}
+.bar{width:200px;height:5px;border-radius:3px;background:rgba(255,255,255,.22);overflow:hidden}
+.bar i{display:block;height:100%;width:0;background:#fff;border-radius:3px}
+.boot-hint{position:absolute;bottom:calc(24px + env(safe-area-inset-bottom,0px));margin:0;font-size:12px;color:rgba(255,255,255,.38);text-align:center;padding-inline:16px}
+#verbose{position:absolute;inset:0;margin:0;padding:16px max(16px,env(safe-area-inset-left,0px));font:12px/1.45 var(--font-mono);color:#d8d8d8;background:#000;overflow:hidden;white-space:pre-wrap;display:flex;flex-direction:column;justify-content:flex-end}
+@keyframes fadeIn{from{opacity:0}}
+
+#login{color:#fff;background:rgba(10,6,20,.18);backdrop-filter:blur(26px) saturate(1.3);-webkit-backdrop-filter:blur(26px) saturate(1.3);justify-content:space-between;padding:12vh 16px calc(32px + env(safe-area-inset-bottom,0px))}
+.lg-time{text-align:center;text-shadow:0 2px 20px rgba(0,0,0,.25)}
+#lg-date{font-size:20px;font-weight:600;opacity:.9}
+#lg-clock{font-size:clamp(64px,13vw,120px);font-weight:700;line-height:1;letter-spacing:-.02em;font-variant-numeric:tabular-nums}
+.lg-user{display:flex;flex-direction:column;align-items:center;gap:10px;margin:0}
+.avatar{width:78px;height:78px;border-radius:50%;display:grid;place-items:center;font-size:32px;font-weight:600;color:#fff;box-shadow:0 6px 24px rgba(0,0,0,.25)}
+.lg-name{font-size:17px;font-weight:600;text-shadow:0 1px 8px rgba(0,0,0,.3)}
+.lg-field{display:flex;align-items:center;gap:6px;background:rgba(255,255,255,.22);border-radius:20px;padding:3px 3px 3px 14px;width:220px;box-shadow:inset 0 0 0 .5px rgba(255,255,255,.35)}
+.lg-field input{flex:1;min-width:0;background:none;border:0;outline:none;color:#fff;font-size:13px;height:24px}
+.lg-field input::placeholder{color:rgba(255,255,255,.7)}
+.lg-field button{width:24px;height:24px;border-radius:50%;border:0;background:rgba(255,255,255,.3);display:grid;place-items:center;padding:0}
+.lg-hint{margin:2px 0 0;font-size:11.5px;opacity:.72;text-align:center}
+.lg-user.shake{animation:shake .4s}
+@keyframes shake{25%{transform:translateX(-8px)}50%{transform:translateX(7px)}75%{transform:translateX(-4px)}}
+.lg-power{display:flex;gap:28px}
+.lg-power button{border:0;background:none;color:#fff;display:flex;flex-direction:column;align-items:center;gap:6px;font-size:12px;opacity:.85}
+.lg-power button span{width:38px;height:38px;border-radius:50%;background:rgba(255,255,255,.2);display:grid;place-items:center}
+.lg-power button:hover span{background:rgba(255,255,255,.32)}
+#power p{color:rgba(255,255,255,.55);margin:0 0 22px;font-size:14px}
+#power button{width:52px;height:52px;border-radius:50%;border:1px solid rgba(255,255,255,.35);background:none;color:#fff;display:grid;place-items:center}
+#power button:hover{background:rgba(255,255,255,.1)}
+
+/* ---------- menubar ---------- */
+#menubar{position:fixed;top:0;left:0;right:0;z-index:9000;height:26px;padding-top:env(safe-area-inset-top,0px);padding-left:max(8px,env(safe-area-inset-left,0px));padding-right:max(8px,env(safe-area-inset-right,0px));display:flex;align-items:center;gap:1px;background:var(--menubar);backdrop-filter:blur(30px) saturate(1.8);-webkit-backdrop-filter:blur(30px) saturate(1.8);color:var(--menubar-fg);box-shadow:0 .5px 0 var(--line)}
+.mb{height:22px;padding:0 9px;border:0;border-radius:5px;background:none;display:flex;align-items:center;gap:6px;white-space:nowrap;font-size:13px}
+.mb:hover,.mb.open{background:var(--hover-strong)}
+.mb-logo svg{width:15px;height:15px}
+.mb-app{font-weight:700}
+#mb-menus{display:flex;gap:1px;min-width:0;overflow:hidden}
+.mb-right{margin-left:auto;display:flex;align-items:center;gap:1px}
+.mb-right svg{width:16px;height:16px}
+#mb-clock{font-variant-numeric:tabular-nums}
+.mb.off{opacity:.45}
+@media (max-width:720px){#mb-menus,#mb-batt-txt{display:none}}
+
+/* ---------- popover menus ---------- */
+.pop{position:fixed;z-index:9500;min-width:220px;padding:5px;border-radius:10px;background:var(--glass-solid);backdrop-filter:blur(30px) saturate(1.6);-webkit-backdrop-filter:blur(30px) saturate(1.6);box-shadow:var(--pop-shadow);color:var(--fg)}
+.pop .mi{display:flex;width:100%;align-items:center;justify-content:space-between;gap:28px;border:0;background:none;padding:3px 10px;border-radius:5px;text-align:left;font-size:13px;line-height:20px;white-space:nowrap}
+.pop .mi:hover:not([disabled]),.pop .mi:focus-visible{background:var(--accent);color:var(--on-accent);outline:none}
+.pop .mi[disabled]{color:var(--fg-3)}
+.pop .mi kbd{font:inherit;opacity:.55}
+.pop .mi .ck{width:12px;display:inline-block}
+.pop hr{border:0;height:1px;background:var(--line);margin:5px 9px}
+.pop .mh{padding:3px 10px;font-size:11.5px;font-weight:600;color:var(--fg-3)}
+
+/* ---------- desktop icons ---------- */
+#desk-icons{position:fixed;top:36px;right:max(12px,env(safe-area-inset-right,0px));bottom:96px;left:max(12px,env(safe-area-inset-left,0px));display:grid;grid-auto-flow:column;grid-template-rows:repeat(auto-fill,98px);grid-auto-columns:96px;justify-content:start;direction:rtl;gap:2px;pointer-events:none;z-index:1}
+#desk-icons .item{pointer-events:auto;direction:ltr}
+#desk-icons .item .lb{color:var(--desk-label);text-shadow:0 1px 3px rgba(0,0,0,.55)}
+#desk-icons .item.sel .lb{text-shadow:none}
+
+/* ---------- windows ---------- */
+#windows{position:fixed;inset:0;z-index:2;pointer-events:none}
+.win{position:absolute;pointer-events:auto;display:flex;flex-direction:column;background:var(--win);border-radius:12px;box-shadow:var(--shadow);overflow:hidden;min-width:240px;min-height:150px;transform-origin:center}
+.win.opening{animation:winIn .2s ease-out}
+.win.anim{transition:left .28s cubic-bezier(.2,.8,.2,1),top .28s cubic-bezier(.2,.8,.2,1),width .28s cubic-bezier(.2,.8,.2,1),height .28s cubic-bezier(.2,.8,.2,1)}
+.win.mini{transition:transform .34s cubic-bezier(.5,0,.75,0),opacity .34s;opacity:0}
+@keyframes winIn{from{opacity:0;transform:scale(.94)}}
+.titlebar{height:38px;flex:none;display:flex;align-items:center;gap:14px;padding:0 12px;background:var(--win-bar);border-bottom:1px solid var(--line);position:relative}
+.wtitle{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-weight:600;font-size:13px;color:var(--fg-2);pointer-events:none;padding:0 120px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.win.active .wtitle{color:var(--fg)}
+.lights{display:flex;gap:8px;z-index:1}
+.lights button{width:12px;height:12px;border-radius:50%;border:0;padding:0;font-size:10px;line-height:12px;font-weight:700;color:transparent;display:grid;place-items:center}
+.l-close{background:#ff5f57}.l-min{background:#febc2e}.l-zoom{background:#28c840}
+.win:not(.active) .lights button{background:var(--light-off)}
+.lights:hover button{color:rgba(0,0,0,.55)}
+.win:not(.active) .lights:hover .l-close{background:#ff5f57}
+.win:not(.active) .lights:hover .l-min{background:#febc2e}
+.win:not(.active) .lights:hover .l-zoom{background:#28c840}
+.tb-extra{display:flex;align-items:center;gap:4px;z-index:1;min-width:0}
+.tb-right{margin-left:auto}
+.tbb{height:26px;min-width:28px;padding:0 6px;border:0;border-radius:6px;background:none;color:var(--fg-2);display:grid;place-items:center}
+.tbb:hover:not([disabled]){background:var(--hover-strong);color:var(--fg)}
+.tbb[disabled]{opacity:.35}
+.tbb svg{width:16px;height:16px}
+.wbody{flex:1;min-height:0;display:flex;position:relative}
+.rz{position:absolute;right:0;bottom:0;width:18px;height:18px;cursor:nwse-resize;z-index:5}
+.rz-r{position:absolute;right:0;top:38px;bottom:18px;width:6px;cursor:ew-resize;z-index:5}
+.rz-b{position:absolute;left:0;right:18px;bottom:0;height:6px;cursor:ns-resize;z-index:5}
+.win.dark-chrome .titlebar{background:var(--term-bar);border-color:#000}
+.win.dark-chrome .wtitle{color:#a9a4b2}
+.win.dark-chrome.active .wtitle{color:#e6e2ec}
+.win.dark-chrome .tbb{color:#b8b3c1}
+
+/* ---------- shared items ---------- */
+.item{display:flex;flex-direction:column;align-items:center;gap:4px;padding:6px 4px;border:0;border-radius:8px;background:none;min-width:0}
+.item .ic{width:58px;height:58px;padding:3px;border-radius:7px;box-sizing:border-box}
+.item .ic svg{width:100%;height:100%}
+.item .lb{font-size:12px;text-align:center;max-width:100%;overflow-wrap:anywhere;padding:1px 5px;border-radius:4px;line-height:1.25}
+.item.sel .ic{background:var(--hover-strong)}
+.item.sel .lb{background:var(--accent);color:var(--on-accent)}
+.item.cut{opacity:.5}
+.rn{width:100%;font-size:12px;text-align:center;border:1px solid var(--accent);border-radius:4px;padding:1px 3px;background:var(--field);outline:none;box-sizing:border-box}
+
+/* ---------- Dateien (file manager) ---------- */
+.fd{display:flex;flex:1;min-width:0}
+.side{width:176px;flex:none;background:var(--win-side);border-right:1px solid var(--line);padding:8px 8px 12px;overflow:auto}
+.side h4{font-size:11px;font-weight:700;color:var(--fg-3);margin:12px 8px 4px;letter-spacing:.03em}
+.side h4:first-child{margin-top:4px}
+.side .sb{display:flex;align-items:center;gap:8px;width:100%;border:0;background:none;padding:4px 8px;border-radius:6px;text-align:left;font-size:13px}
+.side .sb svg{width:16px;height:16px;flex:none;color:var(--accent)}
+.side .sb:hover{background:var(--hover)}
+.side .sb.on{background:var(--hover-strong)}
+.fmain{flex:1;min-width:0;display:flex;flex-direction:column;background:var(--win)}
+.grid{flex:1;overflow:auto;padding:14px;display:grid;grid-template-columns:repeat(auto-fill,minmax(96px,1fr));align-content:start;gap:4px;outline:none}
+.status{height:26px;flex:none;border-top:1px solid var(--line);font-size:11.5px;color:var(--fg-2);display:flex;align-items:center;justify-content:center;gap:12px;background:var(--win-bar)}
+.status button{border:0;background:none;color:var(--accent);font-weight:600;font-size:11.5px;padding:0 4px}
+.empty{grid-column:1/-1;text-align:center;color:var(--fg-3);padding:48px 12px;font-size:13px}
+@media (max-width:620px){.side{display:none}}
+
+/* ---------- Terminal ---------- */
+.term{flex:1;min-width:0;background:var(--term-bg);color:var(--term-fg);font:12.5px/1.5 var(--font-mono);padding:8px 12px 14px;overflow:auto;user-select:text;-webkit-user-select:text;cursor:text}
+.tout>div{white-space:pre-wrap;word-break:break-word;min-height:1.5em}
+.tline{display:flex;white-space:pre}
+.tin{flex:1;min-width:0;background:none;border:0;outline:none;color:inherit;font:inherit;padding:0;caret-color:#b9a6ff}
+.t-dir{color:#93b6ff;font-weight:600}.t-app{color:#c7a6ff;font-weight:600}.t-err{color:#ff8f8f}.t-ok{color:#9fe79f}.t-dim{color:#8b8695}.t-acc{color:#c9b8ff}.t-b{font-weight:600}
+.t-blk{display:inline-block;width:2.2ch;height:1.1em;vertical-align:-2px}
+
+/* ---------- Notizen ---------- */
+.nt{display:flex;flex:1;min-width:0}
+.nt-side{width:230px;flex:none;border-right:1px solid var(--line);background:var(--win-side);overflow:auto;padding:8px}
+.nt-it{display:block;width:100%;text-align:left;border:0;background:none;border-radius:8px;padding:8px 10px;margin-bottom:2px}
+.nt-it b{display:block;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.nt-it small{display:block;font-size:11.5px;color:var(--fg-2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.nt-it small em{font-style:normal;color:var(--fg-3);margin-right:6px}
+.nt-it:hover{background:var(--hover)}
+.nt-it.on{background:#ffcf4a;color:#2b2210}
+.nt-it.on small,.nt-it.on small em{color:#5c4d2a}
+.nt-ed{flex:1;min-width:0;display:flex;flex-direction:column;background:var(--win)}
+.nt-date{font-size:11.5px;color:var(--fg-3);text-align:center;padding:10px 0 2px}
+.nt-ta{flex:1;resize:none;border:0;outline:none;background:none;padding:10px 28px 24px;font-size:14px;line-height:1.6;color:var(--fg)}
+.nt-ta::first-line{font-weight:700}
+.nt-emp{flex:1;display:grid;place-items:center;color:var(--fg-3)}
+@media (max-width:560px){.nt-side{width:150px}}
+
+/* ---------- Rechner ---------- */
+.calc{flex:1;display:flex;flex-direction:column;background:#29262e;color:#fff;padding:4px 10px 12px;outline:none}
+.calc-d{flex:1;display:flex;align-items:flex-end;justify-content:flex-end;font-size:46px;font-weight:300;padding:0 6px 8px;font-variant-numeric:tabular-nums;overflow:hidden;white-space:nowrap;min-height:64px}
+.calc-k{display:grid;grid-template-columns:repeat(4,1fr);gap:9px}
+.calc-k button{aspect-ratio:1;border:0;border-radius:50%;background:#54505b;color:#fff;font-size:20px;max-width:100%}
+.calc-k button:active{filter:brightness(1.3)}
+.calc-k .fn{background:#a7a2ad;color:#1d1b20}
+.calc-k .op{background:#f59e2b}
+.calc-k .op.on{background:#fff;color:#f59e2b}
+.calc-k .zero{grid-column:span 2;aspect-ratio:auto;border-radius:40px;text-align:left;padding-left:22px}
+.win.calc-win .titlebar{background:#29262e;border:0}
+
+/* ---------- Kalender ---------- */
+.cal{flex:1;display:flex;min-width:0}
+.cal-main{flex:1;min-width:0;display:flex;flex-direction:column;padding:14px 16px}
+.cal-h{display:flex;align-items:baseline;gap:8px;margin-bottom:10px}
+.cal-h h2{margin:0;font-size:22px;font-weight:700;text-wrap:balance}
+.cal-h h2 span{font-weight:400;color:var(--fg-2)}
+.cal-h .tbb{margin-left:auto}
+.cal-g{flex:1;display:grid;grid-template-columns:repeat(7,1fr);grid-auto-rows:1fr;border-top:1px solid var(--line);border-left:1px solid var(--line)}
+.cal-g .dh{font-size:11px;font-weight:700;color:var(--fg-3);text-align:right;padding:4px 8px;border-right:1px solid var(--line);border-bottom:1px solid var(--line)}
+.cal-g .dc{border:0;border-right:1px solid var(--line);border-bottom:1px solid var(--line);background:none;text-align:right;padding:4px 6px;display:flex;flex-direction:column;align-items:flex-end;gap:2px;min-height:44px;overflow:hidden}
+.cal-g .dc.out{color:var(--fg-3)}
+.cal-g .dc.we{background:var(--hover)}
+.cal-g .dc.sel{box-shadow:inset 0 0 0 2px var(--accent)}
+.cal-g .dc .n{font-size:13px;width:24px;height:24px;line-height:24px;text-align:center;border-radius:50%;font-variant-numeric:tabular-nums}
+.cal-g .dc.today .n{background:#f0473f;color:#fff;font-weight:700}
+.cal-g .dc .ev{font-size:10.5px;background:color-mix(in srgb,var(--accent) 20%,transparent);color:var(--fg);border-radius:3px;padding:0 4px;max-width:100%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.cal-side{width:210px;flex:none;border-left:1px solid var(--line);background:var(--win-side);padding:14px;display:flex;flex-direction:column;gap:10px;overflow:auto}
+.cal-side h3{margin:0;font-size:14px}
+.cal-side ul{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px}
+.cal-side li{display:flex;justify-content:space-between;gap:6px;background:var(--win);border-radius:6px;padding:6px 8px;font-size:12.5px}
+.cal-side li button{border:0;background:none;color:var(--fg-3);padding:0}
+.cal-side p{margin:0;color:var(--fg-3);font-size:12px}
+.fld{width:100%;box-sizing:border-box;border:1px solid var(--line-strong);border-radius:6px;background:var(--field);padding:5px 8px;font-size:13px;outline:none}
+.fld:focus{border-color:var(--accent);box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 25%,transparent)}
+@media (max-width:620px){.cal-side{display:none}}
+
+/* ---------- Aktivitätsanzeige ---------- */
+.act{flex:1;display:flex;flex-direction:column;min-width:0}
+.act-t{flex:1;overflow:auto}
+.act table{width:100%;border-collapse:collapse;font-size:12.5px;font-variant-numeric:tabular-nums}
+.act th{position:sticky;top:0;background:var(--win-bar);text-align:left;font-weight:600;color:var(--fg-2);padding:5px 10px;border-bottom:1px solid var(--line);white-space:nowrap}
+.act td{padding:3px 10px;white-space:nowrap}
+.act th.r,.act td.r{text-align:right}
+.act tr:nth-child(even) td{background:var(--hover)}
+.act tr.sel td{background:var(--accent);color:var(--on-accent)}
+.act-f{flex:none;display:flex;align-items:center;gap:18px;border-top:1px solid var(--line);padding:10px 14px;background:var(--win-bar);font-size:12px;font-variant-numeric:tabular-nums}
+.act-f canvas{flex:1;min-width:0;height:54px;border-radius:6px;background:var(--win)}
+.act-f dl{margin:0;display:grid;grid-template-columns:auto auto;gap:2px 10px}
+.act-f dt{color:var(--fg-2)}.act-f dd{margin:0;text-align:right;font-weight:600}
+.act-msg{font-size:12px;color:var(--fg-2);margin-right:6px}
+
+/* ---------- Systemeinstellungen ---------- */
+.st{display:flex;flex:1;min-width:0}
+.st .side{width:200px}
+.st-user{display:flex;align-items:center;gap:10px;padding:6px 8px 12px;border-bottom:1px solid var(--line);margin-bottom:6px}
+.st-user .avatar{width:38px;height:38px;font-size:16px;box-shadow:none}
+.st-user b{display:block;font-size:13px}.st-user small{color:var(--fg-2);font-size:11.5px}
+.st-main{flex:1;min-width:0;overflow:auto;padding:18px 24px 28px;display:flex;flex-direction:column;gap:18px}
+.st-main h2{margin:0;font-size:19px;font-weight:700}
+.grp{background:var(--win-side);border-radius:10px;border:1px solid var(--line)}
+.row{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:10px 14px;min-height:26px}
+.row+.row{border-top:1px solid var(--line)}
+.row span{color:var(--fg-2)}
+.row .fld{max-width:220px}
+.hero{display:flex;flex-direction:column;align-items:center;gap:6px;padding:10px 0 4px;text-align:center}
+.hero svg{width:84px;height:84px}
+.hero h1{margin:4px 0 0;font-size:26px;letter-spacing:-.01em}
+.hero p{margin:0;color:var(--fg-2)}
+.opts{display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:12px}
+.opt{border:0;background:none;display:flex;flex-direction:column;align-items:center;gap:6px;padding:0;font-size:12.5px}
+.opt .pv{width:100%;aspect-ratio:16/10;border-radius:8px;box-shadow:0 0 0 1px var(--line-strong);overflow:hidden;position:relative}
+.opt.on .pv{box-shadow:0 0 0 3px var(--accent)}
+.opt canvas{width:100%;height:100%;display:block}
+.pv-l{background:linear-gradient(135deg,#d8cdf7,#f6dbe9)}.pv-d{background:linear-gradient(135deg,#1b1330,#3b1840)}.pv-a{background:linear-gradient(135deg,#d8cdf7 50%,#1b1330 50%)}
+.pv i{position:absolute;left:14%;top:22%;width:58%;height:52%;border-radius:5px}
+.pv-l i{background:#fbfafd}.pv-d i{background:#2b2833}.pv-a i{background:linear-gradient(135deg,#fbfafd 50%,#2b2833 50%)}
+.sw-row{display:flex;gap:10px;flex-wrap:wrap}
+.swatch{width:22px;height:22px;border-radius:50%;border:0;padding:0;box-shadow:inset 0 0 0 1px rgba(0,0,0,.15)}
+.swatch.on{box-shadow:0 0 0 2px var(--win),0 0 0 4px var(--fg-3)}
+.tgl{appearance:none;-webkit-appearance:none;width:34px;height:20px;border-radius:10px;background:var(--line-strong);position:relative;margin:0;flex:none;transition:background .15s}
+.tgl::after{content:"";position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.3);transition:transform .15s}
+.tgl:checked{background:var(--accent)}
+.tgl:checked::after{transform:translateX(14px)}
+input[type=range]{accent-color:var(--accent);width:180px;max-width:100%}
+.btn{border:0;border-radius:6px;padding:5px 12px;background:var(--hover-strong);font-size:13px}
+.btn:hover{filter:brightness(1.05)}
+.btn.pri{background:var(--accent);color:var(--on-accent)}
+.note{font-size:12px;color:var(--fg-2);margin:0;line-height:1.5;max-width:62ch}
+
+/* ---------- Über ClokeOS ---------- */
+.about{flex:1;display:flex;flex-direction:column;align-items:center;gap:4px;padding:6px 24px 22px;text-align:center}
+.about svg{width:76px;height:76px;margin-bottom:6px}
+.about h1{margin:0;font-size:24px;letter-spacing:-.01em}
+.about .ver{color:var(--fg-2);margin:0 0 12px}
+.about dl{margin:0 0 14px;display:grid;grid-template-columns:auto auto;gap:3px 12px;font-size:12px;text-align:left}
+.about dt{text-align:right;font-weight:600}.about dd{margin:0;color:var(--fg-2)}
+
+/* ---------- dock ---------- */
+#dock{--ds:50px;position:fixed;left:50%;bottom:calc(6px + env(safe-area-inset-bottom,0px));transform:translateX(-50%);z-index:8000;display:flex;align-items:flex-end;gap:5px;height:calc(var(--ds) + 10px);box-sizing:border-box;padding:5px 7px;border-radius:calc(var(--ds) * .36 + 5px);background:var(--glass);backdrop-filter:blur(26px) saturate(1.8);-webkit-backdrop-filter:blur(26px) saturate(1.8);box-shadow:inset 0 0 0 .5px var(--line-strong),0 10px 34px rgba(0,0,0,.2);transition:transform .3s cubic-bezier(.2,.8,.2,1);max-width:calc(100vw - 16px)}
+#dock.hide{transform:translate(-50%,calc(100% + 16px))}
+.dk{position:relative;flex:none;width:var(--ds);height:var(--ds);border:0;padding:0;background:none;transition:width .1s,height .1s}
+.dk svg{width:100%;height:100%}
+.dk .dot{position:absolute;bottom:-4.5px;left:50%;width:4px;height:4px;margin-left:-2px;border-radius:50%;background:var(--fg);opacity:0}
+.dk.run .dot{opacity:.7}
+.dk .tip{position:absolute;bottom:calc(100% + 12px);left:50%;transform:translateX(-50%);background:var(--glass-solid);color:var(--fg);padding:3px 10px;border-radius:6px;font-size:12.5px;white-space:nowrap;box-shadow:var(--pop-shadow);opacity:0;pointer-events:none;transition:opacity .1s}
+.dk:hover .tip{opacity:1}
+.dk.bounce{animation:bounce .55s ease-in-out 2}
+@keyframes bounce{50%{transform:translateY(-18px)}}
+.dk-sep{width:1px;align-self:stretch;margin:2px 3px;background:var(--line-strong);flex:none}
+@media (max-width:600px){#dock{gap:3px;padding:5px}}
+
+/* ---------- launchpad ---------- */
+#launchpad{position:fixed;inset:0;z-index:8500;background:rgba(20,12,36,.35);backdrop-filter:blur(36px) saturate(1.4);-webkit-backdrop-filter:blur(36px) saturate(1.4);display:flex;flex-direction:column;align-items:center;padding:calc(48px + env(safe-area-inset-top,0px)) max(16px,env(safe-area-inset-right,0px)) 120px max(16px,env(safe-area-inset-left,0px));animation:lpIn .22s ease-out;overflow:auto}
+@keyframes lpIn{from{opacity:0;transform:scale(1.06)}}
+#lp-q{width:240px;max-width:100%;height:28px;border-radius:8px;border:0;background:rgba(255,255,255,.2);color:#fff;text-align:center;outline:none;box-shadow:inset 0 0 0 .5px rgba(255,255,255,.35);margin-bottom:44px}
+#lp-q::placeholder{color:rgba(255,255,255,.7)}
+.lp-g{display:grid;grid-template-columns:repeat(auto-fill,minmax(110px,1fr));gap:28px 18px;width:min(900px,100%)}
+.lp-g button{border:0;background:none;display:flex;flex-direction:column;align-items:center;gap:8px;color:#fff;font-size:13px;text-shadow:0 1px 4px rgba(0,0,0,.4)}
+.lp-g button svg{width:76px;height:76px;transition:transform .15s}
+.lp-g button:hover svg{transform:scale(1.06)}
+
+/* ---------- spotlight ---------- */
+#spot{position:fixed;z-index:9600;top:22vh;left:50%;transform:translateX(-50%);width:min(620px,calc(100vw - 32px));border-radius:14px;background:var(--glass-solid);backdrop-filter:blur(36px) saturate(1.6);-webkit-backdrop-filter:blur(36px) saturate(1.6);box-shadow:var(--pop-shadow);overflow:hidden}
+.sp-in{display:flex;align-items:center;gap:10px;padding:0 16px;height:54px}
+.sp-in svg{width:22px;height:22px;color:var(--fg-2);flex:none}
+#sp-q{flex:1;min-width:0;border:0;background:none;outline:none;font-size:22px;color:var(--fg)}
+#sp-r{border-top:1px solid var(--line);padding:6px;max-height:50vh;overflow:auto}
+#sp-r:empty{display:none}
+.sp-h{font-size:11px;font-weight:700;color:var(--fg-3);padding:6px 10px 3px}
+.sp-it{display:flex;align-items:center;gap:10px;width:100%;border:0;background:none;border-radius:8px;padding:5px 10px;text-align:left}
+.sp-it svg{width:28px;height:28px;flex:none}
+.sp-it b{font-weight:500;font-size:14px}
+.sp-it small{color:var(--fg-3);font-size:11.5px;margin-left:auto;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.sp-it.on{background:var(--accent);color:var(--on-accent)}
+.sp-it.on small{color:inherit;opacity:.8}
+
+/* ---------- control center ---------- */
+.cc{width:300px;padding:10px;display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.cc-t{background:var(--hover);border-radius:12px;padding:10px;display:flex;flex-direction:column;gap:8px;box-shadow:inset 0 0 0 .5px var(--line)}
+.cc-w{grid-column:span 2}
+.cc-t label{font-size:12px;font-weight:600}
+.cc-b{display:flex;align-items:center;gap:9px;border:0;background:none;padding:0;text-align:left;font-size:12.5px}
+.cc-b i{width:28px;height:28px;border-radius:50%;display:grid;place-items:center;background:var(--hover-strong);flex:none}
+.cc-b i svg{width:15px;height:15px}
+.cc-b.on i{background:var(--accent);color:var(--on-accent)}
+.cc-b small{display:block;color:var(--fg-2);font-size:11px}
+.cc-t input[type=range]{width:100%}
+
+/* ---------- notifications ---------- */
+#notifs{position:fixed;top:34px;right:max(10px,env(safe-area-inset-right,0px));z-index:9400;display:flex;flex-direction:column;gap:8px;width:min(340px,calc(100vw - 20px));pointer-events:none}
+.nf{pointer-events:auto;display:flex;gap:10px;align-items:flex-start;padding:11px 12px;border-radius:14px;background:var(--glass-solid);backdrop-filter:blur(30px);-webkit-backdrop-filter:blur(30px);box-shadow:var(--pop-shadow);animation:nfIn .35s cubic-bezier(.2,.8,.2,1)}
+.nf svg{width:34px;height:34px;flex:none}
+.nf b{display:block;font-size:13px}
+.nf p{margin:1px 0 0;font-size:12.5px;color:var(--fg-2)}
+.nf.out{transition:opacity .3s,transform .3s;opacity:0;transform:translateX(30px)}
+@keyframes nfIn{from{opacity:0;transform:translateX(40px)}}
+
+#svgdefs{position:absolute;width:0;height:0;overflow:hidden}
+
+/* ================= Liquid Glass layer ================= */
+/* glass = translucent tint + heavy blur + specular rim (inset highlights + gradient ring) */
+.win,#dock,.pop,#spot,.nf,#launchpad #lp-q,.lg-field{
+  --rim-shadow:inset 0 1px 0 var(--rim),inset 0 -1px 0 var(--rim-low),inset 0 0 0 .5px var(--rim-low);
+}
+.win::before,#dock::before,.pop::before,#spot::before,.nf::before{
+  content:"";position:absolute;inset:0;border-radius:inherit;padding:1px;pointer-events:none;z-index:20;
+  background:linear-gradient(140deg,var(--rim) 0%,rgba(255,255,255,0) 32%,rgba(255,255,255,0) 68%,var(--rim-low) 100%);
+  -webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);-webkit-mask-composite:xor;mask-composite:exclude;
+}
+.nf{position:relative}
+.win{background:var(--win);backdrop-filter:blur(44px) saturate(1.9);-webkit-backdrop-filter:blur(44px) saturate(1.9);border-radius:13px;box-shadow:var(--rim-shadow),0 0 0 .5px var(--edge),0 28px 70px rgba(10,5,30,.32)}
+.win:not(.active){box-shadow:var(--rim-shadow),0 0 0 .5px var(--edge),0 14px 36px rgba(10,5,30,.2)}
+.titlebar{height:42px;background:transparent;border-bottom:0;gap:12px}
+.fd .side,.st .side,.nt-side,.cal-side{background:var(--win-side);border-color:var(--line)}
+.fmain,.nt-ed{background:transparent}
+.status{background:transparent}
+.pill{display:flex;align-items:center;gap:1px;padding:2px;border-radius:999px;background:var(--pill);box-shadow:var(--rim-shadow),0 1px 4px rgba(0,0,0,.08)}
+.pill .tbb{border-radius:999px;min-width:30px}
+.tb-extra.tb-right{gap:8px}
+.win.dark-chrome{--rim:rgba(255,255,255,.28);--rim-low:rgba(255,255,255,.08)}
+.win.dark-chrome,.win.dark-chrome .titlebar{background:transparent}
+.win.dark-chrome{background:rgba(22,20,28,min(.95,calc(var(--glass-o) + .4)))}
+.term{background:transparent}
+.calc{background:transparent}
+.win.calc-win .titlebar{background:transparent}
+.calc-k button{background:rgba(255,255,255,.16);box-shadow:inset 0 1px 0 rgba(255,255,255,.22);backdrop-filter:blur(6px)}
+.calc-k .fn{background:rgba(255,255,255,.55);color:#1d1b20}
+.calc-k .op{background:#f59e2b;box-shadow:inset 0 1px 0 rgba(255,255,255,.4)}
+.act th{background:var(--win)}
+.act-f{background:transparent}
+.grp{background:var(--pill);border:0;box-shadow:var(--rim-shadow),0 0 0 .5px var(--edge)}
+.btn{background:var(--pill);box-shadow:var(--rim-shadow),0 0 0 .5px var(--edge);border-radius:999px;padding:5px 14px}
+.btn.pri{background:var(--accent);color:var(--on-accent);box-shadow:inset 0 1px 0 rgba(255,255,255,.4)}
+.fld{background:var(--field);border-radius:8px}
+
+#menubar{background:transparent;box-shadow:none;backdrop-filter:none;-webkit-backdrop-filter:none;height:28px;text-shadow:var(--menubar-shadow)}
+.mb{height:22px;border-radius:999px;padding:0 10px}
+.mb:hover,.mb.open{background:var(--pill);box-shadow:var(--rim-shadow);text-shadow:none}
+
+#dock{background:var(--glass);backdrop-filter:blur(18px) saturate(1.9) brightness(1.04);-webkit-backdrop-filter:blur(18px) saturate(1.9) brightness(1.04);border-radius:calc(var(--ds) * .42 + 6px);box-shadow:var(--rim-shadow),0 0 0 .5px var(--edge),0 14px 40px rgba(10,5,30,.25);padding:6px 8px;height:calc(var(--ds) + 12px)}
+.refract #dock{backdrop-filter:url(#lg-refract) blur(5px) saturate(1.9) brightness(1.04)}
+.dk .tip{border-radius:999px;background:var(--glass-solid);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);box-shadow:var(--rim-shadow),var(--pop-shadow)}
+.dk .dot{background:var(--fg);bottom:-5px}
+
+.pop{background:var(--glass-solid);border-radius:14px;padding:6px;backdrop-filter:blur(40px) saturate(1.9);-webkit-backdrop-filter:blur(40px) saturate(1.9);box-shadow:var(--rim-shadow),0 0 0 .5px var(--edge),var(--pop-shadow)}
+.pop .mi{border-radius:8px;padding:3px 12px}
+.cc{width:310px}
+.cc-t{background:var(--pill);border-radius:18px;box-shadow:var(--rim-shadow)}
+#spot{border-radius:26px;background:var(--glass-solid);box-shadow:var(--rim-shadow),0 0 0 .5px var(--edge),var(--pop-shadow)}
+.sp-in{height:56px;padding:0 20px}
+.sp-it{border-radius:12px}
+.nf{border-radius:18px;background:var(--glass-solid);box-shadow:var(--rim-shadow),0 0 0 .5px var(--edge),var(--pop-shadow)}
+#launchpad{background:rgba(20,14,36,.22)}
+#lp-q{border-radius:999px;background:rgba(255,255,255,.18);box-shadow:var(--rim-shadow)}
+.lg-field{background:rgba(255,255,255,.18);box-shadow:var(--rim-shadow)}
+#login{background:rgba(10,6,20,.08);backdrop-filter:blur(18px) saturate(1.4);-webkit-backdrop-filter:blur(18px) saturate(1.4)}
+.item.sel .ic{background:var(--pill);box-shadow:var(--rim-shadow)}
+
+/* ---------- Search (browser) ---------- */
+.win.browser .wtitle{display:none}
+.win.browser .tb-extra{flex:1;gap:10px}
+.addr{flex:1;min-width:0;max-width:560px;margin:0 auto;height:30px;border:0;border-radius:999px;background:var(--pill);box-shadow:var(--rim-shadow),0 0 0 .5px var(--edge);text-align:center;padding:0 16px;font-size:13px;outline:none;color:var(--fg)}
+.addr:focus{text-align:left;box-shadow:var(--rim-shadow),0 0 0 2px var(--accent)}
+.addr::placeholder{color:var(--fg-3)}
+.br{flex:1;display:flex;flex-direction:column;min-width:0}
+.br-tabs{display:flex;gap:6px;padding:0 10px 8px;overflow-x:auto;flex:none}
+.br-tab{flex:1 1 0;min-width:96px;max-width:240px;display:flex;align-items:center;gap:6px;height:28px;padding:0 4px 0 12px;border:0;border-radius:999px;background:transparent;font-size:12px;color:var(--fg-2)}
+.br-tab:hover{background:var(--hover)}
+.br-tab.on{background:var(--pill);color:var(--fg);box-shadow:var(--rim-shadow),0 0 0 .5px var(--edge)}
+.br-tab span{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:left}
+.br-tab i{width:18px;height:18px;border-radius:50%;display:grid;place-items:center;font-style:normal;font-size:14px;line-height:1;opacity:.6}
+.br-tab i:hover{background:var(--hover-strong);opacity:1}
+.br-view{flex:1;overflow:auto;background:var(--page);border-top:.5px solid var(--line);user-select:text;-webkit-user-select:text}
+.br-view a{color:var(--accent);text-decoration:none;cursor:pointer}
+.br-view a:hover{text-decoration:underline}
+.ws{min-height:100%;display:flex;flex-direction:column;align-items:center;padding:56px 20px 40px;box-sizing:border-box;gap:26px;background:radial-gradient(120% 70% at 50% 0%,color-mix(in srgb,var(--accent) 12%,transparent),transparent 60%)}
+.ws-brand{display:flex;align-items:center;gap:14px}
+.ws-brand svg{width:58px;height:58px}
+.ws-brand b{font-size:44px;font-weight:700;letter-spacing:-.03em}
+.ws-form{width:min(560px,100%);display:flex;align-items:center;gap:10px;height:48px;padding:0 18px;border-radius:999px;background:var(--pill);box-shadow:var(--rim-shadow),0 0 0 .5px var(--edge),0 10px 30px rgba(20,10,50,.1);box-sizing:border-box}
+.ws-form svg{width:18px;height:18px;color:var(--fg-3);flex:none}
+.ws-form input{flex:1;min-width:0;border:0;background:none;outline:none;font-size:16px;color:var(--fg)}
+.ws h3{margin:0 0 10px;font-size:12px;font-weight:700;color:var(--fg-3);letter-spacing:.04em;text-transform:uppercase}
+.ws-sec{width:min(640px,100%)}
+.ws-fav{display:grid;grid-template-columns:repeat(auto-fill,minmax(92px,1fr));gap:12px}
+.ws-fav a{display:flex;flex-direction:column;align-items:center;gap:7px;padding:10px 4px;border-radius:14px;color:var(--fg)!important;font-size:12px;text-align:center;text-decoration:none!important}
+.ws-fav a:hover{background:var(--hover)}
+.ws-fav .fv{width:54px;height:54px;border-radius:14px;display:grid;place-items:center;font-size:22px;font-weight:700;color:#fff;box-shadow:inset 0 1px 0 rgba(255,255,255,.45),0 4px 12px rgba(0,0,0,.12)}
+.ws-fav small{color:var(--fg-3);font-size:10.5px;margin-top:-4px}
+.ws-rec{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:2px}
+.ws-rec a{display:flex;justify-content:space-between;gap:12px;padding:6px 10px;border-radius:8px;color:var(--fg)!important;text-decoration:none!important}
+.ws-rec a:hover{background:var(--hover)}
+.ws-rec small{color:var(--fg-3);white-space:nowrap}
+.wp{max-width:720px;margin:0 auto;padding:34px 28px 56px;font-size:15px;line-height:1.65;color:var(--fg)}
+.wp .crumb{font-size:12px;color:var(--fg-3);margin-bottom:6px}
+.wp h1{font-size:32px;line-height:1.15;margin:0 0 14px;letter-spacing:-.02em;text-wrap:balance}
+.wp h2{font-size:19px;margin:28px 0 8px}
+.wp p{margin:0 0 14px;max-width:65ch}
+.wp ul{margin:0 0 14px;padding-left:20px}
+.wp code,.wp kbd{font-family:var(--font-mono);font-size:13px;background:var(--hover-strong);padding:1px 6px;border-radius:5px}
+.wp table{border-collapse:collapse;font-size:13.5px;margin:0 0 16px;font-variant-numeric:tabular-nums}
+.wp th{text-align:left;padding:5px 18px 5px 0;color:var(--fg-2);font-weight:600;vertical-align:top}
+.wp td{padding:5px 0}
+.wp .lead{font-size:17px;color:var(--fg-2)}
+.wp pre{font:13px/1.55 var(--font-mono);background:var(--hover);padding:16px;border-radius:10px;white-space:pre-wrap;word-break:break-word}
+.wp mark{background:color-mix(in srgb,var(--accent) 28%,transparent);color:inherit;border-radius:3px;padding:0 2px}
+.res{margin:0 0 22px}
+.res .u{font-size:12px;color:var(--fg-3)}
+.res h3{margin:2px 0 4px;font-size:17px;font-weight:600}
+.res p{margin:0;font-size:14px;color:var(--fg-2)}
+.web-out{display:flex;flex-wrap:wrap;gap:10px;margin-top:6px}
+.wx{min-height:100%;display:grid;place-items:center;padding:40px 20px;box-sizing:border-box}
+.wx-c{max-width:440px;text-align:center;display:flex;flex-direction:column;align-items:center;gap:12px}
+.wx-ic{width:64px;height:64px;border-radius:18px;display:grid;place-items:center;font-size:28px;font-weight:700;color:#fff;background:linear-gradient(135deg,#5aa8ff,var(--accent))}
+.wx h1{margin:0;font-size:22px;word-break:break-all}
+.wx p{margin:0;color:var(--fg-2);font-size:14px;line-height:1.55}
+.wx a.btn{text-decoration:none!important;color:var(--on-accent)!important;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;box-sizing:border-box}
+</style>
+
+<svg id="svgdefs" aria-hidden="true" focusable="false">
+  <defs>
+    <linearGradient id="g-da" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#8fc2ff"/><stop offset="1" stop-color="#5145e3"/></linearGradient>
+    <linearGradient id="g-pr" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#4c4566"/><stop offset="1" stop-color="#1c1928"/></linearGradient>
+    <linearGradient id="g-te" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#3a3641"/><stop offset="1" stop-color="#141217"/></linearGradient>
+    <linearGradient id="g-no" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fffdf7"/><stop offset="1" stop-color="#f1e9d2"/></linearGradient>
+    <linearGradient id="g-re" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#46424d"/><stop offset="1" stop-color="#1f1d23"/></linearGradient>
+    <linearGradient id="g-ka" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ffffff"/><stop offset="1" stop-color="#ece9f1"/></linearGradient>
+    <linearGradient id="g-ak" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#2a2731"/><stop offset="1" stop-color="#101014"/></linearGradient>
+    <linearGradient id="g-ei" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#e2dfe8"/><stop offset="1" stop-color="#8e8a99"/></linearGradient>
+    <linearGradient id="g-hd" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#f1eff5"/><stop offset="1" stop-color="#b9b5c4"/></linearGradient>
+    <linearGradient id="g-fo" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#a5ccff"/><stop offset="1" stop-color="#6a84f2"/></linearGradient>
+    <linearGradient id="g-fo2" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#7d9ff0"/><stop offset="1" stop-color="#4f5fd6"/></linearGradient>
+    <linearGradient id="g-logo" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#b8a3ff"/><stop offset=".55" stop-color="#7650f5"/><stop offset="1" stop-color="#3b1d9c"/></linearGradient>
+    <linearGradient id="g-bin" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ffffff" stop-opacity=".85"/><stop offset="1" stop-color="#d9d5e2" stop-opacity=".7"/></linearGradient>
+    <linearGradient id="g-fu" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#55545b"/><stop offset="1" stop-color="#303035"/></linearGradient>
+    <linearGradient id="g-se" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#9be6ff"/><stop offset=".55" stop-color="#3f8cf5"/><stop offset="1" stop-color="#2546c9"/></linearGradient>
+    <linearGradient id="g-gloss" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fff" stop-opacity=".42"/><stop offset=".45" stop-color="#fff" stop-opacity=".06"/><stop offset="1" stop-color="#fff" stop-opacity="0"/></linearGradient>
+    <linearGradient id="g-rim" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#fff" stop-opacity=".85"/><stop offset=".4" stop-color="#fff" stop-opacity=".1"/><stop offset=".7" stop-color="#fff" stop-opacity=".05"/><stop offset="1" stop-color="#fff" stop-opacity=".45"/></linearGradient>
+    <clipPath id="c-lens"><circle cx="28" cy="28" r="10.5"/></clipPath>
+    <filter id="lg-refract" x="0" y="0" width="100" height="100" filterUnits="userSpaceOnUse" primitiveUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feImage id="lg-map" x="0" y="0" width="100" height="100" preserveAspectRatio="none" result="map"/>
+      <feDisplacementMap in="SourceGraphic" in2="map" scale="36" xChannelSelector="R" yChannelSelector="G"/>
+    </filter>
+  </defs>
+</svg>
+
+<canvas id="wall" aria-hidden="true"></canvas>
+
+<div id="boot" class="screen">
+  <div class="boot-c">
+    <svg class="boot-logo logo" viewBox="0 0 64 64" aria-label="ClokeOS"></svg>
+    <div class="bar"><i id="boot-bar"></i></div>
+  </div>
+  <pre id="verbose" hidden></pre>
+  <p class="boot-hint">Taste V: ausführlicher Start · Klicken zum Überspringen</p>
+</div>
+
+<div id="login" class="screen" hidden>
+  <div class="lg-time"><div id="lg-date"></div><div id="lg-clock"></div></div>
+  <form class="lg-user" id="lg-form" autocomplete="off">
+    <div class="avatar" id="lg-av"></div>
+    <div class="lg-name" id="lg-name"></div>
+    <div class="lg-field">
+      <input id="lg-pw" type="password" placeholder="Passwort eingeben" aria-label="Passwort">
+      <button type="submit" aria-label="Anmelden"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8h10M9 4l4 4-4 4"/></svg></button>
+    </div>
+    <p class="lg-hint">Demo-Konto: Enter genügt, ein Passwort ist nicht nötig.</p>
+  </form>
+  <div class="lg-power">
+    <button data-p="sleep"><span><svg width="16" height="16" viewBox="0 0 16 16" fill="#fff"><path d="M9.5 1.5a6.5 6.5 0 1 0 5 10.6A6 6 0 0 1 9.5 1.5z"/></svg></span>Ruhezustand</button>
+    <button data-p="restart"><span><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round"><path d="M13 8a5 5 0 1 1-1.5-3.6M13 2v3h-3"/></svg></span>Neustart</button>
+    <button data-p="off"><span><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round"><path d="M8 1.5v6M4.4 3.8a5.5 5.5 0 1 0 7.2 0"/></svg></span>Ausschalten</button>
+  </div>
+</div>
+
+<div id="power" class="screen" hidden>
+  <p id="power-msg">ClokeOS wurde ausgeschaltet.</p>
+  <button id="power-btn" aria-label="Einschalten"><svg width="22" height="22" viewBox="0 0 16 16" fill="none" stroke="#fff" stroke-width="1.6" stroke-linecap="round"><path d="M8 1.5v6M4.4 3.8a5.5 5.5 0 1 0 7.2 0"/></svg></button>
+</div>
+
+<div id="desk" hidden>
+  <div id="menubar">
+    <button class="mb mb-logo" id="mb-logo" aria-label="ClokeOS-Menü"><svg class="logo" viewBox="0 0 64 64"></svg></button>
+    <button class="mb mb-app" id="mb-app">Fundus</button>
+    <div id="mb-menus"></div>
+    <div class="mb-right">
+      <button class="mb" id="mb-batt" aria-label="Batterie"><span id="mb-batt-txt">84 %</span><svg viewBox="0 0 24 16" fill="none"><rect x="1" y="3" width="19" height="10" rx="3" stroke="currentColor" stroke-width="1.3" opacity=".6"/><rect id="mb-batt-lvl" x="3" y="5" width="13" height="6" rx="1.5" fill="currentColor"/><path d="M22 6.5v3" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" opacity=".6"/></svg></button>
+      <button class="mb" id="mb-wifi" aria-label="WLAN"><svg viewBox="0 0 16 16" fill="currentColor"><path d="M8 13.6l2-2.4a3 3 0 0 0-4 0z"/><path d="M8 7.6a6.4 6.4 0 0 1 4.3 1.7l1.1-1.3a8.1 8.1 0 0 0-10.8 0l1.1 1.3A6.4 6.4 0 0 1 8 7.6z" opacity=".9"/><path d="M8 3.7a10.3 10.3 0 0 1 6.9 2.7L16 5.1A12 12 0 0 0 0 5.1l1.1 1.3A10.3 10.3 0 0 1 8 3.7z" opacity=".9"/></svg></button>
+      <button class="mb" id="mb-spot" aria-label="Suche"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="6.8" cy="6.8" r="4.8"/><path d="M10.5 10.5l4 4"/></svg></button>
+      <button class="mb" id="mb-cc" aria-label="Kontrollzentrum"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="1.5" y="2.5" width="13" height="4.5" rx="2.25"/><circle cx="4.6" cy="4.75" r="1.2" fill="currentColor"/><rect x="1.5" y="9" width="13" height="4.5" rx="2.25"/><circle cx="11.4" cy="11.25" r="1.2" fill="currentColor"/></svg></button>
+      <button class="mb" id="mb-clock"></button>
+    </div>
+  </div>
+  <div id="desk-icons"></div>
+  <div id="windows"></div>
+  <div id="dock" role="toolbar" aria-label="Dock"></div>
+  <div id="notifs" aria-live="polite"></div>
+</div>
+<div id="dim"></div>
+
+<script>
+(() => {
+'use strict';
+const $ = (s, r = document) => r.querySelector(s);
+const $$ = (s, r = document) => [...r.querySelectorAll(s)];
+const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const store = {
+  get(k, d) { try { const v = localStorage.getItem('clokeos.' + k); return v == null ? d : JSON.parse(v); } catch (e) { return d; } },
+  set(k, v) { try { localStorage.setItem('clokeos.' + k, JSON.stringify(v)); } catch (e) {} }
+};
+const reduced = matchMedia('(prefers-reduced-motion: reduce)');
+const darkMQ = matchMedia('(prefers-color-scheme: dark)');
+const root = document.documentElement;
+const hostTheme = root.getAttribute('data-theme');
+
+const OS = { name: 'ClokeOS', version: '2.0', codename: 'Presidio', build: '2A17', darwin: '20.5.0', xnu: 'Sun Aug 23 10:54:37 UTC 2026; nixbld:xnu-build/RELEASE_X86_64', arch: 'x86_64' }; // wie der Kernel im echten Image (clokeos-darwin/)
+let bootTime = Date.now();
+
+/* ================= Settings ================= */
+const DEF = { v: 2, glass: 50, theme: 'auto', accent: '#7c5cff', wall: 'bucht', dockSize: 50, magnify: true, autohide: false, user: 'Gast', host: 'ClokeOS', bright: 100, vol: 60, wifi: true, bt: true, focus: false, avatar: '#7c5cff' };
+const RAW_S = store.get('settings', {});
+const S = Object.assign({}, DEF, RAW_S);
+const saveS = () => store.set('settings', S);
+const ACCENTS = [['#7c5cff', 'Violett'], ['#2f7bf6', 'Blau'], ['#d9407a', 'Magenta'], ['#ef8a1f', 'Orange'], ['#2a9d68', 'Grün'], ['#8a8696', 'Graphit']];
+
+/* ================= Logo ================= */
+const LOGO_D = 'M32 3C23.5 3 17.6 10 16.8 19.5C16.1 27.5 13.6 35 9.6 42.4C7 47.3 5 52.6 3.6 58.4C8.2 56.2 11.6 57 14.4 60C18 56.6 21.4 56.6 24.6 60C27.2 57.2 29.6 56.4 32 58.6C34.4 56.4 36.8 57.2 39.4 60C42.6 56.6 46 56.6 49.6 60C52.4 57 55.8 56.2 60.4 58.4C59 52.6 57 47.3 54.4 42.4C50.4 35 47.9 27.5 47.2 19.5C46.4 10 40.5 3 32 3Z'
+  + 'M32 11.5C26.9 11.5 23.2 15.8 23.2 21.4C23.2 26.6 26.8 30.9 32 33.2C37.2 30.9 40.8 26.6 40.8 21.4C40.8 15.8 37.1 11.5 32 11.5Z'
+  + 'M30.1 37.4a1.9 1.9 0 1 0 3.8 0a1.9 1.9 0 1 0 -3.8 0Z'
+  + 'M31.5 41.5L32.5 41.5L32.2 55.2L31.8 55.2Z'
+  + 'M22.6 44.2L23.4 44.6L20.4 55.6L19.8 55.3Z'
+  + 'M41.4 44.2L40.6 44.6L43.6 55.6L44.2 55.3Z';
+const logoPath = fill => `<path fill="${fill}" fill-rule="evenodd" d="${LOGO_D}"/>`;
+$$('svg.logo').forEach(s => { s.innerHTML = logoPath(s.closest('#boot') ? '#fff' : 'currentColor'); });
+const logoBig = () => `<svg viewBox="0 0 64 64" aria-hidden="true">${logoPath('url(#g-logo)')}</svg>`;
+
+/* ================= Icons ================= */
+const SQ = f => `<rect x="3" y="3" width="58" height="58" rx="14" fill="${f}"/>`;
+const ICON = {
+  dateien: () => `<svg viewBox="0 0 64 64">${SQ('url(#g-fu)')}<rect x="13" y="17" width="38" height="3" rx="1.5" fill="#fff"/><rect x="17" y="23" width="13" height="25" rx="3" fill="#fff"/><rect x="34" y="23" width="13" height="18" rx="3" fill="#b4b2a9"/></svg>`,
+  search: () => `<svg viewBox="0 0 64 64">${SQ('url(#g-se)')}<g clip-path="url(#c-lens)"><rect x="16" y="16" width="24" height="24" fill="#bfe9ff" opacity=".35"/><rect x="16" y="31" width="24" height="10" fill="#1f4fbf" opacity=".45"/><path d="M15 31Q22 22 24.5 21.5V31M24.5 21.5Q28 29 31.5 21.5M31.5 21.5V31M31.5 21.5Q34 22 41 31" fill="none" stroke="#ff7a3d" stroke-width="1.6" stroke-linejoin="round"/><path d="M15 30.5h26" stroke="#ff7a3d" stroke-width="1.6"/></g><circle cx="28" cy="28" r="12.5" fill="none" stroke="#fff" stroke-width="4"/><path d="M37.5 37.5L47 47" stroke="#fff" stroke-width="6.5" stroke-linecap="round"/><path d="M21 22a9 9 0 0 1 6-4" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" opacity=".8"/></svg>`,
+  programme: () => {
+    const c = ['#ff6b6b', '#ffb84d', '#ffe14d', '#6bdc8b', '#4dc3ff', '#7c8cff', '#c27cff', '#ff7cc8', '#e6e2ee'];
+    let r = ''; c.forEach((col, i) => { r += `<rect x="${15 + (i % 3) * 12.5}" y="${15 + Math.floor(i / 3) * 12.5}" width="9" height="9" rx="2.6" fill="${col}"/>`; });
+    return `<svg viewBox="0 0 64 64">${SQ('url(#g-pr)')}${r}</svg>`;
+  },
+  terminal: () => `<svg viewBox="0 0 64 64">${SQ('url(#g-te)')}<path d="M3 17V17a14 14 0 0 1 14-14h30a14 14 0 0 1 14 14v0z" fill="#4a4652"/><path d="M17 27l8 6.5-8 6.5" fill="none" stroke="#d6f7cf" stroke-width="3.6" stroke-linecap="round" stroke-linejoin="round"/><path d="M29 41h13" stroke="#d6f7cf" stroke-width="3.6" stroke-linecap="round"/></svg>`,
+  notizen: () => `<svg viewBox="0 0 64 64">${SQ('url(#g-no)')}<path d="M3 20V17A14 14 0 0 1 17 3h30a14 14 0 0 1 14 14v3z" fill="#ffc83a"/><g stroke="#ddd3b8" stroke-width="1.6"><path d="M10 31h44M10 39h44M10 47h44"/></g><path d="M3 20h58" stroke="#e8b22c" stroke-width="1.2"/></svg>`,
+  rechner: () => {
+    let k = ''; for (let i = 0; i < 6; i++) k += `<circle cx="${19 + (i % 3) * 10.5}" cy="${35 + Math.floor(i / 3) * 10.5}" r="3.8" fill="#77727f"/>`;
+    return `<svg viewBox="0 0 64 64">${SQ('url(#g-re)')}<rect x="12" y="11" width="40" height="13" rx="3.5" fill="#d9f2d9"/><text x="48" y="21.5" text-anchor="end" font-family="ui-monospace,monospace" font-size="9" fill="#2b4a2b">42</text>${k}<circle cx="49" cy="35" r="3.8" fill="#f59e2b"/><circle cx="49" cy="45.5" r="3.8" fill="#f59e2b"/></svg>`;
+  },
+  kalender: () => {
+    const d = new Date(); const m = d.toLocaleDateString('de-DE', { month: 'short' }).replace('.', '').toUpperCase();
+    return `<svg viewBox="0 0 64 64">${SQ('url(#g-ka)')}<text x="32" y="20" text-anchor="middle" font-family="Figtree,system-ui,sans-serif" font-size="10" font-weight="700" fill="#f0473f" letter-spacing=".5">${m}</text><text x="32" y="49" text-anchor="middle" font-family="Figtree,system-ui,sans-serif" font-size="29" font-weight="500" fill="#231f2b">${d.getDate()}</text></svg>`;
+  },
+  aktivitaet: () => `<svg viewBox="0 0 64 64">${SQ('url(#g-ak)')}<g stroke="#2f2c37" stroke-width="1"><path d="M10 22h44M10 32h44M10 42h44M20 14v36M32 14v36M44 14v36"/></g><polyline points="9,44 16,40 22,45 28,29 34,36 40,21 46,28 55,17" fill="none" stroke="#5be38f" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"/></svg>`,
+  einstellungen: () => `<svg viewBox="0 0 64 64">${SQ('url(#g-ei)')}<circle cx="32" cy="32" r="17" fill="none" stroke="#56525f" stroke-width="7" stroke-dasharray="4.4 4.5"/><circle cx="32" cy="32" r="14.5" fill="#56525f"/><circle cx="32" cy="32" r="8.5" fill="#cfcbd6"/><circle cx="32" cy="32" r="3.6" fill="#56525f"/></svg>`,
+  papierkorb: full => `<svg viewBox="0 0 64 64"><path d="M15 17h34l-3.2 39.2a4 4 0 0 1-4 3.8H22.2a4 4 0 0 1-4-3.8z" fill="url(#g-bin)" stroke="rgba(80,70,100,.45)"/>${full ? '<g fill="#f4f1f7" stroke="#b5afc0" stroke-width=".8"><circle cx="26" cy="17" r="6"/><circle cx="36" cy="15.5" r="6.5"/><path d="M40 20l8-9 3 5z"/></g>' : ''}<g stroke="rgba(80,70,100,.35)" stroke-width="1.4"><path d="M25 24l1 30M32 24v30M39 24l-1 30"/></g><rect x="12.5" y="13.5" width="39" height="5.5" rx="2.75" fill="#eeecf2" stroke="rgba(80,70,100,.45)"/></svg>`,
+  info: () => `<svg viewBox="0 0 64 64">${SQ('url(#g-logo)')}<g transform="translate(13 12) scale(.6)">${logoPath('#fff')}</g></svg>`,
+  folder: () => `<svg viewBox="0 0 64 64"><path d="M6 15a4 4 0 0 1 4-4h14l5 5h25a4 4 0 0 1 4 4v30a4 4 0 0 1-4 4H10a4 4 0 0 1-4-4z" fill="url(#g-fo2)"/><path d="M6 23a4 4 0 0 1 4-4h44a4 4 0 0 1 4 4v27a4 4 0 0 1-4 4H10a4 4 0 0 1-4-4z" fill="url(#g-fo)"/></svg>`,
+  file: () => `<svg viewBox="0 0 64 64"><path d="M15 5h23l12 12v40a3 3 0 0 1-3 3H15a3 3 0 0 1-3-3V8a3 3 0 0 1 3-3z" fill="#fff" stroke="#c4bfcf"/><path d="M38 5v9a3 3 0 0 0 3 3h9" fill="#ebe8f1" stroke="#c4bfcf"/><g stroke="#b8b2c3" stroke-width="2" stroke-linecap="round"><path d="M19 28h24M19 34h24M19 40h24M19 46h15"/></g></svg>`,
+  bin: () => `<svg viewBox="0 0 64 64"><path d="M15 5h23l12 12v40a3 3 0 0 1-3 3H15a3 3 0 0 1-3-3V8a3 3 0 0 1 3-3z" fill="#2c2933" stroke="#121016"/><path d="M38 5v9a3 3 0 0 0 3 3h9" fill="#46424e" stroke="#121016"/><text x="31" y="44" text-anchor="middle" font-family="ui-monospace,monospace" font-size="10" fill="#9fe79f">exec</text></svg>`,
+  hd: () => `<svg viewBox="0 0 64 64"><rect x="5" y="17" width="54" height="31" rx="6" fill="url(#g-hd)" stroke="#9f9aab"/><path d="M5 38h54" stroke="#a8a3b4"/><circle cx="51" cy="43" r="1.8" fill="#4fd17f"/><g transform="translate(9 20) scale(.25)" opacity=".55">${logoPath('#5a5566')}</g></svg>`
+};
+const GLOSS = '<rect x="3" y="3" width="58" height="58" rx="14" fill="url(#g-gloss)"/><rect x="3.5" y="3.5" width="57" height="57" rx="13.5" fill="none" stroke="url(#g-rim)" stroke-width="1"/>';
+const icon = (id, arg) => { const s = (ICON[id] || ICON.file)(arg); return s.includes('width="58" height="58" rx="14"') ? s.replace(/<\/svg>$/, GLOSS + '</svg>') : s; };
+const SB_IC = {
+  desk: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="1.5" y="2.5" width="13" height="9" rx="1.5"/><path d="M5.5 14h5M8 11.5V14"/></svg>',
+  doc: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M4 1.5h5l3.5 3.5v9.5H4z"/><path d="M9 1.5V5h3.5"/></svg>',
+  down: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><circle cx="8" cy="8" r="6.5"/><path d="M8 4.5v6M5.5 8.2L8 10.7l2.5-2.5"/></svg>',
+  pic: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="1.5" y="2.5" width="13" height="11" rx="1.5"/><path d="M1.5 11l4-4 3.5 3.5 2-2 3.5 3.5"/></svg>',
+  note: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="2.5" y="1.5" width="11" height="13" rx="1.5"/><path d="M5 5.5h6M5 8h6M5 10.5h4"/></svg>',
+  apps: '<svg viewBox="0 0 16 16" fill="currentColor"><rect x="2" y="2" width="5" height="5" rx="1.2"/><rect x="9" y="2" width="5" height="5" rx="1.2"/><rect x="2" y="9" width="5" height="5" rx="1.2"/><rect x="9" y="9" width="5" height="5" rx="1.2"/></svg>',
+  home: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"><path d="M2 7.5L8 2l6 5.5V14H2z"/><path d="M6.5 14V10h3v4"/></svg>',
+  hd: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="1.5" y="4" width="13" height="8" rx="2"/><circle cx="11.5" cy="9.5" r=".8" fill="currentColor"/></svg>',
+  trash: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="M2.5 4h11M6 4V2.5h4V4M3.8 4l.8 10h6.8l.8-10"/></svg>'
+};
+const chev = d => `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="${d === 'l' ? 'M10 3L5 8l5 5' : 'M6 3l5 5-5 5'}"/></svg>`;
+const plusIc = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M8 3v10M3 8h10"/></svg>';
+const editIc = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><path d="M10.5 2.5l3 3L6 13H3v-3z"/></svg>';
+
+/* ================= Virtual file system ================= */
+const HOME = '/Users/gast';
+const F = c => ({ t: 'f', c, m: Date.now() });
+const D = (ch = {}) => ({ t: 'd', ch, m: Date.now() });
+function defaultFS() {
+  const welcome = `Willkommen bei ClokeOS ${OS.version} „${OS.codename}"
+
+ClokeOS ist eine macOS-ähnliche Oberfläche auf Darwin-Basis.
+Ein paar Dinge zum Ausprobieren:
+
+• Strg + Leertaste öffnet die Suche
+• Rechtsklick auf den Schreibtisch für neue Ordner und Dateien
+• Im Terminal: clokefetch, uname -a, sw_vers, launchctl list
+• Fenster ziehen, an der Ecke vergrößern, gelb = ins Dock
+• Systemeinstellungen: Dunkelmodus, Akzentfarbe, Hintergrund
+
+Alles, was du hier anlegst, bleibt in diesem Browser gespeichert.`;
+  const darwin = `ClokeOS – Darwin-Unterbau
+
+Kernel:     XNU (Darwin ${OS.darwin}), Open Source unter APSL 2.0
+Userland:   Libc, libsystem, dyld, zsh, BSD-Werkzeuge
+Init:       launchd (PID 1)
+Fenster:    CloakServer (eigener Compositor, ersetzt Quartz)
+
+Apples Grafik-Stack (Quartz, AppKit, WindowServer) ist nicht
+Open Source. Eine echte ClokeOS-Installation braucht deshalb einen
+eigenen Fensterserver. Diese Oberfläche ist der Prototyp dafür.
+
+Der vollständige Bauplan steht in der README des Projekts.`;
+  const plist = `<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0">
+<dict>
+  <key>ProductName</key><string>ClokeOS</string>
+  <key>ProductVersion</key><string>${OS.version}</string>
+  <key>ProductBuildVersion</key><string>${OS.build}</string>
+  <key>ProductCodename</key><string>${OS.codename}</string>
+</dict>
+</plist>`;
+  const daemon = `<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.clokeos.cloakserver</string>
+  <key>ProgramArguments</key><array><string>/System/Library/CoreServices/CloakServer</string></array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+</dict>
+</plist>`;
+  const apps = {}; Object.entries(APPS).forEach(([id, a]) => { if (!a.hidden) apps[a.name + '.app'] = D(); });
+  const bins = {}; ['zsh', 'ls', 'cat', 'echo', 'mkdir', 'rm', 'mv', 'cp', 'pwd', 'date', 'ps', 'uname'].forEach(b => bins[b] = F('Mach-O 64-bit executable x86_64'));
+  return D({
+    Applications: D(apps),
+    Library: D({ Fonts: D(), Preferences: D() }),
+    System: D({ Library: D({
+      Kernels: D({ kernel: F('Mach-O 64-bit executable x86_64\nDarwin Kernel Version ' + OS.darwin + '\n' + OS.xnu) }),
+      CoreServices: D({ 'SystemVersion.plist': F(plist), CloakServer: F('Mach-O 64-bit executable x86_64') }),
+      LaunchDaemons: D({ 'com.clokeos.cloakserver.plist': F(daemon) })
+    }) }),
+    Users: D({ gast: D({
+      Desktop: D({ 'Willkommen.txt': F(welcome) }),
+      Dokumente: D({ 'Darwin-Unterbau.txt': F(darwin), 'Projektplan.txt': F('Projektplan ClokeOS\n\n1. XNU in einer VM booten (PureDarwin als Basis) – erledigt\n2. Branding: SystemVersion.plist, Hostname, Anmeldetext – erledigt; Bootlogo fehlt noch\n3. CloakServer: Compositor auf dem Framebuffer\n4. Diese Oberfläche als Shell portieren\n5. Installer-Image bauen') }),
+      Downloads: D(), Bilder: D(), Musik: D(),
+      Notizen: D({
+        'Ideen.txt': F('Ideen für ClokeOS\n\n- Umhang-Animation beim Start\n- Dunkelmodus, der dem Sonnenuntergang folgt\n- Terminal mit eigenem clokefetch\n- Spotlight soll auch rechnen können (Strg + Leertaste, dann 12*7)'),
+        'Einkaufsliste.txt': F('Einkaufsliste\n\nKaffee\nHaferdrink\nÄpfel\nBatterien für die Maus')
+      }),
+      '.Trash': D(),
+      '.zshrc': F('export PS1="%n@%m %1~ %# "\nalias ll="ls -la"\n')
+    }) }),
+    bin: D(bins),
+    etc: D({ hosts: F('127.0.0.1\tlocalhost\n::1\t\tlocalhost'), motd: F('Willkommen bei ClokeOS.'), shells: F('/bin/zsh\n/bin/sh') }),
+    private: D({ var: D(), tmp: D() }),
+    usr: D({ bin: D(), lib: D(), share: D() }),
+    var: D({ log: D({ 'system.log': F('launchd[1]: ClokeOS gestartet') }) }),
+    tmp: D()
+  });
+}
+let FS = null;
+function norm(p, cwd = HOME) {
+  if (p == null || p === '') p = '~';
+  if (p === '~' || p.startsWith('~/')) p = HOME + p.slice(1);
+  if (!p.startsWith('/')) p = cwd.replace(/\/$/, '') + '/' + p;
+  const out = [];
+  for (const s of p.split('/')) { if (!s || s === '.') continue; if (s === '..') out.pop(); else out.push(s); }
+  return '/' + out.join('/');
+}
+function node(p) {
+  let n = FS; if (p === '/') return n;
+  for (const s of p.slice(1).split('/')) { if (!n || n.t !== 'd') return null; n = n.ch[s]; }
+  return n || null;
+}
+const parent = p => p.slice(0, p.lastIndexOf('/')) || '/';
+const base = p => p === '/' ? '/' : p.slice(p.lastIndexOf('/') + 1);
+const join = (a, b) => a === '/' ? '/' + b : a + '/' + b;
+const fsL = new Set(); let fsSaveT = 0, fsLT = 0;
+function changed() {
+  clearTimeout(fsSaveT); fsSaveT = setTimeout(() => store.set('fs', FS), 250);
+  clearTimeout(fsLT); fsLT = setTimeout(() => { fsL.forEach(f => { try { f(); } catch (e) { console.error(e); } }); updateTrash(); }, 30);
+}
+function mk(p, n) {
+  const par = node(parent(p));
+  if (!par || par.t !== 'd') throw 'Ordner nicht gefunden: ' + parent(p);
+  par.ch[base(p)] = n; par.m = Date.now(); changed(); return n;
+}
+function writeFile(p, c, append) {
+  const n = node(p);
+  if (n && n.t === 'd') throw base(p) + ': Ist ein Ordner';
+  if (n) { n.c = append ? n.c + c : c; n.m = Date.now(); changed(); }
+  else mk(p, F(c));
+}
+function rmPath(p) {
+  const par = node(parent(p));
+  if (!par || !par.ch[base(p)]) throw base(p) + ': Datei oder Ordner nicht gefunden';
+  delete par.ch[base(p)]; par.m = Date.now(); changed();
+}
+function mvPath(a, b) {
+  const n = node(a); if (!n) throw base(a) + ': nicht gefunden';
+  if (b === a || b.startsWith(a + '/')) throw 'Ein Ordner kann nicht in sich selbst bewegt werden';
+  const dst = node(parent(b)); if (!dst || dst.t !== 'd') throw 'Zielordner nicht gefunden';
+  delete node(parent(a)).ch[base(a)]; dst.ch[base(b)] = n; n.m = Date.now(); changed();
+}
+function uniq(dir, name) {
+  const d = node(dir); if (!d || !d.ch[name]) return name;
+  const m = name.match(/^(.*?)(\.[^.]+)?$/);
+  for (let i = 2; ; i++) { const c = `${m[1]} ${i}${m[2] || ''}`; if (!d.ch[c]) return c; }
+}
+const TRASH = HOME + '/.Trash';
+function trash(p) { mvPath(p, join(TRASH, uniq(TRASH, base(p)))); }
+function walk(p, n, out, depth = 0) {
+  if (depth > 8) return;
+  for (const [k, v] of Object.entries(n.ch)) {
+    const cp = join(p, k);
+    if (k.startsWith('.')) continue;
+    out.push([cp, v]);
+    if (v.t === 'd' && !k.endsWith('.app')) walk(cp, v, out, depth + 1);
+  }
+}
+const prettyName = p => p === '/' ? 'Cloke HD' : p === HOME ? 'gast' : p === TRASH ? 'Papierkorb' : p === HOME + '/Desktop' ? 'Schreibtisch' : p === '/Applications' ? 'Programme' : base(p);
+const fmtDate = t => new Date(t).toLocaleString('de-DE', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+
+/* ================= Tiny math parser (no eval) ================= */
+function calcExpr(src) {
+  const s = src.replace(/,/g, '.').replace(/×/g, '*').replace(/÷/g, '/').replace(/\s+/g, '');
+  if (!/^[\d.+\-*/()%^]+$/.test(s) || !/\d/.test(s)) return null;
+  let i = 0;
+  const num = () => { const m = s.slice(i).match(/^\d*\.?\d+(?:e[+-]?\d+)?|^\d+\./); if (!m) throw 0; i += m[0].length; return parseFloat(m[0]); };
+  const fac = () => {
+    if (s[i] === '-') { i++; return -fac(); }
+    if (s[i] === '+') { i++; return fac(); }
+    let v; if (s[i] === '(') { i++; v = add(); if (s[i] !== ')') throw 0; i++; } else v = num();
+    if (s[i] === '%') { i++; v /= 100; }
+    if (s[i] === '^') { i++; v = Math.pow(v, fac()); }
+    return v;
+  };
+  const mul = () => { let v = fac(); while (s[i] === '*' || s[i] === '/') { const o = s[i++]; const r = fac(); v = o === '*' ? v * r : v / r; } return v; };
+  const add = () => { let v = mul(); while (s[i] === '+' || s[i] === '-') { const o = s[i++]; const r = mul(); v = o === '+' ? v + r : v - r; } return v; };
+  try { const v = add(); if (i !== s.length || !isFinite(v)) return null; return v; } catch (e) { return null; }
+}
+const fmtNum = v => Number(v.toPrecision(12)).toLocaleString('de-DE', { maximumFractionDigits: 10 });
+
+/* ================= Theme & wallpaper ================= */
+const WALLS = {
+  bucht: { name: 'Goldenes Tor' },
+  velvet: { name: 'Velvet', light: { bg: ['#cdbcff', '#f4d8ea'], f: ['#9a78ff', '#b993ff', '#e79fd2', '#7553e6', '#f2b7da', '#8c63f2', '#d98ccd'] }, dark: { bg: ['#120c25', '#2b1236'], f: ['#3c2190', '#5a2aa0', '#7e2b76', '#26155f', '#9a3d80', '#4a238f', '#6c2470'] } },
+  dusk: { name: 'Dämmerung', light: { bg: ['#ffd6b5', '#ffb2a6'], f: ['#ff9468', '#f0667e', '#ffb874', '#d9557e', '#ffc9a0', '#e8746a', '#f59a8c'] }, dark: { bg: ['#1a0f1d', '#3b1521'], f: ['#7a2539', '#a8343f', '#5c1b3b', '#c45a3b', '#41162f', '#8e2c3d', '#6a1f37'] } },
+  tide: { name: 'Gezeiten', light: { bg: ['#c2e7f3', '#d9dcff'], f: ['#64b6db', '#7d8df0', '#52d2c6', '#6b80e1', '#a6d9f4', '#5aa0e0', '#88b8f0'] }, dark: { bg: ['#06141f', '#0f1739'], f: ['#0f4b6c', '#26348b', '#0d5d5b', '#1b2b6f', '#1f6f8f', '#143d7a', '#0e5470'] } },
+  graphite: { name: 'Graphit', light: { bg: ['#e4e2e8', '#c9c6d0'], f: ['#b4b0bd', '#9d98a8', '#cfccd6', '#8a8597', '#bdb9c6', '#a6a2b0', '#94909f'] }, dark: { bg: ['#121115', '#24222a'], f: ['#2e2c35', '#3a3742', '#26242c', '#45424e', '#302e37', '#3d3a45', '#2a2830'] } }
+};
+const isDark = () => { const a = root.getAttribute('data-theme'); return a ? a === 'dark' : darkMQ.matches; };
+function applyTheme() {
+  if (S.theme === 'auto') { if (hostTheme) root.setAttribute('data-theme', hostTheme); else root.removeAttribute('data-theme'); }
+  else root.setAttribute('data-theme', S.theme);
+  root.style.setProperty('--accent', S.accent);
+  applyGlass();
+  drawMainWall();
+}
+function drawBay(cv, dark) {
+  const W = cv.width, H = cv.height, c = cv.getContext('2d');
+  let seed = 7; const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+  const hz = H * .64, deck = hz - H * .085;
+  c.globalAlpha = 1;
+  // sky
+  let g = c.createLinearGradient(0, 0, 0, hz);
+  if (dark) { g.addColorStop(0, '#0a0e2c'); g.addColorStop(.5, '#2c1f55'); g.addColorStop(.82, '#a34470'); g.addColorStop(1, '#f2955e'); }
+  else { g.addColorStop(0, '#4f8fdc'); g.addColorStop(.55, '#a3cbef'); g.addColorStop(.88, '#f4e0cd'); g.addColorStop(1, '#f9cfa8'); }
+  c.fillStyle = g; c.fillRect(0, 0, W, hz + 2);
+  if (dark) for (let i = 0; i < 220; i++) { c.fillStyle = `rgba(255,255,255,${(rnd() * .7 + .1).toFixed(2)})`; const s = rnd() * 1.6 * (W / 1400) + .5; c.fillRect(rnd() * W, rnd() * hz * .55, s, s); }
+  const sx = W * .8, sy = hz - H * .02;
+  let rg = c.createRadialGradient(sx, sy, 0, sx, sy, H * .6);
+  rg.addColorStop(0, dark ? 'rgba(255,160,100,.6)' : 'rgba(255,244,222,.95)'); rg.addColorStop(.25, dark ? 'rgba(240,110,110,.22)' : 'rgba(255,226,190,.45)'); rg.addColorStop(1, 'rgba(255,200,150,0)');
+  c.fillStyle = rg; c.fillRect(0, 0, W, hz);
+  // headlands and far shore
+  const hill = (x0, x1, h, col, wob) => {
+    c.beginPath(); c.moveTo(x0, hz + 1);
+    for (let x = x0; x <= x1; x += W / 300) { const t = (x - x0) / (x1 - x0); const y = hz - h * Math.pow(Math.sin(Math.PI * Math.min(1, t * 1.15)), .75) * (1 + .07 * Math.sin(t * 19 + wob) + .04 * Math.sin(t * 41 + wob * 2)); c.lineTo(x, y); }
+    c.lineTo(x1, hz + 1); c.closePath(); c.fillStyle = col; c.fill();
+  };
+  hill(-W * .05, W * .5, H * .2, dark ? '#2d2250' : '#9fb0cf', 1);
+  hill(-W * .1, W * .34, H * .14, dark ? '#1d1838' : '#7e93b6', 3);
+  hill(W * .52, W * 1.05, H * .045, dark ? '#2a2048' : '#b5bfd4', 5);
+  for (let i = 0; i < 140; i++) {
+    const x = W * (.55 + rnd() * .45), y = hz - rnd() * H * .03 - 1;
+    c.fillStyle = dark ? `rgba(255,${190 + rnd() * 50 | 0},140,${(.5 + rnd() * .5).toFixed(2)})` : `rgba(255,255,255,${(.35 + rnd() * .4).toFixed(2)})`;
+    c.fillRect(x, y, Math.max(1, W / 900), Math.max(1, H / 600) * (dark ? 1 : 2.5));
+  }
+  // water
+  g = c.createLinearGradient(0, hz, 0, H);
+  if (dark) { g.addColorStop(0, '#4a2c5e'); g.addColorStop(1, '#090b20'); } else { g.addColorStop(0, '#a9c6e0'); g.addColorStop(1, '#2c5b8c'); }
+  c.fillStyle = g; c.fillRect(0, hz, W, H - hz);
+  // bridge
+  const x1 = W * .37, x2 = W * .75, top = hz - H * .44, lw = Math.max(1, W / 1600);
+  const orange = dark ? '#7d2c35' : '#c4432c', orangeD = dark ? '#5a1f2c' : '#9b3020';
+  const quad = (p0, p1, p2, t) => (1 - t) * (1 - t) * p0 + 2 * (1 - t) * t * p1 + t * t * p2;
+  const spans = [
+    [W * .1, deck - H * .004, x1 - W * .08, deck - H * .05, x1, top + H * .02],
+    [x1, top + H * .02, (x1 + x2) / 2, 2 * (deck - H * .012) - (top + H * .02), x2, top + H * .02],
+    [x2, top + H * .02, x2 + W * .1, deck - H * .07, W * 1.08, deck - H * .004]
+  ];
+  c.strokeStyle = orange;
+  spans.forEach(s => {
+    c.lineWidth = lw * .8; c.globalAlpha = .75;
+    const n = Math.round((s[4] - s[0]) / (W / 150));
+    for (let i = 1; i < n; i++) { const t = i / n, x = quad(s[0], s[2], s[4], t), y = quad(s[1], s[3], s[5], t); c.beginPath(); c.moveTo(x, y); c.lineTo(x, deck); c.stroke(); }
+    c.globalAlpha = 1; c.lineWidth = lw * 2.6; c.beginPath(); c.moveTo(s[0], s[1]); c.quadraticCurveTo(s[2], s[3], s[4], s[5]); c.stroke();
+  });
+  const tower = x => {
+    const leg = W * .0085, gap = W * .011, bot = hz + H * .02;
+    c.fillStyle = orange;
+    [-1, 1].forEach(sg => { const lx = x + sg * gap / 2 - (sg < 0 ? leg : 0); c.beginPath(); c.moveTo(lx + leg * .12, top); c.lineTo(lx + leg * .88, top); c.lineTo(lx + leg, bot); c.lineTo(lx, bot); c.closePath(); c.fill(); });
+    c.fillStyle = orangeD;
+    [0, .17, .36, .58].forEach((f, i) => c.fillRect(x - gap / 2, top + (deck - top) * f + (i ? 0 : H * .006), gap, H * (i ? .012 : .02)));
+    c.fillRect(x - gap / 2 - leg, deck - H * .004, gap + leg * 2, H * .01);
+  };
+  tower(x1); tower(x2);
+  c.fillStyle = orangeD; c.fillRect(W * .09, deck, W, H * .012);
+  c.fillStyle = orange; c.fillRect(W * .09, deck - H * .003, W, H * .005);
+  if (dark) {
+    c.fillStyle = 'rgba(255,214,150,.95)';
+    for (let x = W * .1; x < W; x += W / 70) c.fillRect(x, deck - H * .006, Math.max(1.5, W / 900), Math.max(1.5, W / 900));
+    [x1, x2].forEach(x => { c.fillStyle = 'rgba(255,90,80,.95)'; c.beginPath(); c.arc(x, top - H * .004, Math.max(2, W / 700), 0, 7); c.fill(); });
+  }
+  // reflection
+  const step = Math.max(2, Math.round(H / 400));
+  for (let y = hz; y < H; y += step) {
+    const d = y - hz, sy2 = hz - d * 1.05; if (sy2 < 0) break;
+    c.globalAlpha = Math.max(0, .24 - d / (H - hz) * .3);
+    c.drawImage(cv, 0, sy2, W, step, Math.sin(y * .11) * W * .0012 * (1 + d / H * 4), y, W, step);
+  }
+  c.globalAlpha = 1;
+  if (!dark) { const sg = c.createRadialGradient(sx, hz + H * .05, 0, sx, hz + H * .05, H * .25); sg.addColorStop(0, 'rgba(255,240,215,.45)'); sg.addColorStop(1, 'rgba(255,240,215,0)'); c.fillStyle = sg; c.fillRect(0, hz, W, H - hz); }
+  // fog (Karl the Fog)
+  for (let i = 0; i < 9; i++) {
+    const fx = W * (-.1 + i * .14 + rnd() * .05), fy = deck + H * (.01 + rnd() * .06), rx = W * (.16 + rnd() * .12), ry = H * (.035 + rnd() * .03);
+    c.save(); c.translate(fx, fy); c.scale(1, ry / rx);
+    const fg = c.createRadialGradient(0, 0, 0, 0, 0, rx);
+    fg.addColorStop(0, dark ? 'rgba(210,170,230,.22)' : 'rgba(255,255,255,.62)'); fg.addColorStop(1, 'rgba(255,255,255,0)');
+    c.fillStyle = fg; c.beginPath(); c.arc(0, 0, rx, 0, 7); c.fill(); c.restore();
+  }
+  const vg = c.createRadialGradient(W / 2, H * .45, Math.min(W, H) * .3, W / 2, H / 2, Math.max(W, H) * .8);
+  vg.addColorStop(0, 'rgba(0,0,0,0)'); vg.addColorStop(1, dark ? 'rgba(0,0,10,.45)' : 'rgba(20,30,60,.14)');
+  c.fillStyle = vg; c.fillRect(0, 0, W, H);
+}
+function drawWall(cv, key, dark) {
+  if (key === 'bucht' || !WALLS[key]) return drawBay(cv, dark);
+  const W = cv.width, H = cv.height, ctx = cv.getContext('2d');
+  const p = (WALLS[key] || WALLS.velvet)[dark ? 'dark' : 'light'];
+  const g = ctx.createLinearGradient(0, 0, W * .6, H); g.addColorStop(0, p.bg[0]); g.addColorStop(1, p.bg[1]);
+  ctx.globalAlpha = 1; ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+  const n = 7, step = Math.max(2, W / 120);
+  for (let i = 0; i < n; i++) {
+    const y0 = H * (.16 + i * .115), amp = H * (.07 + .025 * Math.sin(i * 1.7)), fr = 1.05 + i * .21, ph = i * 1.37;
+    const yAt = x => y0 + Math.sin(x / W * Math.PI * fr + ph) * amp + Math.sin(x / W * Math.PI * 3.3 + ph * 2) * amp * .3;
+    ctx.beginPath(); ctx.moveTo(0, H);
+    for (let x = 0; x <= W + step; x += step) ctx.lineTo(x, yAt(x));
+    ctx.lineTo(W, H); ctx.closePath();
+    const lg = ctx.createLinearGradient(0, y0 - amp, 0, y0 + H * .5);
+    lg.addColorStop(0, p.f[i % p.f.length]); lg.addColorStop(1, p.bg[1]);
+    ctx.globalAlpha = .55 + i * .05; ctx.fillStyle = lg; ctx.fill();
+    ctx.globalAlpha = dark ? .16 : .38; ctx.strokeStyle = '#fff'; ctx.lineWidth = Math.max(1, W / 1100);
+    ctx.beginPath(); for (let x = 0; x <= W + step; x += step) { const y = yAt(x) + 1; x ? ctx.lineTo(x, y) : ctx.moveTo(x, y); } ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+  const vg = ctx.createRadialGradient(W / 2, H * .42, Math.min(W, H) * .2, W / 2, H / 2, Math.max(W, H) * .78);
+  vg.addColorStop(0, 'rgba(0,0,0,0)'); vg.addColorStop(1, dark ? 'rgba(0,0,0,.45)' : 'rgba(40,20,60,.12)');
+  ctx.fillStyle = vg; ctx.fillRect(0, 0, W, H);
+}
+function drawMainWall() {
+  const cv = $('#wall'); const dpr = Math.min(devicePixelRatio || 1, 2);
+  cv.width = Math.round(innerWidth * dpr); cv.height = Math.round(innerHeight * dpr);
+  drawWall(cv, S.wall, isDark());
+}
+new MutationObserver(() => { drawMainWall(); refreshSettings(); }).observe(root, { attributes: true, attributeFilter: ['data-theme'] });
+darkMQ.addEventListener('change', () => { drawMainWall(); refreshSettings(); });
+function applyGlass() { root.style.setProperty('--glass-o', (.12 + S.glass / 100 * .62).toFixed(3)); }
+/* Liquid-Glass refraction for the dock: a displacement map that bends the backdrop near the rounded edges (Chromium only) */
+let mapT = 0;
+function buildRefractMap() {
+  const d = $('#dock'); if (!d || !root.classList.contains('refract')) return;
+  const w = Math.round(d.offsetWidth), h = Math.round(d.offsetHeight); if (!w || !h) return;
+  const r = parseFloat(getComputedStyle(d).borderTopLeftRadius) || 20, bezel = Math.min(18, h / 2.2);
+  const cv = document.createElement('canvas'); cv.width = w; cv.height = h;
+  const ctx = cv.getContext('2d'), img = ctx.createImageData(w, h), px = img.data;
+  const hw = w / 2, hh = h / 2;
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    const p = (y * w + x) * 4, dx = x + .5 - hw, dy = y + .5 - hh;
+    const qx = Math.abs(dx) - (hw - r), qy = Math.abs(dy) - (hh - r);
+    const ox = Math.max(qx, 0), oy = Math.max(qy, 0), ol = Math.hypot(ox, oy);
+    const dist = ol + Math.min(Math.max(qx, qy), 0) - r;
+    let nx = 0, ny = 0;
+    if (qx > 0 && qy > 0) { nx = ox / (ol || 1); ny = oy / (ol || 1); } else if (qx > qy) nx = 1; else ny = 1;
+    nx *= Math.sign(dx); ny *= Math.sign(dy);
+    const depth = -dist, k = depth < bezel ? Math.pow(1 - Math.max(0, depth) / bezel, 2) : 0;
+    px[p] = 128 - nx * k * 127; px[p + 1] = 128 - ny * k * 127; px[p + 2] = 128; px[p + 3] = 255;
+  }
+  ctx.putImageData(img, 0, 0);
+  const f = $('#lg-refract'), fi = $('#lg-map');
+  f.setAttribute('width', w); f.setAttribute('height', h); fi.setAttribute('width', w); fi.setAttribute('height', h);
+  fi.setAttribute('href', cv.toDataURL());
+}
+function scheduleRefract() { cancelAnimationFrame(mapT); mapT = requestAnimationFrame(buildRefractMap); }
+function setBright() { $('#dim').style.opacity = ((100 - S.bright) / 100 * .7).toFixed(3); }
+
+/* ================= Apps registry ================= */
+const APPS = {
+  dateien: { name: 'Fundus', w: 780, h: 480, multi: true, mount: mountFinder },
+  programme: { name: 'Programme', launch: () => toggleLaunchpad() },
+  search: { name: 'Search', w: 980, h: 640, mount: mountSearch },
+  terminal: { name: 'Terminal', w: 660, h: 410, multi: true, mount: mountTerminal },
+  notizen: { name: 'Notizen', w: 740, h: 470, mount: mountNotes },
+  rechner: { name: 'Rechner', w: 252, h: 400, fixed: true, mount: mountCalc },
+  kalender: { name: 'Kalender', w: 760, h: 520, mount: mountCal },
+  aktivitaet: { name: 'Aktivitätsanzeige', w: 680, h: 460, mount: mountActivity },
+  einstellungen: { name: 'Systemeinstellungen', w: 760, h: 540, mount: mountSettings },
+  info: { name: 'ClokeOS', title: 'Über ClokeOS', w: 380, h: 420, fixed: true, hidden: true, mount: mountAbout }
+};
+const DOCK = ['dateien', 'programme', 'search', 'terminal', 'notizen', 'rechner', 'kalender', 'aktivitaet', 'einstellungen', '|', 'papierkorb'];
+const APP_BY_NAME = n => Object.keys(APPS).find(id => APPS[id].name.toLowerCase() === n.toLowerCase().replace(/\.app$/, ''));
+
+/* ================= Window manager ================= */
+let wins = [], zTop = 10, winSeq = 0, focused = null;
+const pids = {}; let pidSeq = 612;
+function deskArea() {
+  const top = 26 + 6, dockH = S.autohide ? 6 : S.dockSize + 24;
+  return { x: 6, y: top, w: innerWidth - 12, h: innerHeight - top - dockH };
+}
+function openApp(id, arg) {
+  const app = APPS[id]; if (!app) return null;
+  if (app.launch) return app.launch(arg);
+  closeLaunchpad();
+  if (!app.multi) {
+    const ex = wins.find(w => w.app === id);
+    if (ex) { restoreWin(ex); focusWin(ex); if (arg != null && ex.onArg) ex.onArg(arg); return ex; }
+  }
+  const dk = $(`.dk[data-app="${id}"]`);
+  if (dk && !wins.some(w => w.app === id) && !reduced.matches) { dk.classList.remove('bounce'); void dk.offsetWidth; dk.classList.add('bounce'); setTimeout(() => dk.classList.remove('bounce'), 1100); }
+  return createWin(id, arg);
+}
+function createWin(id, arg) {
+  const app = APPS[id], a = deskArea();
+  const narrow = innerWidth < 640;
+  let w = Math.min(app.w, a.w), h = Math.min(app.h, a.h);
+  const n = wins.length % 6;
+  let x = a.x + Math.max(0, (a.w - w) / 2 + (n - 2) * 26), y = a.y + Math.max(0, (a.h - h) / 2 - 30 + n * 22);
+  if (narrow && !app.fixed) { x = a.x; y = a.y; w = a.w; h = a.h; }
+  x = Math.min(x, a.x + a.w - w); y = Math.min(y, a.y + a.h - h);
+  const el = document.createElement('div');
+  el.className = 'win opening' + (id === 'terminal' ? ' dark-chrome' : '') + (id === 'rechner' ? ' dark-chrome calc-win' : '');
+  Object.assign(el.style, { left: x + 'px', top: y + 'px', width: w + 'px', height: h + 'px' });
+  el.setAttribute('role', 'dialog');
+  el.innerHTML = `<div class="titlebar"><div class="lights"><button class="l-close" aria-label="Schließen">×</button><button class="l-min" aria-label="Minimieren">–</button><button class="l-zoom" aria-label="Zoomen"${app.fixed ? ' disabled' : ''}>+</button></div><div class="wtitle"></div><div class="tb-extra"></div></div><div class="wbody"></div>${app.fixed ? '' : '<div class="rz-r"></div><div class="rz-b"></div><div class="rz"></div>'}`;
+  const win = {
+    id: ++winSeq, app: id, el, body: $('.wbody', el), extra: $('.tb-extra', el), minimized: false, prev: null,
+    setTitle(t) { $('.wtitle', el).textContent = t; el.setAttribute('aria-label', t); this.title = t; },
+    onClose: null, onArg: null, fileMenu: null
+  };
+  win.setTitle(app.title || app.name);
+  if (!pids[id]) pids[id] = pidSeq += 7 + Math.floor(Math.random() * 30);
+  el.addEventListener('pointerdown', () => focusWin(win), true);
+  $('.l-close', el).onclick = e => { e.stopPropagation(); closeWin(win); };
+  $('.l-min', el).onclick = e => { e.stopPropagation(); minimizeWin(win); };
+  $('.l-zoom', el).onclick = e => { e.stopPropagation(); zoomWin(win); };
+  const tb = $('.titlebar', el);
+  tb.addEventListener('pointerdown', e => {
+    if (e.button !== 0 || e.target.closest('button,input')) return;
+    const sx = e.clientX, sy = e.clientY, ox = el.offsetLeft, oy = el.offsetTop;
+    tb.setPointerCapture(e.pointerId);
+    const mv = ev => {
+      const nx = ox + ev.clientX - sx, ny = Math.max(26, oy + ev.clientY - sy);
+      el.style.left = Math.min(Math.max(nx, 60 - el.offsetWidth), innerWidth - 60) + 'px';
+      el.style.top = Math.min(ny, innerHeight - 50) + 'px';
+      win.prev = null;
+    };
+    const up = () => { tb.removeEventListener('pointermove', mv); tb.removeEventListener('pointerup', up); };
+    tb.addEventListener('pointermove', mv); tb.addEventListener('pointerup', up);
+  });
+  tb.addEventListener('dblclick', e => { if (!e.target.closest('button,input') && !app.fixed) zoomWin(win); });
+  $$('.rz,.rz-r,.rz-b', el).forEach(h => h.addEventListener('pointerdown', e => {
+    e.preventDefault(); h.setPointerCapture(e.pointerId);
+    const sx = e.clientX, sy = e.clientY, ow = el.offsetWidth, oh = el.offsetHeight;
+    const dx = !h.classList.contains('rz-b'), dy = !h.classList.contains('rz-r');
+    const mv = ev => {
+      if (dx) el.style.width = Math.max(300, ow + ev.clientX - sx) + 'px';
+      if (dy) el.style.height = Math.max(200, oh + ev.clientY - sy) + 'px';
+      win.prev = null; win.onResize && win.onResize();
+    };
+    const up = () => { h.removeEventListener('pointermove', mv); h.removeEventListener('pointerup', up); };
+    h.addEventListener('pointermove', mv); h.addEventListener('pointerup', up);
+  }));
+  $('#windows').append(el);
+  wins.push(win);
+  app.mount(win, arg);
+  setTimeout(() => el.classList.remove('opening'), 260);
+  focusWin(win); updateDock();
+  return win;
+}
+function focusWin(win) {
+  if (focused === win && win.el.classList.contains('active')) return;
+  wins.forEach(w => w.el.classList.toggle('active', w === win));
+  if (win) { win.el.style.zIndex = ++zTop; }
+  focused = win || null;
+  renderMenubar();
+}
+function topWin() { return wins.filter(w => !w.minimized).sort((a, b) => b.el.style.zIndex - a.el.style.zIndex)[0] || null; }
+function closeWin(win) {
+  if (win.onClose) try { win.onClose(); } catch (e) {}
+  win.el.remove(); wins = wins.filter(w => w !== win);
+  if (!wins.some(w => w.app === win.app)) delete pids[win.app];
+  focused = null; const t = topWin(); if (t) focusWin(t); else { wins.forEach(w => w.el.classList.remove('active')); renderMenubar(); }
+  updateDock();
+}
+function minimizeWin(win) {
+  if (win.minimized) return;
+  const dk = $(`.dk[data-app="${win.app}"]`) || $('#dock');
+  const r = dk.getBoundingClientRect(), wr = win.el.getBoundingClientRect();
+  const tx = r.left + r.width / 2 - (wr.left + wr.width / 2), ty = r.top + r.height / 2 - (wr.top + wr.height / 2);
+  win.el.style.transform = `translate(${tx}px,${ty}px) scale(.08)`;
+  win.el.classList.add('mini'); win.minimized = true;
+  setTimeout(() => { if (win.minimized) win.el.hidden = true; }, 340);
+  focused = null; const t = topWin(); if (t) focusWin(t); else { win.el.classList.remove('active'); renderMenubar(); }
+}
+function restoreWin(win) {
+  if (!win.minimized) return;
+  win.minimized = false; win.el.hidden = false;
+  requestAnimationFrame(() => { win.el.classList.remove('mini'); win.el.style.transform = ''; win.el.style.opacity = ''; });
+}
+function zoomWin(win) {
+  if (APPS[win.app].fixed) return;
+  const el = win.el; el.classList.add('anim');
+  if (win.prev) { Object.assign(el.style, win.prev); win.prev = null; }
+  else {
+    win.prev = { left: el.style.left, top: el.style.top, width: el.style.width, height: el.style.height };
+    const a = deskArea(); Object.assign(el.style, { left: a.x + 'px', top: a.y + 'px', width: a.w + 'px', height: a.h + 'px' });
+  }
+  setTimeout(() => { el.classList.remove('anim'); win.onResize && win.onResize(); }, 300);
+}
+function quitApp(id) { wins.filter(w => w.app === id).forEach(closeWin); }
+
+/* ================= Popover menus ================= */
+let openPop = null, openMbBtn = null;
+function closePop() { if (openPop) { openPop.remove(); openPop = null; } if (openMbBtn) { openMbBtn.classList.remove('open'); openMbBtn = null; } }
+function popMenu(items, x, y, opts = {}) {
+  closePop();
+  const p = document.createElement('div'); p.className = 'pop'; p.setAttribute('role', 'menu');
+  items.forEach(it => {
+    if (it === '-') { p.append(document.createElement('hr')); return; }
+    if (it.head) { const h = document.createElement('div'); h.className = 'mh'; h.textContent = it.head; p.append(h); return; }
+    const b = document.createElement('button'); b.className = 'mi'; b.setAttribute('role', 'menuitem');
+    b.innerHTML = `<span>${it.check != null ? `<span class="ck">${it.check ? '✓' : ''}</span>` : ''}${esc(it.label)}</span>${it.key ? `<kbd>${esc(it.key)}</kbd>` : ''}`;
+    if (it.disabled) b.disabled = true;
+    b.onclick = e => { e.stopPropagation(); closePop(); it.action && it.action(); };
+    p.append(b);
+  });
+  document.body.append(p);
+  const r = p.getBoundingClientRect();
+  p.style.left = Math.max(6, Math.min(x, innerWidth - r.width - 6)) + 'px';
+  p.style.top = Math.max(28, Math.min(y, innerHeight - r.height - 6)) + 'px';
+  openPop = p;
+  if (opts.btn) { openMbBtn = opts.btn; opts.btn.classList.add('open'); }
+  return p;
+}
+document.addEventListener('pointerdown', e => {
+  if (openPop && !openPop.contains(e.target) && !e.target.closest('.mb')) closePop();
+  const cc = $('#cc'); if (cc && !cc.contains(e.target) && !e.target.closest('#mb-cc')) cc.remove();
+  const sp = $('#spot'); if (sp && !sp.contains(e.target) && !e.target.closest('#mb-spot')) closeSpot();
+});
+
+/* ================= Menubar ================= */
+function activeApp() { return focused ? focused.app : 'dateien'; }
+function menusFor(appId) {
+  const app = APPS[appId], w = focused;
+  const fileItems = (w && w.fileMenu ? w.fileMenu() : null) || [
+    { label: appId === 'dateien' ? 'Neues Fundus-Fenster' : 'Neues Fenster', action: () => appId === 'dateien' ? createWin('dateien') : app.multi ? createWin(appId) : openApp(appId) }
+  ];
+  return [
+    ['Ablage', [...fileItems, '-', { label: 'Fenster schließen', disabled: !w, action: () => w && closeWin(w) }]],
+    ['Bearbeiten', [
+      { label: 'Widerrufen', action: () => document.execCommand('undo') },
+      { label: 'Wiederholen', action: () => document.execCommand('redo') }, '-',
+      { label: 'Alles auswählen', action: () => document.execCommand('selectAll') }
+    ]],
+    ['Darstellung', [
+      { label: 'Dunkelmodus', check: isDark(), action: toggleDark },
+      { label: 'Dock automatisch ausblenden', check: S.autohide, action: () => { S.autohide = !S.autohide; saveS(); applyDock(); } }, '-',
+      { label: 'Programme anzeigen', key: 'F4', action: toggleLaunchpad }
+    ]],
+    ['Fenster', [
+      { label: 'Im Dock ablegen', disabled: !w, action: () => w && minimizeWin(w) },
+      { label: 'Zoomen', disabled: !w || app.fixed, action: () => w && zoomWin(w) }, '-',
+      ...(wins.length ? wins.map(x => ({ label: x.title, check: x === w, action: () => { restoreWin(x); focusWin(x); } })) : [{ label: 'Keine Fenster geöffnet', disabled: true }])
+    ]],
+    ['Hilfe', [
+      { label: 'ClokeOS-Hilfe', action: () => openApp('terminal', 'help') },
+      { label: 'Willkommen.txt öffnen', action: () => openPath(HOME + '/Desktop/Willkommen.txt') },
+      { label: 'Darwin-Unterbau', action: () => openPath(HOME + '/Dokumente/Darwin-Unterbau.txt') }
+    ]]
+  ];
+}
+function renderMenubar() {
+  const id = activeApp(), app = APPS[id];
+  $('#mb-app').textContent = app.name;
+  const box = $('#mb-menus'); box.innerHTML = '';
+  menusFor(id).forEach(([label]) => {
+    const b = document.createElement('button'); b.className = 'mb'; b.textContent = label;
+    b.onclick = () => toggleMb(b, () => menusFor(activeApp()).find(m => m[0] === label)[1]);
+    b.onmouseenter = () => { if (openMbBtn && openMbBtn !== b) toggleMb(b, () => menusFor(activeApp()).find(m => m[0] === label)[1]); };
+    box.append(b);
+  });
+}
+function toggleMb(btn, itemsFn) {
+  if (openMbBtn === btn) { closePop(); return; }
+  const r = btn.getBoundingClientRect();
+  popMenu(itemsFn(), r.left, 26, { btn });
+}
+const logoMenu = () => [
+  { label: 'Über ClokeOS', action: () => openApp('info') }, '-',
+  { label: 'Systemeinstellungen …', action: () => openApp('einstellungen') },
+  { label: 'Aktivitätsanzeige', action: () => openApp('aktivitaet') },
+  { label: 'Programme', action: toggleLaunchpad }, '-',
+  { label: 'Ruhezustand', action: () => power('sleep') },
+  { label: 'Neustart …', action: () => power('restart') },
+  { label: 'Ausschalten …', action: () => power('off') }, '-',
+  { label: `„${S.user}" abmelden …`, action: () => power('logout') }
+];
+const appMenu = () => {
+  const id = activeApp(), app = APPS[id];
+  return [
+    { label: id === 'info' ? 'Über ClokeOS' : `Über ${app.name}`, action: () => openApp('info') }, '-',
+    { label: 'Einstellungen …', action: () => openApp('einstellungen') }, '-',
+    { label: `${app.name} ausblenden`, disabled: !wins.some(w => w.app === id), action: () => wins.filter(w => w.app === id).forEach(minimizeWin) },
+    { label: `${app.name} beenden`, disabled: !wins.some(w => w.app === id), action: () => quitApp(id) }
+  ];
+};
+function bindMbButton(b, fn) {
+  b.onclick = () => toggleMb(b, fn);
+  b.onmouseenter = () => { if (openMbBtn && openMbBtn !== b) toggleMb(b, fn); };
+}
+function tickClock() {
+  const d = new Date();
+  const s = d.toLocaleDateString('de-DE', { weekday: 'short', day: 'numeric', month: 'short' }) + '  ' + d.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' });
+  $('#mb-clock').textContent = s;
+  $('#lg-clock').textContent = d.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' });
+  $('#lg-date').textContent = d.toLocaleDateString('de-DE', { weekday: 'long', day: 'numeric', month: 'long' });
+}
+let battLevel = .84;
+function renderBatt() {
+  $('#mb-batt-txt').textContent = Math.round(battLevel * 100) + ' %';
+  $('#mb-batt-lvl').setAttribute('width', (15 * battLevel).toFixed(1));
+}
+try { navigator.getBattery && navigator.getBattery().then(b => { battLevel = b.level; renderBatt(); b.addEventListener('levelchange', () => { battLevel = b.level; renderBatt(); }); }).catch(() => {}); } catch (e) {}
+function renderWifi() { $('#mb-wifi').classList.toggle('off', !S.wifi); }
+
+/* ================= Dock ================= */
+let dockCenters = null;
+function buildDock() {
+  const d = $('#dock'); d.innerHTML = '';
+  DOCK.forEach(id => {
+    if (id === '|') { const s = document.createElement('div'); s.className = 'dk-sep'; d.append(s); return; }
+    const b = document.createElement('button'); b.className = 'dk'; b.dataset.app = id;
+    const name = id === 'papierkorb' ? 'Papierkorb' : APPS[id].name;
+    b.setAttribute('aria-label', name);
+    b.innerHTML = `<span class="dkic">${id === 'papierkorb' ? icon('papierkorb', trashFull()) : icon(id)}</span><span class="dot"></span><span class="tip">${esc(name)}</span>`;
+    b.onclick = () => dockClick(id);
+    b.oncontextmenu = e => {
+      e.preventDefault(); const r = b.getBoundingClientRect();
+      const running = wins.some(w => w.app === id);
+      const items = id === 'papierkorb'
+        ? [{ label: 'Öffnen', action: () => createWin('dateien', TRASH) }, { label: 'Papierkorb entleeren', disabled: !trashFull(), action: emptyTrash }]
+        : [{ head: name }, { label: running ? (APPS[id].multi ? 'Neues Fenster' : 'Anzeigen') : 'Öffnen', action: () => APPS[id].multi && running ? createWin(id) : openApp(id) },
+           ...(running ? ['-', { label: 'Alle ausblenden', action: () => wins.filter(w => w.app === id).forEach(minimizeWin) }, { label: 'Beenden', action: () => quitApp(id) }] : [])];
+      const p = popMenu(items, r.left, 0); const pr = p.getBoundingClientRect();
+      p.style.top = (r.top - pr.height - 10) + 'px';
+    };
+    d.append(b);
+  });
+  d.onmouseenter = () => { dockCenters = $$('.dk', d).map(b => { const r = b.getBoundingClientRect(); return r.left + r.width / 2; }); };
+  d.onmousemove = e => {
+    if (!S.magnify || reduced.matches || !dockCenters) return;
+    $$('.dk', d).forEach((b, i) => {
+      const dist = Math.abs(e.clientX - dockCenters[i]);
+      const s = 1 + .55 * Math.max(0, 1 - dist / (S.dockSize * 2.6));
+      b.style.width = b.style.height = (S.dockSize * s).toFixed(1) + 'px';
+    });
+  };
+  d.onmouseleave = () => { dockCenters = null; $$('.dk', d).forEach(b => { b.style.width = b.style.height = ''; }); };
+  applyDock();
+}
+function applyDock() {
+  const d = $('#dock'); d.style.setProperty('--ds', S.dockSize + 'px');
+  d.classList.toggle('hide', S.autohide);
+}
+function updateDock() { $$('.dk').forEach(b => b.classList.toggle('run', wins.some(w => w.app === b.dataset.app))); }
+function dockClick(id) {
+  if (id === 'papierkorb') { const ex = wins.find(w => w.app === 'dateien' && w.path && w.path() === TRASH); if (ex) { restoreWin(ex); focusWin(ex); } else createWin('dateien', TRASH); return; }
+  const mine = wins.filter(w => w.app === id);
+  if (mine.length && !APPS[id].launch) {
+    const mini = mine.filter(w => w.minimized);
+    if (mini.length) mini.forEach(restoreWin);
+    focusWin(mine.sort((a, b) => b.el.style.zIndex - a.el.style.zIndex)[0]);
+  } else openApp(id);
+}
+const trashFull = () => { const t = node(TRASH); return !!(t && Object.keys(t.ch).length); };
+function updateTrash() { const b = $('.dk[data-app="papierkorb"] .dkic'); if (b) b.innerHTML = icon('papierkorb', trashFull()); }
+function emptyTrash() { const t = node(TRASH); if (!t) return; const n = Object.keys(t.ch).length; t.ch = {}; changed(); notify('Papierkorb', n === 1 ? '1 Objekt wurde gelöscht.' : `${n} Objekte wurden gelöscht.`, 'papierkorb'); }
+document.addEventListener('mousemove', e => {
+  if (!S.autohide || $('#desk').hidden) return;
+  const d = $('#dock'); const near = e.clientY > innerHeight - 8 || (d.matches(':hover'));
+  d.classList.toggle('hide', !near);
+});
+
+/* ================= Notifications ================= */
+function notify(title, body, appId = 'info') {
+  if (S.focus) return;
+  const n = document.createElement('div'); n.className = 'nf';
+  n.innerHTML = `${appId === 'papierkorb' ? icon('papierkorb', false) : icon(appId)}<div><b>${esc(title)}</b><p>${esc(body)}</p></div>`;
+  n.onclick = () => dismiss();
+  $('#notifs').append(n);
+  const dismiss = () => { n.classList.add('out'); setTimeout(() => n.remove(), 320); };
+  setTimeout(dismiss, 5200);
+}
+
+/* ================= Shared file items ================= */
+function itemIcon(name, n) {
+  if (n.t === 'd') { if (name.endsWith('.app')) { const id = APP_BY_NAME(name); return id ? icon(id) : ICON.folder(); } return ICON.folder(); }
+  if (/^(Mach-O)/.test(n.c || '') ) return ICON.bin();
+  return ICON.file();
+}
+function openPath(p) {
+  const n = node(p); if (!n) { notify('Fundus', `„${base(p)}" wurde nicht gefunden.`, 'dateien'); return; }
+  if (n.t === 'd') {
+    if (p.endsWith('.app')) { const id = APP_BY_NAME(base(p)); if (id) return openApp(id); }
+    return createWin('dateien', p);
+  }
+  openApp('notizen', p);
+}
+function startRename(itemEl, path, done) {
+  const lb = $('.lb', itemEl); const old = base(path);
+  const inp = document.createElement('input'); inp.className = 'rn'; inp.value = old; inp.setAttribute('aria-label', 'Neuer Name');
+  lb.replaceWith(inp); inp.focus(); inp.setSelectionRange(0, old.lastIndexOf('.') > 0 ? old.lastIndexOf('.') : old.length);
+  let fin = false;
+  const finish = ok => {
+    if (fin) return; fin = true;
+    const v = inp.value.trim().replace(/\//g, ':');
+    if (ok && v && v !== old) {
+      if (node(join(parent(path), v))) notify('Fundus', `Der Name „${v}" ist bereits vergeben.`, 'dateien');
+      else { try { mvPath(path, join(parent(path), v)); } catch (e) { notify('Fundus', String(e), 'dateien'); } }
+    }
+    done && done(ok ? join(parent(path), v || old) : path);
+    changed();
+  };
+  inp.onkeydown = e => { e.stopPropagation(); if (e.key === 'Enter') finish(true); if (e.key === 'Escape') finish(false); };
+  inp.onblur = () => finish(true);
+  inp.onpointerdown = e => e.stopPropagation();
+  inp.ondblclick = e => e.stopPropagation();
+}
+function newFolderIn(dir) { const n = uniq(dir, 'Neuer Ordner'); mk(join(dir, n), D()); return join(dir, n); }
+function newFileIn(dir) { const n = uniq(dir, 'Unbenannt.txt'); mk(join(dir, n), F('')); return join(dir, n); }
+function itemMenu(path, inTrash, renameFn) {
+  return [
+    { label: 'Öffnen', action: () => openPath(path) },
+    '-',
+    inTrash ? { label: 'Zurücklegen auf den Schreibtisch', action: () => mvPath(path, join(HOME + '/Desktop', uniq(HOME + '/Desktop', base(path)))) }
+            : { label: 'In den Papierkorb legen', disabled: path.startsWith('/System') || path === HOME, action: () => trash(path) },
+    { label: 'Umbenennen', disabled: inTrash, action: renameFn },
+    { label: 'Duplizieren', disabled: inTrash, action: () => { const n = node(path); mk(join(parent(path), uniq(parent(path), base(path))), JSON.parse(JSON.stringify(n))); } },
+    '-',
+    { label: 'Im Terminal öffnen', action: () => openApp('terminal', 'cd "' + (node(path).t === 'd' ? path : parent(path)) + '"') }
+  ];
+}
+
+/* ================= Desktop icons ================= */
+let deskSel = null;
+function renderDesk() {
+  const box = $('#desk-icons'); box.innerHTML = '';
+  const items = [['/', { t: 'd', ch: {} }, 'Cloke HD', true]];
+  const dn = node(HOME + '/Desktop');
+  if (dn) Object.entries(dn.ch).filter(([k]) => !k.startsWith('.')).sort((a, b) => a[1].m - b[1].m).forEach(([k, v]) => items.push([join(HOME + '/Desktop', k), v, k]));
+  items.forEach(([p, n, label, hd]) => {
+    const b = document.createElement('button'); b.className = 'item' + (deskSel === p ? ' sel' : '');
+    b.innerHTML = `<span class="ic">${hd ? ICON.hd() : itemIcon(label, n)}</span><span class="lb">${esc(label)}</span>`;
+    b.onclick = e => { e.stopPropagation(); deskSel = p; $$('#desk-icons .item').forEach(x => x.classList.toggle('sel', x === b)); };
+    b.ondblclick = () => openPath(p);
+    b.onkeydown = e => { if (e.key === 'Enter') openPath(p); if ((e.key === 'Delete' || e.key === 'Backspace') && !hd) trash(p); };
+    b.oncontextmenu = e => {
+      e.preventDefault(); e.stopPropagation(); deskSel = p; b.classList.add('sel');
+      if (hd) popMenu([{ label: 'Öffnen', action: () => openPath('/') }, { label: 'Informationen', action: () => openApp('info') }], e.clientX, e.clientY);
+      else popMenu(itemMenu(p, false, () => startRename(b, p)), e.clientX, e.clientY);
+    };
+    box.append(b);
+  });
+}
+function deskContext(e) {
+  if (e.target !== $('#wall') && e.target !== $('#desk-icons') && e.target !== $('#windows')) return;
+  e.preventDefault();
+  deskSel = null; renderDesk();
+  popMenu([
+    { label: 'Neuer Ordner', action: () => { const p = newFolderIn(HOME + '/Desktop'); setTimeout(() => renameOnDesk(p), 60); } },
+    { label: 'Neue Textdatei', action: () => { const p = newFileIn(HOME + '/Desktop'); setTimeout(() => renameOnDesk(p), 60); } }, '-',
+    { label: 'Hintergrundbild ändern …', action: () => openApp('einstellungen', 'hintergrund') },
+    { label: 'Dunkelmodus', check: isDark(), action: toggleDark }, '-',
+    { label: 'Terminal hier öffnen', action: () => openApp('terminal', 'cd ~/Desktop') },
+    { label: 'Über ClokeOS', action: () => openApp('info') }
+  ], e.clientX, e.clientY);
+}
+function renameOnDesk(p) {
+  renderDesk();
+  const idx = [...$$('#desk-icons .item')].findIndex(b => $('.lb', b) && $('.lb', b).textContent === base(p));
+  const b = $$('#desk-icons .item')[idx]; if (b) startRename(b, p);
+}
+document.addEventListener('contextmenu', e => { if (!$('#desk').hidden) deskContext(e); });
+$('#wall').addEventListener('pointerdown', () => { if (deskSel) { deskSel = null; renderDesk(); } focused = null; wins.forEach(w => w.el.classList.remove('active')); renderMenubar(); });
+
+/* ================= App: Fundus ================= */
+function mountFinder(win, arg) {
+  let path = arg && node(arg) && node(arg).t === 'd' ? arg : HOME;
+  let back = [], fwd = [], sel = null;
+  win.path = () => path;
+  win.extra.innerHTML = `<div class="pill"><button class="tbb" data-a="back" aria-label="Zurück">${chev('l')}</button><button class="tbb" data-a="fwd" aria-label="Vorwärts">${chev('r')}</button></div>`;
+  win.extra.onclick = e => { const a = e.target.closest('[data-a]'); if (!a) return; if (a.dataset.a === 'back' && back.length) { fwd.push(path); path = back.pop(); sel = null; render(); } if (a.dataset.a === 'fwd' && fwd.length) { back.push(path); path = fwd.pop(); sel = null; render(); } };
+  const SIDE = [
+    ['Favoriten'], [HOME + '/Desktop', 'Schreibtisch', 'desk'], [HOME + '/Dokumente', 'Dokumente', 'doc'], [HOME + '/Downloads', 'Downloads', 'down'], [HOME + '/Bilder', 'Bilder', 'pic'], [HOME + '/Notizen', 'Notizen', 'note'], ['/Applications', 'Programme', 'apps'], [HOME, 'gast', 'home'],
+    ['Orte'], ['/', 'Cloke HD', 'hd'], [TRASH, 'Papierkorb', 'trash']
+  ];
+  win.body.innerHTML = `<div class="fd"><nav class="side" aria-label="Seitenleiste">${SIDE.map(s => s.length === 1 ? `<h4>${s[0]}</h4>` : `<button class="sb" data-p="${esc(s[0])}">${SB_IC[s[2]]}<span>${s[1]}</span></button>`).join('')}</nav><div class="fmain"><div class="grid" tabindex="0" aria-label="Inhalt"></div><div class="status"></div></div></div>`;
+  const grid = $('.grid', win.body), status = $('.status', win.body);
+  $('.side', win.body).onclick = e => { const b = e.target.closest('.sb'); if (b) go(b.dataset.p); };
+  function go(p) { if (p === path) return; back.push(path); fwd = []; path = p; sel = null; render(); }
+  function render() {
+    const n = node(path);
+    if (!n) { path = HOME; return render(); }
+    win.setTitle(prettyName(path));
+    $$('.sb', win.body).forEach(b => b.classList.toggle('on', b.dataset.p === path));
+    $('[data-a=back]', win.extra).disabled = !back.length; $('[data-a=fwd]', win.extra).disabled = !fwd.length;
+    const showHidden = path === TRASH;
+    const list = Object.entries(n.ch).filter(([k]) => showHidden || !k.startsWith('.')).sort((a, b) => (a[1].t === b[1].t ? a[0].localeCompare(b[0], 'de') : a[1].t === 'd' ? -1 : 1));
+    grid.innerHTML = list.length ? '' : `<div class="empty">${path === TRASH ? 'Der Papierkorb ist leer.' : 'Dieser Ordner ist leer. Rechtsklick für einen neuen Ordner oder eine Textdatei.'}</div>`;
+    list.forEach(([k, v]) => {
+      const p = join(path, k);
+      const b = document.createElement('button'); b.className = 'item' + (sel === p ? ' sel' : ''); b.dataset.p = p;
+      b.innerHTML = `<span class="ic">${itemIcon(k, v)}</span><span class="lb">${esc(k)}</span>`;
+      b.onclick = e => { e.stopPropagation(); sel = p; $$('.item', grid).forEach(x => x.classList.toggle('sel', x === b)); };
+      b.ondblclick = () => { if (v.t === 'd' && !k.endsWith('.app')) go(p); else openPath(p); };
+      b.oncontextmenu = e => { e.preventDefault(); e.stopPropagation(); sel = p; render(); const nb = $(`.item[data-p="${CSS.escape(p)}"]`, grid); popMenu(itemMenu(p, path === TRASH, () => startRename(nb, p, np => { sel = np; })), e.clientX, e.clientY); };
+      grid.append(b);
+    });
+    status.innerHTML = `<span>${list.length === 1 ? '1 Objekt' : list.length + ' Objekte'}</span>${path === TRASH && list.length ? '<button data-empty>Entleeren</button>' : ''}`;
+    const eb = $('[data-empty]', status); if (eb) eb.onclick = emptyTrash;
+  }
+  grid.onclick = () => { sel = null; $$('.item', grid).forEach(x => x.classList.remove('sel')); };
+  grid.oncontextmenu = e => {
+    if (e.target.closest('.item')) return; e.preventDefault(); e.stopPropagation();
+    popMenu(path === TRASH ? [{ label: 'Papierkorb entleeren', disabled: !trashFull(), action: emptyTrash }] : [
+      { label: 'Neuer Ordner', action: () => renameNew(newFolderIn(path)) },
+      { label: 'Neue Textdatei', action: () => renameNew(newFileIn(path)) }, '-',
+      { label: 'Im Terminal öffnen', action: () => openApp('terminal', 'cd "' + path + '"') }
+    ], e.clientX, e.clientY);
+  };
+  function renameNew(p) { sel = p; render(); const b = $(`.item[data-p="${CSS.escape(p)}"]`, grid); if (b) startRename(b, p, np => { sel = np; }); }
+  grid.onkeydown = e => {
+    if (!sel) return;
+    if (e.key === 'Enter') { const b = $(`.item[data-p="${CSS.escape(sel)}"]`, grid); if (b) startRename(b, sel, np => { sel = np; }); }
+    if ((e.key === 'Delete' || e.key === 'Backspace') && path !== TRASH && !sel.startsWith('/System')) { trash(sel); sel = null; }
+  };
+  win.fileMenu = () => [
+    { label: 'Neues Fundus-Fenster', action: () => createWin('dateien') },
+    { label: 'Neuer Ordner', disabled: path === TRASH, action: () => renameNew(newFolderIn(path)) },
+    { label: 'Neue Textdatei', disabled: path === TRASH, action: () => renameNew(newFileIn(path)) }, '-',
+    { label: 'Papierkorb entleeren', disabled: !trashFull(), action: emptyTrash }
+  ];
+  win.onArg = p => go(p);
+  fsL.add(render); win.onClose = () => fsL.delete(render);
+  render();
+}
+
+/* ================= App: Terminal ================= */
+function procList() {
+  const sys = [
+    ['kernel_task', 0, 'root', 3, 9, 212], ['launchd', 1, 'root', 0, .8, 4], ['logd', 84, 'root', 0, 1.5, 6], ['syslogd', 88, 'root', 0, .4, 3],
+    ['configd', 91, 'root', 0, .6, 7], ['notifyd', 97, 'root', 0, .5, 3], ['powerd', 101, 'root', 0, .3, 2], ['opendirectoryd', 118, 'root', 0, .5, 9],
+    ['mDNSResponder', 152, '_mdnsresponder', 0, .9, 5], ['CloakServer', 163, '_windowserver', 2, 14, 18], ['coreaudiod', 214, '_coreaudiod', 0, 1.2, 8],
+    ['cfprefsd', 402, 'gast', 0, .4, 4], ['distnoted', 405, 'gast', 0, .2, 2], ['Dock', 431, 'gast', 0, 2.6, 6], ['SystemUIServer', 433, 'gast', 0, 1.1, 5]
+  ];
+  const seen = new Set(); const apps = [];
+  wins.forEach(w => { if (!seen.has(w.app)) { seen.add(w.app); apps.push([APPS[w.app].name, pids[w.app], 'gast', .3, 7, 6, w.app]); } });
+  return sys.concat(apps);
+}
+function mountTerminal(win, arg) {
+  const t = { cwd: HOME, hist: store.get('hist', []), hi: -1 };
+  win.setTitle('gast — -zsh — ' + base(t.cwd));
+  win.body.innerHTML = `<div class="term"><div class="tout"></div><div class="tline"><span class="tprompt"></span><input class="tin" spellcheck="false" autocomplete="off" autocapitalize="off" aria-label="Terminal-Eingabe"></div></div>`;
+  const term = $('.term', win.body), out = $('.tout', win.body), inp = $('.tin', win.body), pr = $('.tprompt', win.body);
+  const prompt = () => `${'gast'}@${S.host} ${t.cwd === HOME ? '~' : base(t.cwd)} % `;
+  const setPrompt = () => { pr.textContent = prompt(); win.setTitle('gast — -zsh — ' + (t.cwd === HOME ? '~' : base(t.cwd))); };
+  const print = (txt, cls) => { const d = document.createElement('div'); if (cls) d.className = cls; d.textContent = txt; out.append(d); };
+  const printHTML = html => { const d = document.createElement('div'); d.innerHTML = html; out.append(d); };
+  const last = new Date(store.get('lastlogin', Date.now()));
+  print(`Last login: ${last.toLocaleString('de-DE', { weekday: 'short', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit', second: '2-digit' })} on ttys00${wins.filter(w => w.app === 'terminal').length - 1}`, 't-dim');
+  store.set('lastlogin', Date.now());
+  setPrompt();
+  term.onclick = () => { if (!getSelection().toString()) inp.focus(); };
+  t.clear = () => { out.innerHTML = ''; };
+  t.close = () => closeWin(win);
+  win.fileMenu = () => [{ label: 'Neues Fenster', action: () => createWin('terminal') }, { label: 'Fenster leeren', action: () => t.clear() }];
+  function tok(s) {
+    const r = []; let cur = '', q = null, has = false;
+    for (const ch of s) {
+      if (q) { if (ch === q) q = null; else cur += ch; }
+      else if (ch === '"' || ch === "'") { q = ch; has = true; }
+      else if (/\s/.test(ch)) { if (cur || has) { r.push(cur); cur = ''; has = false; } }
+      else cur += ch;
+    }
+    if (cur || has) r.push(cur);
+    return r;
+  }
+  const lsLong = (name, n) => {
+    const perm = (n.t === 'd' ? 'd' : '-') + (n.t === 'd' ? 'rwxr-xr-x' : 'rw-r--r--');
+    const size = n.t === 'd' ? Object.keys(n.ch).length * 32 + 64 : (n.c || '').length;
+    const d = new Date(n.m); const ds = d.toLocaleDateString('de-DE', { day: '2-digit', month: 'short' }).replace('.', '') + ' ' + d.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' });
+    return `${perm}  1 gast  staff  ${String(size).padStart(6)} ${ds} `;
+  };
+  const C = {
+    help: () => print(`ClokeOS-Shell (zsh-kompatibel, vereinfacht)
+
+Dateien:   ls [-la]  cd  pwd  cat  echo [> datei]  touch  mkdir [-p]  rm [-r]  mv  cp  tree
+System:    uname [-a]  sw_vers  sysctl <key>  launchctl list  ps  uptime  whoami  hostname
+           date  cal  defaults write com.clokeos.dock autohide -bool true|false
+Programme: open <datei|ordner|-a Programm>  killall <Programm>  top
+Sonstiges: clokefetch  calc <ausdruck>  say <text>  history  clear  exit`),
+    ls: a => {
+      const flags = a.filter(x => x.startsWith('-')).join(''), paths = a.filter(x => !x.startsWith('-'));
+      const long = flags.includes('l'), all = flags.includes('a');
+      (paths.length ? paths : ['.']).forEach(pp => {
+        const p = norm(pp, t.cwd), n = node(p);
+        if (!n) throw `ls: ${pp}: Datei oder Verzeichnis nicht gefunden`;
+        if (paths.length > 1) print(pp + ':');
+        const ents = n.t === 'd' ? Object.entries(n.ch).filter(([k]) => all || !k.startsWith('.')).sort((x, y) => x[0].localeCompare(y[0])) : [[base(p), n]];
+        if (long) { print('total ' + ents.length * 8); ents.forEach(([k, v]) => printHTML(esc(lsLong(k, v)) + `<span class="${v.t === 'd' ? (k.endsWith('.app') ? 't-app' : 't-dir') : ''}">${esc(k)}</span>`)); }
+        else if (ents.length) printHTML(ents.map(([k, v]) => `<span class="${v.t === 'd' ? (k.endsWith('.app') ? 't-app' : 't-dir') : ''}">${esc(k)}</span>`).join('   '));
+      });
+    },
+    cd: a => {
+      const p = norm(a[0] || '~', t.cwd), n = node(p);
+      if (!n) throw `cd: Datei oder Verzeichnis nicht gefunden: ${a[0]}`;
+      if (n.t !== 'd') throw `cd: kein Verzeichnis: ${a[0]}`;
+      t.cwd = p;
+    },
+    pwd: () => print(t.cwd),
+    cat: a => { if (!a.length) throw 'cat: Datei angeben'; a.forEach(pp => { const n = node(norm(pp, t.cwd)); if (!n) throw `cat: ${pp}: Datei oder Verzeichnis nicht gefunden`; if (n.t === 'd') throw `cat: ${pp}: Ist ein Verzeichnis`; print(n.c); }); },
+    echo: a => print(a.join(' ')),
+    touch: a => a.forEach(pp => { const p = norm(pp, t.cwd); const n = node(p); if (n) { n.m = Date.now(); changed(); } else mk(p, F('')); }),
+    mkdir: a => { const pf = a.includes('-p'); a.filter(x => x !== '-p').forEach(pp => { const p = norm(pp, t.cwd); if (node(p)) { if (!pf) throw `mkdir: ${pp}: Datei existiert bereits`; return; } if (pf) { let cur = ''; p.slice(1).split('/').forEach(s => { cur += '/' + s; if (!node(cur)) mk(cur, D()); }); } else mk(p, D()); }); },
+    rm: a => {
+      const rf = a.some(x => /^-[a-z]*r/.test(x)), ff = a.some(x => /^-[a-z]*f/.test(x));
+      a.filter(x => !x.startsWith('-')).forEach(pp => {
+        const p = norm(pp, t.cwd), n = node(p);
+        if (!n) { if (ff) return; throw `rm: ${pp}: Datei oder Verzeichnis nicht gefunden`; }
+        if (p === '/' || p.startsWith('/System') || p === HOME) throw `rm: ${pp}: Vorgang nicht erlaubt (System Integrity Protection)`;
+        if (n.t === 'd' && !rf) throw `rm: ${pp}: ist ein Verzeichnis`;
+        rmPath(p);
+      });
+    },
+    mv: a => { if (a.length < 2) throw 'usage: mv quelle ziel'; const s = norm(a[0], t.cwd); let d = norm(a[1], t.cwd); if (node(d) && node(d).t === 'd') d = join(d, base(s)); mvPath(s, d); },
+    cp: a => { const src = a.filter(x => !x.startsWith('-')); if (src.length < 2) throw 'usage: cp [-r] quelle ziel'; const s = norm(src[0], t.cwd), n = node(s); if (!n) throw `cp: ${src[0]}: nicht gefunden`; if (n.t === 'd' && !a.includes('-r') && !a.includes('-R')) throw `cp: ${src[0]} ist ein Verzeichnis (nicht kopiert).`; let d = norm(src[1], t.cwd); if (node(d) && node(d).t === 'd') d = join(d, base(s)); mk(d, JSON.parse(JSON.stringify(n))); },
+    tree: a => {
+      const p = norm(a[0] || '.', t.cwd), n = node(p); if (!n || n.t !== 'd') throw `tree: ${a[0] || '.'}: kein Verzeichnis`;
+      let dirs = 0, files = 0; const lines = [a[0] || '.'];
+      const rec = (nn, pre, depth) => { const e = Object.entries(nn.ch).filter(([k]) => !k.startsWith('.')); e.forEach(([k, v], i) => { const lastE = i === e.length - 1; lines.push(pre + (lastE ? '└── ' : '├── ') + k); if (v.t === 'd') { dirs++; if (depth < 4 && !k.endsWith('.app')) rec(v, pre + (lastE ? '    ' : '│   '), depth + 1); } else files++; }); };
+      rec(n, '', 0); lines.push('', `${dirs} Verzeichnisse, ${files} Dateien`); print(lines.join('\n'));
+    },
+    clear: () => t.clear(),
+    whoami: () => print('gast'),
+    hostname: () => print(S.host.toLowerCase() + '.local'),
+    uname: a => {
+      const f = a.join('');
+      if (f.includes('a')) print(`Darwin ${S.host.toLowerCase()}.local ${OS.darwin} Darwin Kernel Version ${OS.darwin}: ${OS.xnu} ${OS.arch}`);
+      else if (f.includes('r')) print(OS.darwin); else if (f.includes('m')) print(OS.arch); else if (f.includes('v')) print(`Darwin Kernel Version ${OS.darwin}: ${OS.xnu}`); else print('Darwin');
+    },
+    sw_vers: () => print(`ProductName:\t\tClokeOS\nProductVersion:\t\t${OS.version}\nBuildVersion:\t\t${OS.build}`),
+    sysctl: a => {
+      const K = {
+        'kern.ostype': 'Darwin', 'kern.osrelease': OS.darwin, 'kern.version': `Darwin Kernel Version ${OS.darwin}: ${OS.xnu}`, 'kern.hostname': S.host.toLowerCase() + '.local',
+        'kern.osproductversion': OS.version, 'hw.ncpu': String(navigator.hardwareConcurrency || 8), 'hw.memsize': String((navigator.deviceMemory || 8) * 1073741824),
+        'hw.machine': OS.arch, 'machdep.cpu.brand_string': 'Virtueller x86_64-Prozessor', 'kern.boottime': `{ sec = ${Math.floor(bootTime / 1000)}, usec = 0 }`
+      };
+      const keys = a.filter(x => !x.startsWith('-'));
+      if (!keys.length || a.includes('-a')) { print(Object.entries(K).map(([k, v]) => `${k}: ${v}`).join('\n')); return; }
+      keys.forEach(k => { if (!(k in K)) throw `sysctl: unknown oid '${k}'`; print(a.includes('-n') ? K[k] : `${k}: ${K[k]}`); });
+    },
+    launchctl: a => {
+      if (a[0] !== 'list') throw 'Usage: launchctl list';
+      const L = [['1', '0', 'com.clokeos.launchd'], ['84', '0', 'com.clokeos.logd'], ['91', '0', 'com.clokeos.configd'], ['97', '0', 'com.clokeos.notifyd'], ['152', '0', 'com.clokeos.mDNSResponder'], ['163', '0', 'com.clokeos.cloakserver'], ['214', '0', 'com.clokeos.audio.coreaudiod'], ['431', '0', 'com.clokeos.Dock.agent'], ['-', '0', 'com.clokeos.backupd'], ['-', '78', 'com.clokeos.bluetoothd']];
+      print('PID\tStatus\tLabel\n' + L.map(r => r.join('\t')).join('\n'));
+    },
+    ps: () => print('  PID TTY           TIME CMD\n' + procList().filter(p => p[2] === 'gast').map(p => `${String(p[1]).padStart(5)} ttys000    0:0${Math.floor(Math.random() * 9)}.${String(Math.floor(Math.random() * 99)).padStart(2, '0')} ${p[0]}`).join('\n')),
+    top: () => { openApp('aktivitaet'); print('Aktivitätsanzeige geöffnet.', 't-dim'); },
+    uptime: () => { const m = Math.floor((Date.now() - bootTime) / 60000); print(`${new Date().toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })}  up ${m < 60 ? m + ' mins' : Math.floor(m / 60) + ':' + String(m % 60).padStart(2, '0')}, 1 user, load averages: ${(Math.random() * 2 + .5).toFixed(2)} ${(Math.random() * 2 + .4).toFixed(2)} ${(Math.random() + .3).toFixed(2)}`); },
+    date: () => print(new Date().toLocaleString('de-DE', { weekday: 'short', day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit', timeZoneName: 'short' })),
+    cal: () => {
+      const d = new Date(), y = d.getFullYear(), m = d.getMonth();
+      const title = d.toLocaleDateString('de-DE', { month: 'long', year: 'numeric' });
+      let s = ' '.repeat(Math.max(0, Math.floor((20 - title.length) / 2))) + title + '\nMo Di Mi Do Fr Sa So\n';
+      const first = (new Date(y, m, 1).getDay() + 6) % 7, days = new Date(y, m + 1, 0).getDate();
+      let html = esc(s) + '   '.repeat(first);
+      for (let i = 1; i <= days; i++) { const c = String(i).padStart(2); html += (i === d.getDate() ? `<span style="background:#e9e6ef;color:#17151c">${c}</span>` : c) + ((first + i) % 7 === 0 ? '\n' : ' '); }
+      printHTML(html.replace(/\n/g, '<br>'));
+    },
+    open: a => {
+      if (a[0] === '-a') { const id = APP_BY_NAME(a.slice(1).join(' ')); if (!id) throw `Unable to find application named '${a.slice(1).join(' ')}'`; openApp(id); return; }
+      if (!a.length) throw 'Usage: open [-a Programm] [datei ...]';
+      a.forEach(pp => { const p = norm(pp, t.cwd); if (!node(p)) throw `The file ${p} does not exist.`; openPath(p); });
+    },
+    killall: a => {
+      const nm = a.join(' ');
+      if (nm.toLowerCase() === 'dock') { buildDock(); updateDock(); return; }
+      const id = APP_BY_NAME(nm); if (!id || !wins.some(w => w.app === id)) throw `No matching processes belonging to you were found`;
+      quitApp(id);
+    },
+    defaults: a => {
+      if (a[0] === 'write' && a[1] === 'com.clokeos.dock' && a[2] === 'autohide') { S.autohide = a[4] === 'true' || a[4] === '1' || a[4] === 'YES'; saveS(); applyDock(); return; }
+      if (a[0] === 'write' && a[1] === 'com.clokeos.dock' && a[2] === 'tilesize') { S.dockSize = Math.max(32, Math.min(80, parseInt(a[4] || a[3], 10) || 50)); saveS(); applyDock(); return; }
+      if (a[0] === 'read' && a[1] === 'com.clokeos.dock') { print(`{\n    autohide = ${S.autohide ? 1 : 0};\n    magnification = ${S.magnify ? 1 : 0};\n    tilesize = ${S.dockSize};\n}`); return; }
+      throw 'Unterstützt: defaults read com.clokeos.dock | defaults write com.clokeos.dock autohide -bool true|false | tilesize -int 48';
+    },
+    clokefetch: () => {
+      const art = [
+        '        .--.        ', '      /  __  \\      ', '     /  /  \\  \\     ', '    /   \\__/   \\    ', '   /     ()     \\   ',
+        '  /   /  ||  \\   \\  ', ' /   /   ||   \\   \\ ', '/___/____||____\\___\\', '\\/\\/\\/\\/\\/\\/\\/\\/\\/\\/', '                    '
+      ];
+      const up = Math.floor((Date.now() - bootTime) / 60000);
+      const info = [
+        `<span class="t-acc t-b">gast</span>@<span class="t-acc t-b">${esc(S.host)}</span>`, '-'.repeat(5 + S.host.length + 1),
+        `<span class="t-acc t-b">OS</span>: ClokeOS ${OS.version} ${OS.codename} ${OS.arch}`,
+        `<span class="t-acc t-b">Kernel</span>: Darwin ${OS.darwin} (XNU)`,
+        `<span class="t-acc t-b">Uptime</span>: ${up} min`,
+        `<span class="t-acc t-b">Shell</span>: zsh 5.9`,
+        `<span class="t-acc t-b">WM</span>: CloakServer`,
+        `<span class="t-acc t-b">Theme</span>: ${isDark() ? 'Dunkel' : 'Hell'}, Akzent ${ACCENTS.find(x => x[0] === S.accent)?.[1] || 'Eigen'}`,
+        `<span class="t-acc t-b">CPU</span>: ${navigator.hardwareConcurrency || 8} Kerne`,
+        ['#ff5f57', '#febc2e', '#28c840', '#5aa8ff', '#7c5cff', '#d9407a', '#e9e6ef'].map(c => `<span class="t-blk" style="background:${c}"></span>`).join('')
+      ];
+      printHTML(art.map((l, i) => `<span class="t-acc">${esc(l)}</span>   ${info[i] || ''}`).join('<br>'));
+    },
+    calc: a => { const v = calcExpr(a.join('')); if (v == null) throw 'calc: ungültiger Ausdruck'; print(fmtNum(v)); },
+    say: a => { const txt = a.join(' '); try { const u = new SpeechSynthesisUtterance(txt); u.lang = 'de-DE'; u.volume = S.vol / 100; speechSynthesis.speak(u); } catch (e) {} notify('Terminal', txt, 'terminal'); },
+    history: () => print(t.hist.slice(-30).map((h, i) => `${String(i + 1).padStart(5)}  ${h}`).join('\n')),
+    sudo: () => print('gast is not in the sudoers file. This incident will be reported.', 't-err'),
+    man: a => print(`Keine Handbuchseite für ${a[0] || '?'}. Versuch es mit "help".`),
+    exit: () => t.close()
+  };
+  C.neofetch = C.clokefetch; C.ll = a => C.ls(['-la', ...a]); C.zsh = () => print('zsh 5.9 (x86_64-clokeos-darwin)');
+  function runOne(line) {
+    line = line.replace(/\$HOME|\$\{HOME\}/g, HOME).replace(/\$USER/g, 'gast');
+    let argv = tok(line); if (!argv.length) return;
+    let redir = null, app = false;
+    const ri = argv.findIndex(x => x === '>' || x === '>>');
+    if (ri >= 0) { redir = argv[ri + 1]; app = argv[ri] === '>>'; argv = argv.slice(0, ri); if (!redir) throw 'zsh: parse error near `\\n\''; }
+    const [cmd, ...args] = argv;
+    const fn = C[cmd];
+    if (!fn) throw `zsh: command not found: ${cmd}`;
+    if (redir) {
+      const before = out.childElementCount; fn(args);
+      const added = [...out.children].slice(before); const txt = added.map(d => d.textContent).join('\n'); added.forEach(d => d.remove());
+      writeFile(norm(redir, t.cwd), txt + '\n', app);
+    } else fn(args);
+  }
+  function run(line) {
+    for (const part of line.split(/\s*(?:;|&&)\s*/)) {
+      try { runOne(part); } catch (e) { print(String(e), 't-err'); break; }
+    }
+    setPrompt(); term.scrollTop = term.scrollHeight;
+  }
+  inp.onkeydown = e => {
+    if (e.key === 'Enter') {
+      const v = inp.value; inp.value = ''; print(prompt() + v);
+      if (v.trim()) { t.hist.push(v); t.hist = t.hist.slice(-200); store.set('hist', t.hist); }
+      t.hi = -1; run(v);
+    } else if (e.key === 'ArrowUp') { e.preventDefault(); if (!t.hist.length) return; t.hi = t.hi < 0 ? t.hist.length - 1 : Math.max(0, t.hi - 1); inp.value = t.hist[t.hi]; }
+    else if (e.key === 'ArrowDown') { e.preventDefault(); if (t.hi < 0) return; t.hi++; if (t.hi >= t.hist.length) { t.hi = -1; inp.value = ''; } else inp.value = t.hist[t.hi]; }
+    else if (e.key === 'Tab') {
+      e.preventDefault();
+      const parts = inp.value.split(' '); const lastP = parts[parts.length - 1];
+      let cands;
+      if (parts.length === 1) cands = Object.keys(C).filter(c => c.startsWith(lastP));
+      else {
+        const dirPart = lastP.includes('/') ? lastP.slice(0, lastP.lastIndexOf('/') + 1) : '';
+        const dn = node(norm(dirPart || '.', t.cwd));
+        cands = dn && dn.t === 'd' ? Object.entries(dn.ch).filter(([k]) => k.startsWith(lastP.slice(dirPart.length))).map(([k, v]) => dirPart + k + (v.t === 'd' ? '/' : '')) : [];
+      }
+      if (cands.length === 1) { parts[parts.length - 1] = cands[0].includes(' ') ? `"${cands[0]}"` : cands[0]; inp.value = parts.join(' ') + (parts.length === 1 ? ' ' : ''); }
+      else if (cands.length > 1) { print(prompt() + inp.value); print(cands.join('   ')); term.scrollTop = term.scrollHeight; }
+    } else if (e.key === 'l' && e.ctrlKey) { e.preventDefault(); t.clear(); }
+    else if (e.key === 'c' && e.ctrlKey && !getSelection().toString()) { e.preventDefault(); print(prompt() + inp.value + '^C'); inp.value = ''; }
+  };
+  win.onArg = cmd => { print(prompt() + cmd); run(cmd); };
+  setTimeout(() => inp.focus(), 50);
+  if (arg) { print(prompt() + arg); run(arg); }
+}
+
+/* ================= App: Notizen ================= */
+function mountNotes(win, arg) {
+  const dir = HOME + '/Notizen';
+  let cur = null, extern = null;
+  win.extra.innerHTML = `<div class="pill"><button class="tbb" data-a="new" aria-label="Neue Notiz">${editIc}</button><button class="tbb" data-a="del" aria-label="Notiz in den Papierkorb">${SB_IC.trash}</button></div>`;
+  win.extra.classList.add('tb-right');
+  win.body.innerHTML = `<div class="nt"><div class="nt-side" role="listbox" aria-label="Notizen"></div><div class="nt-ed"><div class="nt-date"></div><textarea class="nt-ta" spellcheck="false" aria-label="Notiztext"></textarea></div></div>`;
+  const list = $('.nt-side', win.body), ta = $('.nt-ta', win.body), dt = $('.nt-date', win.body);
+  const files = () => {
+    const d = node(dir); const r = d ? Object.entries(d.ch).filter(([k, v]) => v.t === 'f' && !k.startsWith('.')).map(([k, v]) => ({ p: join(dir, k), n: v })) : [];
+    r.sort((a, b) => b.n.m - a.n.m);
+    if (extern && node(extern)) r.unshift({ p: extern, n: node(extern), ext: true });
+    return r;
+  };
+  const titleOf = c => (c.split('\n').find(l => l.trim()) || 'Neue Notiz').trim();
+  const prevOf = c => { const ls = c.split('\n').filter(l => l.trim()); return (ls[1] || 'Kein weiterer Text').trim(); };
+  const shortDate = t => { const d = new Date(t), n = new Date(); return d.toDateString() === n.toDateString() ? d.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' }) : d.toLocaleDateString('de-DE'); };
+  function renderList() {
+    const fl = files();
+    if (cur && !node(cur)) cur = null;
+    if (!cur && fl.length) select(fl[0].p, true);
+    list.innerHTML = fl.length ? '' : '<p class="note" style="padding:10px">Keine Notizen. Mit dem Stift oben rechts legst du eine an.</p>';
+    fl.forEach(f => {
+      const b = document.createElement('button'); b.className = 'nt-it' + (f.p === cur ? ' on' : ''); b.setAttribute('role', 'option');
+      b.innerHTML = `<b>${esc(f.ext ? base(f.p) : titleOf(f.n.c))}</b><small><em>${shortDate(f.n.m)}</em>${esc(f.ext ? f.p.replace(HOME, '~') : prevOf(f.n.c))}</small>`;
+      b.onclick = () => select(f.p);
+      list.append(b);
+    });
+    if (!cur) { ta.value = ''; ta.disabled = true; dt.textContent = ''; }
+  }
+  function select(p, quiet) {
+    const n = node(p); if (!n) return;
+    cur = p; ta.disabled = false; ta.value = n.c; dt.textContent = fmtDate(n.m);
+    win.setTitle(p.startsWith(dir + '/') ? 'Notizen' : base(p) + ' — Notizen');
+    if (!quiet) { renderList(); ta.focus(); }
+  }
+  ta.oninput = () => { if (cur) { writeFile(cur, ta.value); dt.textContent = fmtDate(Date.now()); } };
+  const newNote = () => { if (!node(dir)) mk(dir, D()); const p = join(dir, uniq(dir, 'Notiz.txt')); mk(p, F('')); extern = null; cur = p; renderList(); select(p); };
+  win.extra.onclick = e => {
+    const a = e.target.closest('[data-a]'); if (!a) return;
+    if (a.dataset.a === 'new') newNote();
+    if (a.dataset.a === 'del' && cur) { if (cur === extern) extern = null; trash(cur); cur = null; }
+  };
+  win.fileMenu = () => [{ label: 'Neue Notiz', action: newNote }];
+  win.onArg = p => { if (!p.startsWith(dir + '/')) extern = p; select(p, true); renderList(); };
+  fsL.add(renderList); win.onClose = () => fsL.delete(renderList);
+  if (arg) win.onArg(arg); else renderList();
+}
+
+/* ================= App: Rechner ================= */
+function mountCalc(win) {
+  win.setTitle('');
+  const st = { cur: '0', prev: null, op: null, fresh: true };
+  win.body.innerHTML = `<div class="calc" tabindex="0" aria-label="Rechner"><div class="calc-d" aria-live="polite">0</div><div class="calc-k">
+    <button class="fn" data-k="ac">AC</button><button class="fn" data-k="neg">±</button><button class="fn" data-k="pct">%</button><button class="op" data-k="/">÷</button>
+    <button data-k="7">7</button><button data-k="8">8</button><button data-k="9">9</button><button class="op" data-k="*">×</button>
+    <button data-k="4">4</button><button data-k="5">5</button><button data-k="6">6</button><button class="op" data-k="-">−</button>
+    <button data-k="1">1</button><button data-k="2">2</button><button data-k="3">3</button><button class="op" data-k="+">+</button>
+    <button class="zero" data-k="0">0</button><button data-k=".">,</button><button class="op" data-k="=">=</button></div></div>`;
+  const disp = $('.calc-d', win.body), box = $('.calc', win.body);
+  const show = () => {
+    const raw = st.cur;
+    const s = raw === 'NaN' ? 'Fehler' : st.fresh ? fmtNum(parseFloat(raw)) : raw.replace('.', ',');
+    disp.textContent = s;
+    disp.style.fontSize = s.length > 9 ? Math.max(22, 46 - (s.length - 9) * 3.2) + 'px' : '';
+    $('[data-k=ac]', win.body).textContent = st.cur !== '0' && !st.fresh ? 'C' : 'AC';
+    $$('.op', win.body).forEach(b => b.classList.toggle('on', st.fresh && st.op === b.dataset.k && b.dataset.k !== '='));
+  };
+  const compute = () => {
+    const a = parseFloat(st.prev), b = parseFloat(st.cur);
+    let r = st.op === '+' ? a + b : st.op === '-' ? a - b : st.op === '*' ? a * b : st.op === '/' ? (b === 0 ? NaN : a / b) : b;
+    st.cur = isFinite(r) ? String(Number(r.toPrecision(12))) : 'NaN';
+  };
+  const press = k => {
+    if (st.cur === 'NaN' && k !== 'ac') { st.cur = '0'; st.fresh = true; }
+    if (/^\d$/.test(k)) { if (st.fresh) { st.cur = k; st.fresh = false; } else if (st.cur.replace(/[-.]/g, '').length < 9) st.cur = st.cur === '0' ? k : st.cur + k; }
+    else if (k === '.') { if (st.fresh) { st.cur = '0.'; st.fresh = false; } else if (!st.cur.includes('.')) st.cur += '.'; }
+    else if (k === 'ac') { if (st.cur !== '0' && !st.fresh) { st.cur = '0'; st.fresh = true; } else { st.cur = '0'; st.prev = null; st.op = null; st.fresh = true; } }
+    else if (k === 'neg') { st.cur = st.cur.startsWith('-') ? st.cur.slice(1) : st.cur === '0' ? '0' : '-' + st.cur; }
+    else if (k === 'pct') { st.cur = String(parseFloat(st.cur) / 100); }
+    else if (k === '=') { if (st.op) { compute(); st.op = null; st.prev = null; } st.fresh = true; }
+    else { if (st.op && !st.fresh) compute(); st.prev = st.cur; st.op = k; st.fresh = true; }
+    show();
+  };
+  $('.calc-k', win.body).onclick = e => { const b = e.target.closest('button'); if (b) { press(b.dataset.k); box.focus(); } };
+  box.onkeydown = e => {
+    const m = { Enter: '=', '=': '=', Escape: 'ac', Backspace: 'bs', ',': '.', '.': '.', '+': '+', '-': '-', '*': '*', '/': '/', '%': 'pct' };
+    let k = /^\d$/.test(e.key) ? e.key : m[e.key];
+    if (!k) return; e.preventDefault();
+    if (k === 'bs') { if (!st.fresh) { st.cur = st.cur.length > 1 ? st.cur.slice(0, -1) : '0'; if (st.cur === '-') st.cur = '0'; show(); } return; }
+    press(k);
+  };
+  setTimeout(() => box.focus(), 50);
+  show();
+}
+
+/* ================= App: Kalender ================= */
+function mountCal(win) {
+  const today = new Date(); let y = today.getFullYear(), m = today.getMonth();
+  let selKey = key(today);
+  const events = store.get('events', {});
+  function key(d) { return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; }
+  win.extra.innerHTML = `<div class="pill"><button class="tbb" data-a="prev" aria-label="Voriger Monat">${chev('l')}</button><button class="tbb" data-a="today" style="font-size:12.5px;padding:0 10px">Heute</button><button class="tbb" data-a="next" aria-label="Nächster Monat">${chev('r')}</button></div>`;
+  win.extra.classList.add('tb-right');
+  win.extra.onclick = e => { const a = e.target.closest('[data-a]'); if (!a) return; if (a.dataset.a === 'prev') { m--; if (m < 0) { m = 11; y--; } } if (a.dataset.a === 'next') { m++; if (m > 11) { m = 0; y++; } } if (a.dataset.a === 'today') { y = today.getFullYear(); m = today.getMonth(); selKey = key(today); } render(); };
+  win.body.innerHTML = `<div class="cal"><div class="cal-main"><div class="cal-h"><h2></h2></div><div class="cal-g"></div></div><aside class="cal-side"><h3></h3><ul></ul><form class="cal-add"><input class="fld" id="cal-new-${win.id}" placeholder="Neuer Termin, z. B. 14:00 Zahnarzt" aria-label="Neuer Termin"></form><p>Termine bleiben in diesem Browser gespeichert.</p></aside></div>`;
+  const g = $('.cal-g', win.body);
+  function render() {
+    const d0 = new Date(y, m, 1);
+    $('.cal-h h2', win.body).innerHTML = `${esc(d0.toLocaleDateString('de-DE', { month: 'long' }))} <span>${y}</span>`;
+    g.innerHTML = ['Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa', 'So'].map(d => `<div class="dh">${d}</div>`).join('');
+    const first = (d0.getDay() + 6) % 7;
+    for (let i = 0; i < 42; i++) {
+      const d = new Date(y, m, 1 - first + i), k = key(d);
+      const b = document.createElement('button');
+      b.className = 'dc' + (d.getMonth() !== m ? ' out' : '') + (i % 7 >= 5 ? ' we' : '') + (k === key(today) ? ' today' : '') + (k === selKey ? ' sel' : '');
+      b.innerHTML = `<span class="n">${d.getDate()}</span>${(events[k] || []).slice(0, 2).map(ev => `<span class="ev">${esc(ev)}</span>`).join('')}`;
+      b.setAttribute('aria-label', d.toLocaleDateString('de-DE', { weekday: 'long', day: 'numeric', month: 'long' }));
+      b.onclick = () => { selKey = k; if (d.getMonth() !== m) { y = d.getFullYear(); m = d.getMonth(); } render(); };
+      g.append(b);
+    }
+    const sd = new Date(selKey + 'T12:00');
+    $('.cal-side h3', win.body).textContent = sd.toLocaleDateString('de-DE', { weekday: 'long', day: 'numeric', month: 'long' });
+    const ul = $('.cal-side ul', win.body); const evs = events[selKey] || [];
+    ul.innerHTML = evs.length ? evs.map((ev, i) => `<li><span>${esc(ev)}</span><button data-i="${i}" aria-label="Termin löschen">×</button></li>`).join('') : '<p>Keine Termine an diesem Tag.</p>';
+    $$('button[data-i]', ul).forEach(b => b.onclick = () => { evs.splice(+b.dataset.i, 1); if (!evs.length) delete events[selKey]; store.set('events', events); render(); });
+  }
+  $('.cal-add', win.body).onsubmit = e => {
+    e.preventDefault(); const inp = $('input', e.target); const v = inp.value.trim(); if (!v) return;
+    (events[selKey] = events[selKey] || []).push(v); events[selKey].sort(); store.set('events', events); inp.value = ''; render();
+  };
+  render();
+}
+
+/* ================= App: Aktivitätsanzeige ================= */
+function mountActivity(win) {
+  let sel = null; const hist = new Array(60).fill(0);
+  win.extra.innerHTML = `<span class="act-msg"></span><div class="pill"><button class="tbb" data-a="kill" aria-label="Prozess beenden" title="Prozess beenden"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="8" cy="8" r="6.3"/><path d="M5.8 5.8l4.4 4.4M10.2 5.8l-4.4 4.4"/></svg></button></div>`;
+  win.extra.classList.add('tb-right');
+  win.body.innerHTML = `<div class="act"><div class="act-t"><table><thead><tr><th>Prozessname</th><th class="r">% CPU</th><th class="r">Speicher</th><th class="r">Threads</th><th class="r">PID</th><th>Benutzer</th></tr></thead><tbody></tbody></table></div><div class="act-f"><dl><dt>System:</dt><dd class="a-sys"></dd><dt>Benutzer:</dt><dd class="a-usr"></dd><dt>Inaktiv:</dt><dd class="a-idle"></dd></dl><canvas aria-label="CPU-Last"></canvas><dl><dt>Prozesse:</dt><dd class="a-n"></dd><dt>Fenster:</dt><dd class="a-w"></dd><dt>Laufzeit:</dt><dd class="a-up"></dd></dl></div></div>`;
+  const tb = $('tbody', win.body), cv = $('canvas', win.body), msg = $('.act-msg', win.extra);
+  const memMB = {};
+  function tick() {
+    const ps = procList(); let tot = 0;
+    const rows = ps.map(p => { const c = p[3] + Math.random() * (p[4] - p[3]); tot += c; memMB[p[1]] = memMB[p[1]] || (p[1] === 0 ? 1840 : Math.round(12 + Math.random() * (p[6] ? 240 : 90))); return { name: p[0], pid: p[1], user: p[2], cpu: c, th: p[5], mem: memMB[p[1]], app: p[6] }; }).sort((a, b) => b.cpu - a.cpu);
+    tb.innerHTML = rows.map(r => `<tr data-pid="${r.pid}" class="${r.pid === sel ? 'sel' : ''}"><td>${esc(r.name)}</td><td class="r">${r.cpu.toFixed(1).replace('.', ',')}</td><td class="r">${r.mem >= 1024 ? (r.mem / 1024).toFixed(2).replace('.', ',') + ' GB' : r.mem + ' MB'}</td><td class="r">${r.th}</td><td class="r">${r.pid}</td><td>${esc(r.user)}</td></tr>`).join('');
+    const ncpu = navigator.hardwareConcurrency || 8; const load = Math.min(100, tot / ncpu * 2.2);
+    const sys = load * .45, usr = load * .55;
+    $('.a-sys', win.body).textContent = sys.toFixed(1).replace('.', ',') + ' %'; $('.a-usr', win.body).textContent = usr.toFixed(1).replace('.', ',') + ' %'; $('.a-idle', win.body).textContent = (100 - load).toFixed(1).replace('.', ',') + ' %';
+    $('.a-n', win.body).textContent = rows.length; $('.a-w', win.body).textContent = wins.length;
+    const up = Math.floor((Date.now() - bootTime) / 1000); $('.a-up', win.body).textContent = `${Math.floor(up / 60)}:${String(up % 60).padStart(2, '0')}`;
+    hist.push(load); hist.shift(); draw();
+  }
+  function draw() {
+    const dpr = devicePixelRatio || 1, W = cv.clientWidth * dpr, H = cv.clientHeight * dpr; if (!W) return;
+    cv.width = W; cv.height = H; const ctx = cv.getContext('2d');
+    const cs = getComputedStyle(root); const ac = cs.getPropertyValue('--accent').trim() || '#7c5cff', ln = cs.getPropertyValue('--line').trim();
+    ctx.strokeStyle = ln; ctx.lineWidth = dpr; for (let i = 1; i < 4; i++) { ctx.beginPath(); ctx.moveTo(0, H * i / 4); ctx.lineTo(W, H * i / 4); ctx.stroke(); }
+    ctx.beginPath(); hist.forEach((v, i) => { const x = i / (hist.length - 1) * W, yy = H - v / 100 * (H - 4) - 2; i ? ctx.lineTo(x, yy) : ctx.moveTo(x, yy); });
+    ctx.strokeStyle = ac; ctx.lineWidth = 1.6 * dpr; ctx.stroke();
+    ctx.lineTo(W, H); ctx.lineTo(0, H); ctx.closePath(); ctx.globalAlpha = .18; ctx.fillStyle = ac; ctx.fill(); ctx.globalAlpha = 1;
+    const lx = W, ly = H - hist[hist.length - 1] / 100 * (H - 4) - 2; ctx.beginPath(); ctx.arc(lx - 3 * dpr, ly, 2.6 * dpr, 0, 7); ctx.fillStyle = ac; ctx.fill();
+  }
+  tb.onclick = e => { const tr = e.target.closest('tr'); if (!tr) return; sel = +tr.dataset.pid; $$('tr', tb).forEach(r => r.classList.toggle('sel', r === tr)); msg.textContent = ''; };
+  win.extra.onclick = e => {
+    if (!e.target.closest('[data-a=kill]')) return;
+    if (sel == null) { msg.textContent = 'Wähle zuerst einen Prozess.'; return; }
+    const p = procList().find(x => x[1] === sel);
+    if (!p) return;
+    if (!p[6]) { msg.textContent = `„${p[0]}" ist ein Systemprozess und läuft weiter.`; return; }
+    if (p[6] === 'aktivitaet') { closeWin(win); return; }
+    quitApp(p[6]); msg.textContent = `„${p[0]}" wurde beendet.`; sel = null; tick();
+  };
+  for (let i = 0; i < 59; i++) hist[i] = 6 + Math.random() * 10;
+  tick(); const iv = setInterval(tick, 1500);
+  win.onClose = () => clearInterval(iv); win.onResize = draw;
+}
+
+/* ================= App: Systemeinstellungen ================= */
+const settingsWins = new Set();
+function refreshSettings() { settingsWins.forEach(f => f()); }
+function mountSettings(win, arg) {
+  let sec = typeof arg === 'string' ? arg : 'allgemein';
+  const SECS = [['allgemein', 'Allgemein', 'home'], ['darstellung', 'Erscheinungsbild', 'pic'], ['hintergrund', 'Hintergrundbild', 'desk'], ['dock', 'Schreibtisch & Dock', 'apps'], ['benutzer', 'Benutzer', 'doc']];
+  win.body.innerHTML = `<div class="st"><nav class="side" aria-label="Bereiche"><div class="st-user"></div>${SECS.map(s => `<button class="sb" data-s="${s[0]}">${SB_IC[s[2]]}<span>${s[1]}</span></button>`).join('')}</nav><div class="st-main"></div></div>`;
+  const main = $('.st-main', win.body);
+  $('.side', win.body).onclick = e => { const b = e.target.closest('.sb'); if (b) { sec = b.dataset.s; render(); } };
+  function userCard() { $('.st-user', win.body).innerHTML = `<div class="avatar" style="background:linear-gradient(135deg,${S.avatar},color-mix(in srgb,${S.avatar} 55%,#000))">${esc(S.user[0] || '?').toUpperCase()}</div><div><b>${esc(S.user)}</b><small>Lokaler Benutzer</small></div>`; }
+  function render() {
+    userCard();
+    $$('.sb', win.body).forEach(b => b.classList.toggle('on', b.dataset.s === sec));
+    win.setTitle(SECS.find(s => s[0] === sec)[1]);
+    if (sec === 'allgemein') {
+      main.innerHTML = `<div class="hero">${logoBig()}<h1>ClokeOS</h1><p>Version ${OS.version} „${OS.codename}" (${OS.build})</p></div>
+      <div class="grp">
+        <div class="row">Gerätename<input class="fld" id="st-host" value="${esc(S.host)}" maxlength="24" aria-label="Gerätename"></div>
+        <div class="row">Kernel<span>Darwin ${OS.darwin} (XNU)</span></div>
+        <div class="row">Architektur<span>${OS.arch}</span></div>
+        <div class="row">Prozessor<span>${navigator.hardwareConcurrency || 8} Kerne</span></div>
+        <div class="row">Arbeitsspeicher<span>${navigator.deviceMemory ? navigator.deviceMemory + ' GB oder mehr' : 'Unbekannt'}</span></div>
+        <div class="row">Anzeige<span>${screen.width} × ${screen.height}</span></div>
+      </div>
+      <div class="grp"><div class="row">Darwin-Unterbau<button class="btn" id="st-darwin">Dokument öffnen</button></div><div class="row">Gespeicherte Daten zurücksetzen<button class="btn" id="st-reset">Zurücksetzen …</button></div></div>
+      <p class="note">ClokeOS verwendet den Open-Source-Kernel XNU von Darwin. Diese Oberfläche ist der Prototyp der Benutzeroberfläche und läuft im Browser.</p>`;
+      $('#st-host', main).onchange = e => { S.host = e.target.value.trim().replace(/\s+/g, '-') || 'ClokeOS'; saveS(); e.target.value = S.host; };
+      $('#st-darwin', main).onclick = () => openPath(HOME + '/Dokumente/Darwin-Unterbau.txt');
+      $('#st-reset', main).onclick = e => {
+        const b = e.target;
+        if (b.dataset.armed) { try { ['fs', 'settings', 'events', 'hist', 'lastlogin'].forEach(k => localStorage.removeItem('clokeos.' + k)); } catch (er) {} location.reload(); return; }
+        b.dataset.armed = '1'; b.textContent = 'Wirklich zurücksetzen?'; b.classList.add('pri');
+        setTimeout(() => { if (b.isConnected) { delete b.dataset.armed; b.textContent = 'Zurücksetzen …'; b.classList.remove('pri'); } }, 4000);
+      };
+    } else if (sec === 'darstellung') {
+      main.innerHTML = `<h2>Erscheinungsbild</h2>
+      <div class="opts" role="radiogroup" aria-label="Erscheinungsbild">${[['auto', 'Automatisch', 'pv-a'], ['light', 'Hell', 'pv-l'], ['dark', 'Dunkel', 'pv-d']].map(o => `<button class="opt${S.theme === o[0] ? ' on' : ''}" role="radio" aria-checked="${S.theme === o[0]}" data-t="${o[0]}"><span class="pv ${o[2]}"><i></i></span>${o[1]}</button>`).join('')}</div>
+      <div class="grp"><div class="row">Akzentfarbe<div class="sw-row">${ACCENTS.map(a => `<button class="swatch${S.accent === a[0] ? ' on' : ''}" style="background:${a[0]}" data-c="${a[0]}" aria-label="${a[1]}" title="${a[1]}"></button>`).join('')}</div></div>
+      <div class="row">Liquid Glass<span style="display:flex;align-items:center;gap:8px;font-size:12px">Klar<input type="range" id="st-glass" min="0" max="100" value="${S.glass}" aria-label="Liquid Glass: Klar bis Getönt">Getönt</span></div>
+      <div class="row">Helligkeit<input type="range" id="st-bright" min="30" max="100" value="${S.bright}" aria-label="Helligkeit"></div></div>
+      <p class="note">„Automatisch" folgt der Einstellung deines Geräts.</p>`;
+      $$('[data-t]', main).forEach(b => b.onclick = () => { S.theme = b.dataset.t; saveS(); applyTheme(); render(); });
+      $$('[data-c]', main).forEach(b => b.onclick = () => { S.accent = b.dataset.c; saveS(); applyTheme(); render(); });
+      $('#st-bright', main).oninput = e => { S.bright = +e.target.value; saveS(); setBright(); };
+      $('#st-glass', main).oninput = e => { S.glass = +e.target.value; saveS(); applyGlass(); };
+    } else if (sec === 'hintergrund') {
+      main.innerHTML = `<h2>Hintergrundbild</h2><div class="opts">${Object.entries(WALLS).map(([k, w]) => `<button class="opt${S.wall === k ? ' on' : ''}" data-w="${k}"><span class="pv"><canvas width="320" height="200"></canvas></span>${w.name}</button>`).join('')}</div><p class="note">Jedes Motiv hat eine helle und eine dunkle Fassung und wechselt mit dem Erscheinungsbild.</p>`;
+      $$('[data-w]', main).forEach(b => { drawWall($('canvas', b), b.dataset.w, isDark()); b.onclick = () => { S.wall = b.dataset.w; saveS(); drawMainWall(); render(); }; });
+    } else if (sec === 'dock') {
+      main.innerHTML = `<h2>Schreibtisch & Dock</h2><div class="grp">
+        <div class="row">Größe<input type="range" id="st-ds" min="36" max="72" value="${S.dockSize}" aria-label="Dockgröße"></div>
+        <div class="row">Vergrößerung<input type="checkbox" class="tgl" id="st-mag" ${S.magnify ? 'checked' : ''} aria-label="Vergrößerung"></div>
+        <div class="row">Dock automatisch ein- und ausblenden<input type="checkbox" class="tgl" id="st-hide" ${S.autohide ? 'checked' : ''} aria-label="Automatisch ausblenden"></div></div>
+        <p class="note">Im Terminal geht das auch: defaults write com.clokeos.dock autohide -bool true</p>`;
+      $('#st-ds', main).oninput = e => { S.dockSize = +e.target.value; saveS(); applyDock(); };
+      $('#st-mag', main).onchange = e => { S.magnify = e.target.checked; saveS(); };
+      $('#st-hide', main).onchange = e => { S.autohide = e.target.checked; saveS(); applyDock(); };
+    } else if (sec === 'benutzer') {
+      main.innerHTML = `<h2>Benutzer</h2><div class="grp">
+        <div class="row">Anzeigename<input class="fld" id="st-user" value="${esc(S.user)}" maxlength="24" aria-label="Anzeigename"></div>
+        <div class="row">Kontoname<span>gast</span></div>
+        <div class="row">Benutzerordner<span>${HOME}</span></div>
+        <div class="row">Profilfarbe<div class="sw-row">${ACCENTS.map(a => `<button class="swatch${S.avatar === a[0] ? ' on' : ''}" style="background:${a[0]}" data-a="${a[0]}" aria-label="${a[1]}"></button>`).join('')}</div></div></div>
+        <p class="note">Der Anzeigename erscheint im Anmeldefenster und im ClokeOS-Menü.</p>`;
+      $('#st-user', main).oninput = e => { S.user = e.target.value.trim() || 'Gast'; saveS(); userCard(); };
+      $$('[data-a]', main).forEach(b => b.onclick = () => { S.avatar = b.dataset.a; saveS(); render(); });
+    }
+  }
+  win.onArg = s => { sec = s; render(); };
+  const rf = () => { if (sec === 'hintergrund' || sec === 'darstellung') render(); };
+  settingsWins.add(rf); win.onClose = () => settingsWins.delete(rf);
+  render();
+}
+
+/* ================= App: Search (browser) ================= */
+const WEB_PAGES = {
+  handbuch: { title: 'ClokeOS-Handbuch', html: () => `<article class="wp"><div class="crumb">search://handbuch</div><h1>ClokeOS-Handbuch</h1>
+    <p class="lead">Die wichtigsten Handgriffe für ClokeOS ${OS.version} „${OS.codename}".</p>
+    <h2>Tastenkürzel</h2><table><tr><th><kbd>Strg</kbd> + <kbd>Leertaste</kbd></th><td>Suche öffnen</td></tr><tr><th><kbd>F4</kbd></th><td>Programme anzeigen</td></tr><tr><th><kbd>Esc</kbd></th><td>Suche, Programme oder Menüs schließen</td></tr><tr><th><kbd>Enter</kbd> im Fundus</th><td>Ausgewähltes Objekt umbenennen</td></tr><tr><th><kbd>Entf</kbd> im Fundus</th><td>In den Papierkorb legen</td></tr><tr><th><kbd>Tab</kbd> im Terminal</th><td>Befehle und Pfade vervollständigen</td></tr></table>
+    <h2>Programme</h2><ul><li><b>Fundus</b> verwaltet deine Dateien. Im Theater ist der Fundus der Raum, in dem Kostüme und Umhänge hängen.</li><li><b>Search</b> ist der Browser. Er zeigt ClokeOS-Seiten und deine eigenen Dateien und öffnet Webseiten in einem neuen Tab.</li><li><b>Terminal</b> versteht die üblichen Befehle wie <code>ls</code>, <code>cd</code> und <code>cat</code> sowie <code>clokefetch</code>.</li><li><b>Notizen</b>, <b>Rechner</b>, <b>Kalender</b>, <b>Aktivitätsanzeige</b> und <b>Systemeinstellungen</b>.</li></ul>
+    <h2>Liquid Glass</h2><p>Fenster, Dock und Menüs sind aus Glas. Unter Systemeinstellungen › Erscheinungsbild stellst du mit dem Regler „Liquid Glass" ein, wie klar oder getönt das Glas ist.</p>
+    <p>Mehr über den Unterbau steht auf der Seite <a data-href="search://darwin">Darwin und XNU</a>.</p></article>` },
+  darwin: { title: 'Darwin und XNU', html: () => `<article class="wp"><div class="crumb">Search Wiki</div><h1>Darwin und XNU</h1>
+    <p class="lead">Darwin ist der quelloffene, Unix-artige Kern unter Apples Betriebssystemen und die Grundlage von ClokeOS.</p>
+    <table><tr><th>Erstveröffentlichung</th><td>2000</td></tr><tr><th>Kernel</th><td>XNU (hybrid)</td></tr><tr><th>Lizenz</th><td>Apple Public Source License 2.0</td></tr><tr><th>Init-System</th><td>launchd</td></tr><tr><th>In ClokeOS</th><td>Darwin ${OS.darwin}, ${OS.arch}</td></tr></table>
+    <h2>Der Kernel XNU</h2><p>Der Name steht für „X is Not Unix". XNU verbindet den Mach-Mikrokernel der Carnegie Mellon University mit Teilen aus BSD und dem Treiber-Framework IOKit, das in einer Untermenge von C++ geschrieben ist. Mach kümmert sich um Speicher, Threads und Nachrichten zwischen Prozessen, der BSD-Teil um Prozesse, Dateisysteme, Netzwerk und die POSIX-Schnittstelle.</p>
+    <h2>Was offen ist und was nicht</h2><p>Kernel, C-Bibliothek, dyld und viele Werkzeuge veröffentlicht Apple als Quellcode. Der Grafik-Stack mit Quartz und WindowServer, die Oberflächen-Frameworks und Programme wie der Finder sind dagegen nicht offen. Deshalb bringt ClokeOS mit CloakServer einen eigenen Fensterserver und mit Fundus einen eigenen Dateimanager mit.</p>
+    <h2>Gemeinschaftsprojekte</h2><p>PureDarwin baut aus den offenen Quellen ein eigenständig bootfähiges Darwin. ClokeOS setzt darauf auf: Das ClokeOS-Image ist PureDarwin 20.5 mit eigenem Namen, eigener Version, eigenem Rechnernamen und eigenem Anmeldetext und bootet in QEMU bis zur zsh.</p>
+    <div class="web-out"><a class="btn" href="https://github.com/apple-oss-distributions/xnu" target="_blank" rel="noopener noreferrer">XNU-Quellcode auf GitHub ↗</a><a class="btn" href="https://github.com/PureDarwin/PureDarwin" target="_blank" rel="noopener noreferrer">PureDarwin ↗</a></div></article>` },
+  bruecke: { title: 'Golden Gate Bridge', html: () => `<article class="wp"><div class="crumb">Search Wiki</div><h1>Golden Gate Bridge</h1>
+    <p class="lead">Die Hängebrücke über die Meerenge Golden Gate verbindet San Francisco mit dem Marin County und ist das Motiv des ClokeOS-Hintergrundbilds „Goldenes Tor".</p>
+    <table><tr><th>Eröffnung</th><td>27. Mai 1937</td></tr><tr><th>Hauptspannweite</th><td>1.280 m</td></tr><tr><th>Gesamtlänge</th><td>rund 2,7 km</td></tr><tr><th>Höhe der Pylone</th><td>227 m über dem Wasser</td></tr><tr><th>Farbe</th><td>International Orange</td></tr></table>
+    <p>Bis 1964 hatte sie die größte Spannweite aller Hängebrücken. Die orange Farbe war ursprünglich nur als Grundierung gedacht, blieb aber, weil sie im Nebel gut zu sehen ist und zur Landschaft passt.</p>
+    <p>Der Nebel, der im Sommer durch das Golden Gate in die Bucht zieht, ist in San Francisco so bekannt, dass er einen Spitznamen hat: Karl. Im Hintergrundbild von ClokeOS liegt er unter der Fahrbahn.</p>
+    <div class="web-out"><a class="btn" href="https://de.wikipedia.org/wiki/Golden_Gate_Bridge" target="_blank" rel="noopener noreferrer">Artikel in der Wikipedia ↗</a></div></article>` },
+  clokeos: { title: `Neu in ClokeOS ${OS.version}`, html: () => `<article class="wp"><div class="crumb">search://clokeos</div><h1>Neu in ClokeOS ${OS.version} „${OS.codename}"</h1>
+    <ul><li><b>Liquid Glass</b> für Fenster, Dock, Menüs, Mitteilungen und Suche, mit einem Regler von klar bis getönt.</li><li><b>Goldenes Tor</b> als neues Hintergrundbild, tagsüber im Nebel und abends mit Lichtern.</li><li><b>Search</b>, der neue Browser mit Tabs, Verlauf und Suche über ClokeOS und deine Dateien.</li><li><b>Fundus</b> ersetzt die bisherige Dateien-App und hat ein eigenes Symbol: eine Kleiderstange mit zwei Kleidungsstücken als schlichte Flächen, in Graphit.</li><li>Darwin ${OS.darwin} als Kernel.</li></ul></article>` }
+};
+function mountSearch(win, arg) {
+  win.el.classList.add('browser');
+  const tabs = []; let cur = null;
+  const reloadIc = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M13 8a5 5 0 1 1-1.5-3.6M13 2.2v3h-3"/></svg>';
+  const homeIc = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><path d="M2 7.5L8 2l6 5.5V14H2z"/></svg>';
+  win.extra.innerHTML = `<div class="pill"><button class="tbb" data-a="back" aria-label="Zurück">${chev('l')}</button><button class="tbb" data-a="fwd" aria-label="Vorwärts">${chev('r')}</button></div><input class="addr" spellcheck="false" autocomplete="off" placeholder="Suchen oder Adresse eingeben" aria-label="Adresse oder Suchbegriff"><div class="pill"><button class="tbb" data-a="home" aria-label="Startseite">${homeIc}</button><button class="tbb" data-a="reload" aria-label="Neu laden">${reloadIc}</button><button class="tbb" data-a="newtab" aria-label="Neuer Tab">${plusIc}</button></div>`;
+  win.body.innerHTML = `<div class="br"><div class="br-tabs" role="tablist" hidden></div><div class="br-view"></div></div>`;
+  const addr = $('.addr', win.extra), tabsEl = $('.br-tabs', win.body), view = $('.br-view', win.body);
+  const searchIc = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="6.8" cy="6.8" r="4.8"/><path d="M10.5 10.5l4 4"/></svg>';
+  const strip = h => h.replace(/<[^>]+>/g, ' ').replace(/&[a-z]+;/g, ' ').replace(/\s+/g, ' ').trim();
+  const hl = (txt, terms) => { let h = esc(txt); terms.forEach(t => { if (t.length > 1) h = h.replace(new RegExp(esc(t).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi'), m => `<mark>${m}</mark>`); }); return h; };
+  function resolveUrl(input) {
+    const s = input.trim(); if (!s) return null;
+    if (/^(search|file):\/\//i.test(s)) return s;
+    if (s.startsWith('/') || s.startsWith('~')) return 'file://' + norm(s);
+    if (/^https?:\/\//i.test(s)) return s;
+    if (!/\s/.test(s) && /^[\w-]+(\.[\w-]+)+(:\d+)?(\/\S*)?$/.test(s)) return 'https://' + s;
+    return 'search://suche?q=' + encodeURIComponent(s);
+  }
+  function searchAll(q) {
+    const terms = q.toLowerCase().split(/\s+/).filter(Boolean), out = [];
+    const score = text => { const lt = text.toLowerCase(); if (!terms.every(t => lt.includes(t))) return 0; return terms.reduce((s, t) => s + lt.split(t).length - 1, 0); };
+    const snip = text => { const i = Math.max(0, text.toLowerCase().indexOf(terms[0]) - 60); return (i ? '… ' : '') + text.slice(i, i + 180) + (text.length > i + 180 ? ' …' : ''); };
+    Object.entries(WEB_PAGES).forEach(([k, p]) => { const t = strip(p.html()); const sc = score(p.title + ' ' + t) + (p.title.toLowerCase().includes(terms[0]) ? 5 : 0); if (sc) out.push({ url: 'search://' + k, title: p.title, text: snip(t), sc }); });
+    const all = []; walk('/', FS, all);
+    all.forEach(([p, n]) => { if (n.t !== 'f') return; const sc = score(base(p) + ' ' + (n.c || '')); if (sc) out.push({ url: 'file://' + p, title: base(p), text: snip((n.c || '').replace(/\s+/g, ' ')), sc: sc + (base(p).toLowerCase().includes(terms[0]) ? 3 : 0) }); });
+    return { terms, res: out.sort((a, b) => b.sc - a.sc).slice(0, 20) };
+  }
+  function page(url) {
+    if (url === 'search://start') {
+      const fav = [['search://handbuch', 'Handbuch', 'H', '#7c5cff'], ['search://darwin', 'Darwin', 'D', '#2a9d68'], ['search://bruecke', 'Golden Gate', 'G', '#d9512f'], ['search://clokeos', 'Neu in ' + OS.version, 'N', '#2f7bf6'], ['file://' + HOME + '/Desktop/Willkommen.txt', 'Willkommen', 'W', '#c9a227'], ['search://verlauf', 'Verlauf', 'V', '#8a8696']];
+      const ext = [['https://de.wikipedia.org', 'Wikipedia', 'W', '#55525c'], ['https://github.com/PureDarwin/PureDarwin', 'PureDarwin', 'P', '#2b2930'], ['https://duckduckgo.com', 'DuckDuckGo', 'D', '#de5833']];
+      const hist = store.get('webhist', []).slice(0, 6);
+      return { title: 'Startseite', html: `<div class="ws"><div class="ws-brand">${icon('search')}<b>Search</b></div>
+        <form class="ws-form">${searchIc}<input id="ws-q-${win.id}" placeholder="ClokeOS und deine Dateien durchsuchen" aria-label="Suchen" autocomplete="off"></form>
+        <section class="ws-sec"><h3>Favoriten</h3><div class="ws-fav">${fav.map(f => `<a data-href="${esc(f[0])}"><span class="fv" style="background:linear-gradient(160deg,color-mix(in srgb,${f[3]} 70%,#fff),${f[3]})">${f[2]}</span>${esc(f[1])}</a>`).join('')}${ext.map(f => `<a href="${f[0]}" target="_blank" rel="noopener noreferrer"><span class="fv" style="background:linear-gradient(160deg,color-mix(in srgb,${f[3]} 70%,#fff),${f[3]})">${f[2]}</span>${esc(f[1])}<small>neuer Tab ↗</small></a>`).join('')}</div></section>
+        ${hist.length ? `<section class="ws-sec"><h3>Zuletzt besucht</h3><ul class="ws-rec">${hist.map(h => `<li><a data-href="${esc(h.u)}"><span>${esc(h.t)}</span><small>${esc(h.u)}</small></a></li>`).join('')}</ul></section>` : ''}</div>`,
+        after: v => { const f = $('.ws-form', v), i = $('input', f); f.onsubmit = e => { e.preventDefault(); const u = resolveUrl(i.value); if (u) go(u); }; if (!addr.matches(':focus')) i.focus(); } };
+    }
+    if (url.startsWith('search://suche')) {
+      const q = decodeURIComponent((url.split('q=')[1] || '').replace(/\+/g, ' '));
+      const { terms, res } = searchAll(q);
+      return { title: q + ' – Search', html: `<div class="wp"><div class="crumb">${res.length === 1 ? '1 Treffer' : res.length + ' Treffer'} in ClokeOS</div><h1>${esc(q)}</h1>
+        ${res.map(r => `<div class="res"><div class="u">${esc(r.url)}</div><h3><a data-href="${esc(r.url)}">${esc(r.title)}</a></h3><p>${hl(r.text, terms)}</p></div>`).join('') || '<p>In ClokeOS und deinen Dateien gibt es dazu nichts.</p>'}
+        <h2>Im Web weitersuchen</h2><p class="note">Webseiten öffnen sich in einem neuen Tab deines Browsers.</p>
+        <div class="web-out"><a class="btn" href="https://duckduckgo.com/?q=${encodeURIComponent(q)}" target="_blank" rel="noopener noreferrer">DuckDuckGo ↗</a><a class="btn" href="https://de.wikipedia.org/w/index.php?search=${encodeURIComponent(q)}" target="_blank" rel="noopener noreferrer">Wikipedia ↗</a></div></div>` };
+    }
+    if (url === 'search://verlauf') {
+      const hist = store.get('webhist', []);
+      return { title: 'Verlauf', html: `<div class="wp"><h1>Verlauf</h1>${hist.length ? `<ul class="ws-rec">${hist.map(h => `<li><a data-href="${esc(h.u)}"><span>${esc(h.t)}</span><small>${new Date(h.ts).toLocaleString('de-DE', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}</small></a></li>`).join('')}</ul><p style="margin-top:16px"><button class="btn" data-clear>Verlauf löschen</button></p>` : '<p>Noch nichts besucht.</p>'}</div>`,
+        after: v => { const b = $('[data-clear]', v); if (b) b.onclick = () => { store.set('webhist', []); show(); }; } };
+    }
+    const m = url.match(/^search:\/\/([\w-]+)/);
+    if (m) { const p = WEB_PAGES[m[1]]; if (p) return { title: p.title, html: p.html() }; return { title: 'Seite nicht gefunden', html: `<div class="wx"><div class="wx-c"><div class="wx-ic">?</div><h1>Seite nicht gefunden</h1><p>Unter ${esc(url)} gibt es keine Seite. Zurück zur <a data-href="search://start">Startseite</a>.</p></div></div>` }; }
+    if (/^file:\/\//i.test(url)) {
+      const p = norm(decodeURIComponent(url.replace(/^file:\/\//i, ''))), n = node(p);
+      if (!n) return { title: 'Datei nicht gefunden', html: `<div class="wx"><div class="wx-c"><div class="wx-ic">?</div><h1>Datei nicht gefunden</h1><p>${esc(p)} existiert nicht.</p></div></div>` };
+      if (n.t === 'd') return { title: prettyName(p), html: `<div class="wp"><div class="crumb">file://${esc(p)}</div><h1>Inhalt von ${esc(prettyName(p))}</h1><ul class="ws-rec">${p !== '/' ? `<li><a data-href="file://${esc(parent(p))}"><span>.. (übergeordneter Ordner)</span></a></li>` : ''}${Object.entries(n.ch).filter(([k]) => !k.startsWith('.')).map(([k, v]) => `<li><a data-href="file://${esc(join(p, k))}"><span>${esc(k)}${v.t === 'd' ? '/' : ''}</span><small>${fmtDate(v.m)}</small></a></li>`).join('')}</ul></div>` };
+      return { title: base(p), html: `<div class="wp"><div class="crumb">file://${esc(p)}</div><h1>${esc(base(p))}</h1><pre>${esc(n.c || '')}</pre><p><button class="btn" data-open>In Notizen öffnen</button></p></div>`, after: v => { $('[data-open]', v).onclick = () => openPath(p); } };
+    }
+    let u = null; try { u = new URL(url); } catch (e) {}
+    if (u && (u.protocol === 'https:' || u.protocol === 'http:')) {
+      return { title: u.hostname, html: `<div class="wx"><div class="wx-c"><div class="wx-ic">${esc((u.hostname.replace(/^www\./, '')[0] || '?').toUpperCase())}</div><h1>${esc(u.hostname)}</h1><p>ClokeOS läuft selbst in einem Browser, und fremde Webseiten lassen sich darin nicht einbetten. Search öffnet diese Seite deshalb in einem neuen Tab.</p><a class="btn pri" href="${esc(u.href)}" target="_blank" rel="noopener noreferrer">${esc(u.hostname)} öffnen ↗</a></div></div>` };
+    }
+    return { title: 'Ungültige Adresse', html: `<div class="wx"><div class="wx-c"><div class="wx-ic">!</div><h1>Ungültige Adresse</h1><p>${esc(url)} kann Search nicht öffnen.</p></div></div>` };
+  }
+  function show() {
+    const url = cur.hist[cur.i]; const pg = page(url);
+    cur.title = pg.title; view.innerHTML = pg.html; view.scrollTop = 0;
+    if (!addr.matches(':focus')) addr.value = url === 'search://start' ? '' : url;
+    win.setTitle(pg.title + ' — Search');
+    $('[data-a=back]', win.extra).disabled = cur.i <= 0; $('[data-a=fwd]', win.extra).disabled = cur.i >= cur.hist.length - 1;
+    if (url !== 'search://start' && url !== 'search://verlauf') { const h = store.get('webhist', []).filter(x => x.u !== url); h.unshift({ u: url, t: pg.title, ts: Date.now() }); store.set('webhist', h.slice(0, 50)); }
+    pg.after && pg.after(view);
+    renderTabs();
+  }
+  function go(url) { cur.hist = cur.hist.slice(0, cur.i + 1); cur.hist.push(url); cur.i = cur.hist.length - 1; show(); }
+  function newTab(url = 'search://start') { const t = { hist: [], i: -1, title: 'Neuer Tab' }; tabs.push(t); cur = t; go(url); }
+  function closeTab(t) { const i = tabs.indexOf(t); tabs.splice(i, 1); if (!tabs.length) { closeWin(win); return; } if (cur === t) { cur = tabs[Math.max(0, i - 1)]; show(); } else renderTabs(); }
+  function renderTabs() {
+    tabsEl.hidden = tabs.length < 2; tabsEl.innerHTML = '';
+    tabs.forEach(t => {
+      const b = document.createElement('button'); b.className = 'br-tab' + (t === cur ? ' on' : ''); b.setAttribute('role', 'tab'); b.setAttribute('aria-selected', t === cur);
+      b.innerHTML = `<span>${esc(t.title)}</span><i aria-label="Tab schließen" role="button">×</i>`;
+      b.onclick = e => { if (e.target.closest('i')) { closeTab(t); return; } cur = t; show(); };
+      tabsEl.append(b);
+    });
+  }
+  view.addEventListener('click', e => { const a = e.target.closest('[data-href]'); if (a) { e.preventDefault(); go(a.dataset.href); } });
+  win.extra.addEventListener('click', e => {
+    const a = e.target.closest('[data-a]'); if (!a) return;
+    const k = a.dataset.a;
+    if (k === 'back' && cur.i > 0) { cur.i--; show(); }
+    if (k === 'fwd' && cur.i < cur.hist.length - 1) { cur.i++; show(); }
+    if (k === 'reload') show();
+    if (k === 'home') go('search://start');
+    if (k === 'newtab') newTab();
+  });
+  addr.onfocus = () => addr.select();
+  addr.onkeydown = e => {
+    e.stopPropagation();
+    if (e.key === 'Enter') { const u = resolveUrl(addr.value); if (u) { addr.blur(); go(u); } }
+    if (e.key === 'Escape') { const u = cur.hist[cur.i]; addr.value = u === 'search://start' ? '' : u; addr.blur(); }
+  };
+  addr.onblur = () => { const u = cur.hist[cur.i]; if (!addr.value.trim()) addr.value = u === 'search://start' ? '' : u; };
+  win.fileMenu = () => [{ label: 'Neuer Tab', action: () => newTab() }, { label: 'Startseite', action: () => go('search://start') }, { label: 'Verlauf anzeigen', action: () => go('search://verlauf') }, '-', { label: 'Tab schließen', action: () => closeTab(cur) }];
+  win.onArg = url => newTab(url);
+  newTab(typeof arg === 'string' ? arg : 'search://start');
+}
+
+/* ================= App: Über ClokeOS ================= */
+function mountAbout(win) {
+  win.setTitle('');
+  win.body.innerHTML = `<div class="about">${logoBig()}<h1>ClokeOS</h1><p class="ver">„${OS.codename}" · Version ${OS.version}</p>
+    <dl><dt>Kernel</dt><dd>Darwin ${OS.darwin} (XNU)</dd><dt>Architektur</dt><dd>${OS.arch}</dd><dt>Prozessor</dt><dd>${navigator.hardwareConcurrency || 8} Kerne</dd><dt>Speicher</dt><dd>${navigator.deviceMemory ? navigator.deviceMemory + ' GB' : 'Unbekannt'}</dd><dt>Gerätename</dt><dd>${esc(S.host)}</dd><dt>Build</dt><dd>${OS.build}</dd></dl>
+    <button class="btn" id="ab-more-${win.id}">Weitere Informationen …</button></div>`;
+  $(`#ab-more-${win.id}`).onclick = () => openApp('einstellungen', 'allgemein');
+}
+
+/* ================= Launchpad ================= */
+function toggleLaunchpad() { if ($('#launchpad')) closeLaunchpad(); else openLaunchpad(); }
+function closeLaunchpad() { const l = $('#launchpad'); if (l) l.remove(); }
+function openLaunchpad() {
+  closePop(); closeSpot();
+  const l = document.createElement('div'); l.id = 'launchpad';
+  l.innerHTML = `<input id="lp-q" placeholder="Suchen" aria-label="Programme durchsuchen"><div class="lp-g"></div>`;
+  $('#desk').append(l);
+  const g = $('.lp-g', l), q = $('#lp-q', l);
+  const render = () => {
+    const s = q.value.trim().toLowerCase();
+    g.innerHTML = '';
+    Object.entries(APPS).filter(([id, a]) => !a.hidden && id !== 'programme' && a.name.toLowerCase().includes(s)).forEach(([id, a]) => {
+      const b = document.createElement('button'); b.innerHTML = `${icon(id)}<span>${esc(a.name)}</span>`;
+      b.onclick = e => { e.stopPropagation(); closeLaunchpad(); openApp(id); };
+      g.append(b);
+    });
+  };
+  q.oninput = render; q.onkeydown = e => { if (e.key === 'Enter') { const b = $('button', g); if (b) b.click(); } };
+  l.onclick = e => { if (e.target === l || e.target === g) closeLaunchpad(); };
+  render(); q.focus();
+}
+
+/* ================= Spotlight ================= */
+function closeSpot() { const s = $('#spot'); if (s) s.remove(); }
+function openSpot() {
+  if ($('#spot')) { closeSpot(); return; }
+  closePop(); closeLaunchpad();
+  const sp = document.createElement('div'); sp.id = 'spot'; sp.setAttribute('role', 'search');
+  sp.innerHTML = `<div class="sp-in"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="6.8" cy="6.8" r="4.8"/><path d="M10.5 10.5l4 4"/></svg><input id="sp-q" placeholder="Suche in ClokeOS" autocomplete="off" spellcheck="false" aria-label="Suche"></div><div id="sp-r"></div>`;
+  $('#desk').append(sp);
+  const q = $('#sp-q'), r = $('#sp-r'); let res = [], cur = 0;
+  const render = () => {
+    const s = q.value.trim(), sl = s.toLowerCase(); res = []; r.innerHTML = '';
+    if (!s) return;
+    const v = calcExpr(s);
+    if (v != null && /[+\-*/^%(]/.test(s)) res.push({ kind: 'Rechner', ic: icon('rechner'), label: `${s} = ${fmtNum(v)}`, sub: 'In Rechner öffnen', go: () => openApp('rechner') });
+    Object.entries(APPS).filter(([id, a]) => !a.hidden && a.name.toLowerCase().includes(sl)).forEach(([id, a]) => res.push({ kind: 'Programme', ic: icon(id), label: a.name, sub: '/Applications', go: () => openApp(id) }));
+    res.push({ kind: 'Search', ic: icon('search'), label: `„${s}" mit Search suchen`, sub: 'Browser', go: () => openApp('search', 'search://suche?q=' + encodeURIComponent(s)) });
+    [['einstellungen', 'Dunkelmodus', 'darstellung'], ['einstellungen', 'Hintergrundbild', 'hintergrund'], ['einstellungen', 'Dock', 'dock'], ['einstellungen', 'Akzentfarbe', 'darstellung']].filter(x => x[1].toLowerCase().includes(sl)).forEach(x => res.push({ kind: 'Systemeinstellungen', ic: icon('einstellungen'), label: x[1], sub: 'Systemeinstellungen', go: () => openApp('einstellungen', x[2]) }));
+    const all = []; walk('/', FS, all);
+    all.filter(([p]) => base(p).toLowerCase().includes(sl) && !p.includes('.app/')).slice(0, 8).forEach(([p, n]) => res.push({ kind: n.t === 'd' ? 'Ordner' : 'Dokumente', ic: itemIcon(base(p), n), label: base(p), sub: parent(p).replace(HOME, '~'), go: () => openPath(p) }));
+    const notes = all.filter(([p, n]) => n.t === 'f' && n.c && sl.length > 2 && n.c.toLowerCase().includes(sl) && !base(p).toLowerCase().includes(sl)).slice(0, 4);
+    notes.forEach(([p, n]) => res.push({ kind: 'Inhalt', ic: ICON.file(), label: base(p), sub: 'enthält „' + s + '"', go: () => openPath(p) }));
+    cur = 0; let lastKind = '';
+    res.forEach((it, i) => {
+      if (it.kind !== lastKind) { r.insertAdjacentHTML('beforeend', `<div class="sp-h">${esc(it.kind)}</div>`); lastKind = it.kind; }
+      const b = document.createElement('button'); b.className = 'sp-it' + (i === 0 ? ' on' : '');
+      b.innerHTML = `${it.ic}<b>${esc(it.label)}</b><small>${esc(it.sub)}</small>`;
+      b.onclick = () => { closeSpot(); it.go(); };
+      b.onmouseenter = () => { cur = i; mark(); };
+      r.append(b);
+    });
+    if (!res.length) r.innerHTML = `<div class="sp-h">Keine Treffer für „${esc(s)}"</div>`;
+  };
+  const mark = () => $$('.sp-it', r).forEach((b, i) => { b.classList.toggle('on', i === cur); if (i === cur) b.scrollIntoView({ block: 'nearest' }); });
+  q.oninput = render;
+  q.onkeydown = e => {
+    if (e.key === 'ArrowDown') { e.preventDefault(); cur = Math.min(res.length - 1, cur + 1); mark(); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); cur = Math.max(0, cur - 1); mark(); }
+    else if (e.key === 'Enter' && res[cur]) { const it = res[cur]; closeSpot(); it.go(); }
+    else if (e.key === 'Escape') closeSpot();
+  };
+  q.focus();
+}
+
+/* ================= Control center ================= */
+function toggleCC() {
+  if ($('#cc')) { $('#cc').remove(); return; }
+  closePop();
+  const p = document.createElement('div'); p.id = 'cc'; p.className = 'pop cc';
+  const wifiI = '<svg viewBox="0 0 16 16" fill="currentColor"><path d="M8 13.6l2-2.4a3 3 0 0 0-4 0z"/><path d="M8 7.6a6.4 6.4 0 0 1 4.3 1.7l1.1-1.3a8.1 8.1 0 0 0-10.8 0l1.1 1.3A6.4 6.4 0 0 1 8 7.6z"/><path d="M8 3.7a10.3 10.3 0 0 1 6.9 2.7L16 5.1A12 12 0 0 0 0 5.1l1.1 1.3A10.3 10.3 0 0 1 8 3.7z"/></svg>';
+  const btI = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><path d="M4 4.5l7 6-3.5 3V2.5l3.5 3-7 6"/></svg>';
+  const moonI = '<svg viewBox="0 0 16 16" fill="currentColor"><path d="M9.5 1.5a6.5 6.5 0 1 0 5 10.6A6 6 0 0 1 9.5 1.5z"/></svg>';
+  const sunI = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="8" cy="8" r="3"/><path d="M8 1v1.6M8 13.4V15M1 8h1.6M13.4 8H15M3 3l1.1 1.1M11.9 11.9L13 13M3 13l1.1-1.1M11.9 4.1L13 3"/></svg>';
+  const render = () => {
+    p.innerHTML = `<div class="cc-t"><button class="cc-b${S.wifi ? ' on' : ''}" data-t="wifi"><i>${wifiI}</i><span>WLAN<small>${S.wifi ? 'ClokeNet' : 'Aus'}</small></span></button><button class="cc-b${S.bt ? ' on' : ''}" data-t="bt"><i>${btI}</i><span>Bluetooth<small>${S.bt ? 'Ein' : 'Aus'}</small></span></button></div>
+      <div class="cc-t"><button class="cc-b${S.focus ? ' on' : ''}" data-t="focus"><i>${moonI}</i><span>Nicht stören<small>${S.focus ? 'Ein' : 'Aus'}</small></span></button><button class="cc-b${isDark() ? ' on' : ''}" data-t="dark"><i>${sunI}</i><span>Dunkelmodus<small>${isDark() ? 'Ein' : 'Aus'}</small></span></button></div>
+      <div class="cc-t cc-w"><label for="cc-br">Display</label><input type="range" id="cc-br" min="30" max="100" value="${S.bright}"></div>
+      <div class="cc-t cc-w"><label for="cc-vol">Ton</label><input type="range" id="cc-vol" min="0" max="100" value="${S.vol}"></div>`;
+    $$('[data-t]', p).forEach(b => b.onclick = () => {
+      const k = b.dataset.t;
+      if (k === 'dark') toggleDark(); else { S[k] = !S[k]; saveS(); }
+      if (k === 'wifi') { renderWifi(); }
+      render();
+    });
+    $('#cc-br', p).oninput = e => { S.bright = +e.target.value; saveS(); setBright(); };
+    $('#cc-vol', p).oninput = e => { S.vol = +e.target.value; saveS(); };
+  };
+  render(); document.body.append(p);
+  const r = $('#mb-cc').getBoundingClientRect();
+  p.style.top = '30px'; p.style.left = Math.max(6, Math.min(r.right - 300, innerWidth - 306)) + 'px';
+}
+function toggleDark() { S.theme = isDark() ? 'light' : 'dark'; saveS(); applyTheme(); refreshSettings(); renderMenubar(); }
+
+/* ================= Boot / login / power ================= */
+const VERBOSE = [
+  `Darwin Kernel Version ${OS.darwin}: ${OS.xnu}`, 'vm_page_bootstrap: 2041836 free pages and 55316 wired pages', 'kext submap [0xffffff7f80000000 - 0xffffff8000000000], kernel text [0xffffff8000200000 - 0xffffff8000c00000]',
+  'zone leak detection enabled', 'standard timeslicing quantum is 10000 us', 'standard background quantum is 2500 us', 'mig_table_max_displ = 79',
+  'ACPI CPU: ProcessorId=1 LocalApicId=0 Enabled', 'ACPI CPU: ProcessorId=2 LocalApicId=1 Enabled', 'calling mpo_policy_init for Sandbox', 'Security policy loaded: Seatbelt sandbox policy (Sandbox)',
+  'Copyright (c) 1982, 1986, 1989, 1991, 1993 The Regents of the University of California. All rights reserved.', '', `ClokeOS ${OS.version} (${OS.build}) – basierend auf Darwin ${OS.darwin}`,
+  'IOKit: Registry initialisiert', 'IOAPIC: Version 0x20 Vectors 64:87', 'PCI configuration begin', 'PCI configuration end, bridges 4, devices 18',
+  'AHCI: 1 Port(s) aktiv', 'BSD root: disk0s2, major 1, minor 2', 'apfs_vfsop_mount: mounting volume "Cloke HD"', 'launchd[1]: Starte Systemdienste',
+  'com.clokeos.logd: bereit', 'com.clokeos.configd: Netzwerk ClokeNet verbunden', 'com.clokeos.cloakserver: Framebuffer 1920x1080x32 initialisiert', 'com.clokeos.cloakserver: Compositor läuft', 'loginwindow: bereit'
+];
+let bootTimer = null;
+function boot() {
+  bootTime = Date.now();
+  ['#desk', '#login', '#power'].forEach(s => $(s).hidden = true);
+  const b = $('#boot'); b.hidden = false;
+  const bar = $('#boot-bar'), vb = $('#verbose'); vb.hidden = true; vb.textContent = '';
+  let t0 = performance.now(), dur = 2600, verbose = false, li = 0, done = false;
+  const finish = () => { if (done) return; done = true; cancelAnimationFrame(bootTimer); document.removeEventListener('keydown', key); b.onclick = null; b.hidden = true; showLogin(); };
+  const key = e => { if (e.key === 'v' || e.key === 'V') { verbose = true; vb.hidden = false; dur = 4200; } else if (e.key === 'Escape' || e.key === 'Enter') finish(); };
+  document.addEventListener('keydown', key);
+  b.onclick = finish;
+  const step = now => {
+    const k = Math.min(1, (now - t0) / dur);
+    bar.style.width = (k < .15 ? k * 2 : .3 + (k - .15) * .82) * 100 + '%';
+    if (verbose) { const want = Math.floor(k * VERBOSE.length); while (li < want) vb.textContent += VERBOSE[li++] + '\n'; }
+    if (k < 1) bootTimer = requestAnimationFrame(step); else setTimeout(finish, 250);
+  };
+  bootTimer = requestAnimationFrame(step);
+}
+function showLogin() {
+  $('#desk').hidden = true; $('#power').hidden = true;
+  const l = $('#login'); l.hidden = false;
+  $('#lg-name').textContent = S.user;
+  const av = $('#lg-av'); av.textContent = (S.user[0] || '?').toUpperCase(); av.style.background = `linear-gradient(135deg,${S.avatar},color-mix(in srgb,${S.avatar} 55%,#000))`;
+  $('#lg-pw').value = ''; tickClock();
+  $("#lg-pw").focus();
+}
+$('#lg-form').onsubmit = e => { e.preventDefault(); login(); };
+$$('.lg-power button').forEach(b => b.onclick = () => power(b.dataset.p));
+function chime() {
+  try {
+    const AC = window.AudioContext || window.webkitAudioContext; if (!AC || S.vol === 0) return;
+    const ctx = new AC(), g = ctx.createGain(); g.connect(ctx.destination);
+    g.gain.setValueAtTime(0, ctx.currentTime); g.gain.linearRampToValueAtTime(.11 * S.vol / 100, ctx.currentTime + .05); g.gain.exponentialRampToValueAtTime(.0001, ctx.currentTime + 2.2);
+    [349.2, 440, 523.3, 698.5].forEach((f, i) => { const o = ctx.createOscillator(); o.type = i % 2 ? 'sine' : 'triangle'; o.frequency.value = f; o.connect(g); o.start(ctx.currentTime + i * .02); o.stop(ctx.currentTime + 2.3); });
+  } catch (e) {}
+}
+let loggedInOnce = false;
+function login() {
+  $('#login').hidden = true; $('#desk').hidden = false;
+  renderMenubar(); renderDesk(); updateDock(); applyDock(); chime();
+  if (!loggedInOnce) {
+    loggedInOnce = true;
+    setTimeout(() => notify('Willkommen bei ClokeOS', 'Strg + Leertaste öffnet die Suche. Rechtsklick auf den Schreibtisch für neue Dateien.'), 700);
+    if (!store.get('seenWelcome', false)) { store.set('seenWelcome', true); setTimeout(() => openPath(HOME + '/Desktop/Willkommen.txt'), 500); }
+  }
+}
+function power(kind) {
+  closePop(); closeSpot(); closeLaunchpad(); const cc = $('#cc'); if (cc) cc.remove();
+  if (kind === 'logout' || kind === 'restart' || kind === 'off') { [...wins].forEach(closeWin); }
+  if (kind === 'logout') { showLogin(); return; }
+  if (kind === 'restart') { const p = $('#power'); p.hidden = false; $('#power-msg').textContent = ''; $('#power-btn').hidden = true; $('#desk').hidden = true; $('#login').hidden = true; setTimeout(() => { p.hidden = true; $('#power-btn').hidden = false; boot(); }, 900); return; }
+  const p = $('#power'); p.hidden = false; $('#desk').hidden = true; $('#login').hidden = true; $('#power-btn').hidden = false;
+  if (kind === 'sleep') { $('#power-msg').textContent = 'Ruhezustand. Klicke, um ClokeOS aufzuwecken.'; p.onclick = () => { p.onclick = null; p.hidden = true; showLogin(); }; }
+  else { $('#power-msg').textContent = 'ClokeOS wurde ausgeschaltet.'; p.onclick = null; $('#power-btn').onclick = e => { e.stopPropagation(); p.hidden = true; boot(); }; }
+}
+
+/* ================= Global keys ================= */
+document.addEventListener('keydown', e => {
+  if ($('#desk').hidden) return;
+  if ((e.ctrlKey || e.metaKey) && e.code === 'Space') { e.preventDefault(); openSpot(); return; }
+  if (e.key === 'F4') { e.preventDefault(); toggleLaunchpad(); return; }
+  if (e.key === 'Escape') { if ($('#spot')) closeSpot(); else if ($('#launchpad')) closeLaunchpad(); else if ($('#cc')) $('#cc').remove(); else closePop(); }
+});
+
+/* ================= Init ================= */
+FS = store.get('fs', null) || defaultFS();
+if (!node(TRASH)) FS.ch.Users.ch.gast.ch['.Trash'] = D();
+// migrate older saves: new wallpaper default, Dateien → Fundus, Search.app
+if ((RAW_S.v || (RAW_S.theme ? 1 : 2)) < 2) { S.v = 2; S.wall = 'bucht'; saveS(); }
+const appsDir = node('/Applications');
+if (appsDir) {
+  Object.keys(appsDir.ch).forEach(k => { if (k.endsWith('.app') && !APP_BY_NAME(k)) delete appsDir.ch[k]; });
+  Object.values(APPS).forEach(a => { if (!a.hidden && !appsDir.ch[a.name + '.app']) appsDir.ch[a.name + '.app'] = D(); });
+}
+if (navigator.userAgentData && CSS.supports('backdrop-filter', 'blur(1px)') && !reduced.matches) root.classList.add('refract');
+try { new ResizeObserver(scheduleRefract).observe($('#dock')); } catch (e) {}
+fsL.add(renderDesk);
+bindMbButton($('#mb-logo'), logoMenu);
+bindMbButton($('#mb-app'), appMenu);
+$('#mb-spot').onclick = openSpot;
+$('#mb-cc').onclick = toggleCC;
+$('#mb-wifi').onclick = toggleCC;
+bindMbButton($('#mb-batt'), () => [{ head: 'Batterie' }, { label: `Ladezustand: ${Math.round(battLevel * 100)} %`, disabled: true }, '-', { label: 'Batterieeinstellungen …', action: () => openApp('einstellungen', 'allgemein') }]);
+bindMbButton($('#mb-clock'), () => [{ head: new Date().toLocaleDateString('de-DE', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' }) }, '-', { label: 'Kalender öffnen', action: () => openApp('kalender') }]);
+buildDock(); renderBatt(); renderWifi(); setBright(); applyTheme(); tickClock();
+setInterval(tickClock, 1000 * 15);
+let rsT = 0;
+addEventListener('resize', () => {
+  clearTimeout(rsT); rsT = setTimeout(() => {
+    drawMainWall();
+    const a = deskArea();
+    wins.forEach(w => { const el = w.el; if (el.offsetLeft > innerWidth - 60) el.style.left = Math.max(a.x, innerWidth - el.offsetWidth - 6) + 'px'; if (el.offsetTop > innerHeight - 60) el.style.top = a.y + 'px'; if (el.offsetWidth > a.w) el.style.width = a.w + 'px'; });
+  }, 120);
+});
+boot();
+})();
+</script>
