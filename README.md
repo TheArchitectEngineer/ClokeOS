@@ -71,11 +71,40 @@ Das Logo bleibt stehen, bis die VM ausgeschaltet wird. Denn PureDarwins Kernel i
 
 Die Boot-Argumente stehen als `CLOKE_BOOT_ARGS` in `clokeos-darwin/config.sh`: `debug=0x218 -nogzalloc_mode keepsyms=1 serial=3 gopconsole=1 gen9_debug=1`, also PureDarwins Vorgabe ohne `-v`. `serial=3` muss bleiben, denn darüber laufen Konsole, Terminal und `vmctl.py`. Mit `-v` vorn und einem neuen `./brand.sh` sieht der Start wieder aus wie bei PureDarwin, mit Kernel-Log und zsh auf dem Bildschirm ([Bildschirmfoto](clokeos-darwin/vm-bildschirm.png)).
 
-Für einen einzelnen ausführlichen Start reicht die Taste V, wie es der Startbildschirm in `clokeos.html` anbietet: V beim Einschalten gedrückt halten, im QEMU-Fenster oder auf der seriellen Konsole. Der Loader sieht zweimal nach, ohne zu warten: gleich nach dem Lesen der Boot-Argumente und noch einmal, wenn der Kernel geladen ist. Findet er ein v oder V, hängt er ` -v` an die Boot-Argumente, löscht den Bildschirm samt Logo, schreibt sein Protokoll wieder auch auf den Bildschirm und gibt dem Kernel den Framebuffer. Der Start sieht dann aus wie mit `-v` in `config.sh`, und im seriellen Protokoll steht `key V: verbose boot, using "… -v"`. Kurz tippen genügt nicht: Die Firmware (OVMF) leert den Tastaturpuffer direkt bevor sie den Loader startet, und der Loader ist in QEMU nach etwa 0,25 Sekunden fertig. Erst die Tastenwiederholung der gehaltenen Taste kommt sicher in dieses Fenster. Ohne Fenster lässt sich das nachstellen, indem man ab dem Start von `./run.sh --headless` alle 50 ms ein `v` an den seriellen Socket (`~/ClokeOS-work/vm/serial.sock`) schickt oder per QMP `send-key` drückt. Ein einziges „Taste gedrückt“ per QMP-`input-send-event` vor dem Start reicht dagegen nicht, weil QEMU den Tastaturzustand zurücksetzt, wenn die Firmware die USB-Tastatur einrichtet.
+Für einen einzelnen ausführlichen Start reicht die Taste V, wie es der Startbildschirm in `clokeos.html` anbietet: V beim Einschalten gedrückt halten, im QEMU-Fenster oder auf der seriellen Konsole. Der Loader sieht zweimal nach, ohne zu warten: gleich nach dem Lesen der Boot-Argumente und noch einmal, wenn der Kernel geladen ist. Findet er ein v oder V, hängt er ` -v` an die Boot-Argumente, löscht den Bildschirm samt Logo, schreibt sein Protokoll wieder auch auf den Bildschirm und gibt dem Kernel den Framebuffer. Der Start sieht dann aus wie mit `-v` in `config.sh`, und im seriellen Protokoll steht `key V: verbose boot, using "… -v"`. Kurz tippen genügt nicht: Die Firmware (OVMF) leert den Tastaturpuffer direkt bevor sie den Loader startet, und der Loader ist in QEMU nach etwa 0,25 Sekunden fertig. Erst die Tastenwiederholung der gehaltenen Taste kommt sicher in dieses Fenster. Ohne Fenster lässt sich das nachstellen, indem man ab dem Start von `./run.sh --headless` alle 50 ms ein `v` an den seriellen Socket (`~/ClokeOS-work/vm/x86_64/serial.sock`) schickt oder per QMP `send-key` drückt. Ein einziges „Taste gedrückt“ per QMP-`input-send-event` vor dem Start reicht dagegen nicht, weil QEMU den Tastaturzustand zurücksetzt, wenn die Firmware die USB-Tastatur einrichtet.
 
 Gebaut wird der Loader von `clokeos-darwin/loader/build.sh`, das `brand.sh` aufruft. Es entpackt xnu-loader im Stand `8295cd89` (derselbe wie in PureDarwin 20.5) und gnu-efi 4.0.2, wendet `loader/xnu-loader.patch` an, fügt `splash.c` hinzu und erzeugt mit `logo.py` aus `LOGO_D` die Umrisse des Logos als C-Header. Der Loader rastert das Logo erst beim Start in der vorhandenen Auflösung, deshalb ist es auf jedem Bildschirm scharf, und eine Änderung am Logo in `clokeos.html` landet beim nächsten `./brand.sh` von selbst im Bootlogo. Kompiliert wird mit mingw-w64, das direkt EFI-Programme erzeugt; eine Linux-VM ist nicht nötig. Der Build ist reproduzierbar, das Ergebnis liegt in `~/ClokeOS-work/out/BOOTX64.EFI`.
 
-Grenzen: Die VM sieht nur einen Prozessorkern (`hw.ncpu` = 1). Das Netzwerk kommt nicht hoch (configd meldet „Network configuration not updated“). Ohne `-v` (oder V beim Start) zeigt der Bildschirm nach dem Start weiter nur das Logo (siehe oben). Die Kernelzeile von `uname` bleibt PureDarwins Build, denn den Kernel übernimmt ClokeOS unverändert.
+Netzwerk: `run.sh` gibt der x86-VM eine Intel-Karte vom Typ 82545EM (`-nic user,model=e1000-82545em`), denn PureDarwins Treiber `PDE1000` erkennt nur diese; mit QEMUs Standardkarten bekommt die VM keine Adresse. Damit holt sie sich per DHCP `10.0.2.15`, löst Namen auf und erreicht das Internet (`ping github.com`).
+
+Grenzen: Die VM sieht nur einen Prozessorkern (`hw.ncpu` = 1). Ohne `-v` (oder V beim Start) zeigt der Bildschirm nach dem Start weiter nur das Logo (siehe oben). Die Kernelzeile von `uname` bleibt PureDarwins Build, denn den Kernel übernimmt ClokeOS unverändert.
+
+### Architekturen
+
+| Ziel | Stand | Basis |
+|---|---|---|
+| x86_64 (QEMU q35, UEFI) | gebaut, gebootet, als Release | PureDarwin 20.5, `puredarwin-minimal.img` |
+| arm64 (QEMU virt) | Skripte vorbereitet, nie gebaut oder gebootet | PureDarwins Vorschau-Image `puredarwin-arm64-virt-minimal.img` (578 MiB, von puredarwin.org) |
+| Raspberry Pi 3 | offen | PureDarwin bootet dort bis zur Shell, bietet aber kein fertiges Image an |
+
+Die Architektur wählt `CLOKEOS_ARCH`, für alle Skripte gleich:
+
+```bash
+CLOKEOS_ARCH=arm64 ./brand.sh && CLOKEOS_ARCH=arm64 ./run.sh
+```
+
+Für arm64 lädt `fetch.sh` PureDarwins Vorschau-Image. Dort ist die Wurzel eine RAM-Disk in der EFI-Partition (`ramdisk.img`, Boot-Argument `rd=md0`), deshalb schreibt `brand.sh` das Overlay auch dort hinein, wenn es eine findet. `run.sh` startet dann `qemu-system-aarch64` wie PureDarwins eigener Runner (virt, GICv3, virtio-Disk und -Netz, ramfb). Auf einem Mac mit Apple-Chip kann `--hvf` Apples Hypervisor statt Emulation nutzen, ausprobiert ist das noch nicht. Ein Bootlogo gibt es auf arm64 noch nicht: Dafür muss der Loader-Patch für `BOOTAA64.EFI` gebaut werden, und mingw-w64 aus Homebrew kann kein arm64.
+
+Ein Raspberry-Pi-Image müsste ClokeOS selbst bauen (PureDarwins Nix-Ziel `image-arm64-bcm2837`, siehe unten). Das `.img.xz`-Format der Releases ist so gewählt, dass Raspberry Pi Imager und balenaEtcher es direkt schreiben können.
+
+### Releases
+
+```bash
+cd clokeos-darwin && ./release.sh                 # x86_64; mehrere: ./release.sh x86_64 arm64
+cd clokeos-darwin && ./release.sh --upload        # zusätzlich als Entwurf v<version> auf GitHub
+```
+
+`release.sh` baut jedes Image frisch, packt es mit xz und legt `SHA256SUMS` und `RELEASE-NOTES.md` (Downloads, Starten, was geht und was nicht, Quellen und Lizenzen) nach `~/ClokeOS-work/dist/<version>/`. Mit `--upload` landet alles als Release-Entwurf `v<version>` im GitHub-Repo, aber nur wenn alles eingecheckt und gepusht ist; veröffentlicht wird von Hand. Ist die Version dort schon veröffentlicht, bricht das Skript ab, dann `CLOKE_VERSION` in `config.sh` erhöhen. Die Images enthalten PureDarwin und damit auch GPL-Teile (corecrypto); die Release-Notizen verweisen deshalb auf die genauen Quellstände.
 
 ### Was Apple nicht veröffentlicht
 
@@ -94,10 +123,10 @@ Der Kernel ist das kleinere Problem, denn XNU ist Open Source (Apple Public Sour
 
 1. ~~**Darwin in einer VM booten.**~~ Erledigt mit PureDarwin 20.5 in QEMU (siehe oben).
 2. ~~**Branding.**~~ Erledigt: `SystemVersion.plist`, `sw_vers`, Hostname, Anmeldetext, Volume-Name und das Bootlogo, das PureDarwins xnu-loader jetzt vor dem Kernelstart über GOP zeichnet (siehe Bootlogo).
-3. **Fensterserver.** PureDarwin bringt auf x86_64 bereits X11 und Wayland mit (eigener GOP-Grafiktreiber für Xorg, Maus und Tastatur über USB-HID). CloakServer kann deshalb zunächst ein Wayland-Compositor oder X11-Fenstermanager im ClokeOS-Stil sein, statt direkt auf IOFramebuffer aufzusetzen.
-4. **Shell portieren.** Menüleiste, Dock, Fundus, Search und die übrigen Apps aus `clokeos.html` als native Programme umsetzen, oder eine Browser-Engine als Shell-Laufzeit einbetten. PureDarwin hat WebKitGTK und NetSurf als Pakete; mit WebKitGTK könnte `clokeos.html` fast unverändert als Oberfläche laufen.
+3. **Fensterserver.** PureDarwin bringt auf x86_64 bereits X11 und Wayland mit (eigener GOP-Grafiktreiber für Xorg, Maus und Tastatur über USB-HID, sway, Xfce). CloakServer kann deshalb zunächst ein Wayland-Compositor oder X11-Fenstermanager im ClokeOS-Stil sein, statt direkt auf IOFramebuffer aufzusetzen. Auf arm64 startet Xorg, GL ist dort laut PureDarwin aber noch kaputt.
+4. **Shell portieren.** Menüleiste, Dock, Fundus, Search und die übrigen Apps aus `clokeos.html` als native Programme umsetzen, oder eine Browser-Engine als Shell-Laufzeit einbetten. Mit WebKitGTK könnte `clokeos.html` fast unverändert als Oberfläche laufen; PureDarwin arbeitet daran, laut Statusseite läuft es noch nicht. NetSurf gibt es als Paket.
 5. **Installer-Image.** Bootfähiges ISO mit Bootloader, Kernel, Userland und CloakServer.
 
-Für Schritt 3 und 4 reicht das fertige Minimal-Image nicht mehr. Dann muss ClokeOS PureDarwins Desktop-Image selbst bauen. Das geht nur unter Linux mit Nix (etwa 60 GB) und braucht Apples `MacOSX11.3.sdk`, das man selbst besorgen muss, weil es nicht weitergegeben werden darf.
+Für Schritt 3 und 4 reicht das Minimal-Image nicht mehr. PureDarwin bietet auf seiner Website Vorschau-Images mit Desktop an: `puredarwin.img` (x86_64, 6,1 GiB, X11, Wayland, Xfce, Wine, Compiler) und `puredarwin-arm64-virt.img` (3,1 GiB). Darauf kann CloakServer zuerst entstehen, ohne selbst zu bauen. Eigene Images (etwa für den Raspberry Pi oder mit eigenem Kernel) gehen nur mit PureDarwins Nix-Build unter Linux (etwa 60 GB) und Apples `MacOSX11.3.sdk`, das man selbst besorgen muss, weil es nicht weitergegeben werden darf; es gehört zu Xcode 12.5 (developer.apple.com). PureDarwins Build erwartet eine bestimmte Prüfsumme des SDK-Archivs, ein selbst gepacktes SDK braucht deshalb einen angepassten Hash.
 
 Wichtig: Apples Markennamen, Icons und Schriften dürfen nicht übernommen werden. ClokeOS nutzt deshalb eigene Namen, eigene Icons und ein eigenes Logo.
