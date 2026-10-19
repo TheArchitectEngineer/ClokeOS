@@ -5,11 +5,33 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Große Dateien (Downloads, gebaute Images, VM-Zustand) liegen außerhalb des Projektordners.
 WORK="${CLOKEOS_WORK:-$HOME/ClokeOS-work}"
 
-# Basis: PureDarwin 20.5, minimales x86_64-Image (UEFI, xnu-loader, ext4-Wurzel).
+# Zielarchitektur: x86_64 (Standard) oder arm64 (QEMU virt), z. B. CLOKEOS_ARCH=arm64 ./brand.sh
+CLOKE_ARCH="${CLOKEOS_ARCH:-x86_64}"
+
+# Basis: PureDarwin 20.5. Alle Images haben UEFI, xnu-loader und eine ext4-Wurzel.
 PD_VERSION="20.5"
-PD_URL="https://github.com/PureDarwin/PureDarwin/releases/download/$PD_VERSION/puredarwin-minimal.img"
-PD_SHA256="ef65a816395680ef9210f401cebe3783c131badca1a942cb80e56bec97e717ac"
-PD_IMG="$WORK/download/pd-$PD_VERSION/puredarwin-minimal.img"
+case "$CLOKE_ARCH" in
+  x86_64)
+    PD_FILE="puredarwin-minimal.img"
+    PD_URL="https://github.com/PureDarwin/PureDarwin/releases/download/$PD_VERSION/$PD_FILE"
+    PD_SHA256="ef65a816395680ef9210f401cebe3783c131badca1a942cb80e56bec97e717ac"
+    EFI_BINARY="BOOTX64.EFI"
+    ;;
+  arm64)
+    # Noch nie gebaut oder gebootet: PureDarwin hat für arm64 kein Release, nur ein
+    # Vorschau-Image auf puredarwin.org (Stand 23.08.2026, wie das x86_64-Image von 20.5).
+    # Die Wurzel ist dort eine RAM-Disk (EFI/ramdisk.img, Boot-Argument rd=md0).
+    PD_FILE="puredarwin-arm64-virt-minimal.img"
+    PD_URL="https://internal.lab004.dev/private/images/$PD_FILE"
+    PD_SHA256="351de0f7611f34912653f5fc9e685eba7d5b1724fb502993a59b8f4eebbcc218"
+    EFI_BINARY="BOOTAA64.EFI"
+    ;;
+  *)
+    echo "Unbekannte Architektur: $CLOKE_ARCH (x86_64 oder arm64)" >&2
+    exit 1
+    ;;
+esac
+PD_IMG="$WORK/download/pd-$PD_VERSION/$PD_FILE"
 
 # Bootloader: PureDarwins xnu-loader (der Stand aus PureDarwin 20.5) mit ClokeOS-Bootlogo,
 # gebaut mit mingw-w64 gegen gnu-efi (die Version aus PureDarwins Nix-Build). Siehe loader/.
@@ -21,12 +43,16 @@ GNU_EFI_VERSION="4.0.2"
 GNU_EFI_URL="https://codeload.github.com/ncroxon/gnu-efi/tar.gz/refs/tags/$GNU_EFI_VERSION"
 GNU_EFI_SHA256="f31488c3fc7d64257ec8fcad470ec75a936a4db77350fabaf043c52a7acbae72"
 GNU_EFI_TGZ="$WORK/download/gnu-efi/gnu-efi-$GNU_EFI_VERSION.tar.gz"
-LOADER_EFI="$WORK/out/BOOTX64.EFI"
+# Den eigenen Loader gibt es bisher nur für x86_64; arm64 behält PureDarwins Loader ohne Logo.
+LOADER_EFI=""
+[ "$CLOKE_ARCH" = x86_64 ] && LOADER_EFI="$WORK/out/BOOTX64.EFI"
 
 # Kernel-Argumente (EFI/BOOT/boot-args.txt). Ohne -v zeigt der Loader das Bootlogo und gibt dem
 # Kernel keinen Framebuffer; Kernel-Log und Shell laufen dann nur über die serielle Konsole
 # (serial=3). Mit -v vorn dran sieht der Bildschirm wieder aus wie bei PureDarwin.
-CLOKE_BOOT_ARGS="debug=0x218 -nogzalloc_mode keepsyms=1 serial=3 gopconsole=1 gen9_debug=1"
+# Leer = die Boot-Argumente des Basisimages bleiben (arm64, solange es dort keinen eigenen Loader gibt).
+CLOKE_BOOT_ARGS=""
+[ "$CLOKE_ARCH" = x86_64 ] && CLOKE_BOOT_ARGS="debug=0x218 -nogzalloc_mode keepsyms=1 serial=3 gopconsole=1 gen9_debug=1"
 
 # ClokeOS-Version, passend zur Oberfläche in clokeos.html (OS-Objekt).
 CLOKE_NAME="ClokeOS"
@@ -34,19 +60,25 @@ CLOKE_VERSION="2.0"
 CLOKE_CODENAME="Presidio"
 CLOKE_BUILD="2A17"
 CLOKE_HOST="clokeos"
-CLOKE_IMG="$WORK/out/clokeos-$CLOKE_VERSION-x86_64.img"
+CLOKE_IMG="$WORK/out/clokeos-$CLOKE_VERSION-$CLOKE_ARCH.img"
 
 # Laufzeitdateien der VM (UEFI-Variablen, Sockets, Logs).
-VM_STATE="$WORK/vm"
+VM_STATE="$WORK/vm/$CLOKE_ARCH"
 
 # Homebrew-Werkzeuge
 BREW="$(brew --prefix 2>/dev/null || echo /opt/homebrew)"
 DEBUGFS="$BREW/opt/e2fsprogs/sbin/debugfs"
 E2FSCK="$BREW/opt/e2fsprogs/sbin/e2fsck"
 TUNE2FS="$BREW/opt/e2fsprogs/sbin/tune2fs"
-QEMU="$BREW/bin/qemu-system-x86_64"
-OVMF_CODE="$BREW/share/qemu/edk2-x86_64-code.fd"
-OVMF_VARS="$BREW/share/qemu/edk2-i386-vars.fd"
+if [ "$CLOKE_ARCH" = arm64 ]; then
+  QEMU="$BREW/bin/qemu-system-aarch64"
+  FW_CODE="$BREW/share/qemu/edk2-aarch64-code.fd"
+  FW_VARS="$BREW/share/qemu/edk2-arm-vars.fd"
+else
+  QEMU="$BREW/bin/qemu-system-x86_64"
+  FW_CODE="$BREW/share/qemu/edk2-x86_64-code.fd"
+  FW_VARS="$BREW/share/qemu/edk2-i386-vars.fd"
+fi
 MINGW_CC="$BREW/bin/x86_64-w64-mingw32-gcc"
 
 need() {

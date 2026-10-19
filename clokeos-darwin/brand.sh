@@ -1,5 +1,6 @@
 #!/bin/bash
-# Baut aus dem PureDarwin-Image ein ClokeOS-Image (~/ClokeOS-work/out/clokeos-<version>-x86_64.img).
+# Baut aus dem PureDarwin-Image ein ClokeOS-Image (~/ClokeOS-work/out/clokeos-<version>-<arch>.img).
+# Architektur wie bei run.sh mit CLOKEOS_ARCH=arm64 (Standard: x86_64).
 #
 # Das Basisimage bleibt unverändert. Das Wurzeldateisystem (ext4) wird mit debugfs bearbeitet,
 # dafür braucht es weder Linux noch Root-Rechte. Was geändert wird:
@@ -7,14 +8,16 @@
 #   - SystemVersion.plist und /etc/clokeos-release werden aus config.sh erzeugt
 #   - /etc/zshrc bekommt die ClokeOS-Eingabeaufforderung und zeigt beim Start /etc/motd
 #   - PureDarwins Rechnername-Dienst wird entfernt, das Volume heißt "Cloke HD"
-#   - die EFI-Partition bekommt den Loader mit Bootlogo (loader/build.sh) und die Boot-Argumente
-#     aus config.sh, beides mit mtools
+#   - liegt eine RAM-Disk in der EFI-Partition (ramdisk.img, arm64-Minimal), bekommt sie dasselbe
+#   - x86_64: die EFI-Partition bekommt den Loader mit Bootlogo (loader/build.sh) und die
+#     Boot-Argumente aus config.sh, beides mit mtools
 set -euo pipefail
 source "$(dirname "$0")/config.sh"
-need "$DEBUGFS" "$E2FSCK" "$TUNE2FS" python3 mcopy mtype
+need "$DEBUGFS" "$E2FSCK" "$TUNE2FS" python3 mcopy mtype mdir
+export MTOOLS_SKIP_CHECK=1
 
 "$HERE/fetch.sh"
-"$HERE/loader/build.sh" "$LOADER_EFI"
+[ -n "$LOADER_EFI" ] && "$HERE/loader/build.sh" "$LOADER_EFI"
 
 tmp="$WORK/tmp/brand"
 rm -rf "$tmp"
@@ -73,49 +76,66 @@ if [[ -z $CLOKEOS_GREETED && -r /etc/motd ]]; then
 fi
 EOF
 
-# --- in das ext4-Dateisystem schreiben -----------------------------------------------------
-cmds="$tmp/debugfs.cmds"
-{
-  echo "rm /System/Library/LaunchDaemons/org.puredarwin.hostname.plist"
-  echo "rm /usr/libexec/pd-set-hostname"
-  (cd "$tmp/stage" && find . -mindepth 1 -type d | sed 's|^\.||' | sort) | while read -r d; do
-    echo "mkdir $d"
-  done
-  (cd "$tmp/stage" && find . -type f | sed 's|^\.||' | sort) | while read -r f; do
-    mode=$(stat -f '%Lp' "$tmp/stage$f")
-    echo "rm $f"
-    echo "write $tmp/stage$f $f"
-    echo "set_inode_field $f mode 0100$mode"
-    echo "set_inode_field $f uid 0"
-    echo "set_inode_field $f gid 0"
-  done
-} > "$cmds"
-"$DEBUGFS" -w -f "$cmds" "$root" > "$tmp/debugfs.log" 2>&1
-"$TUNE2FS" -L "Cloke HD" "$root" >/dev/null
-"$E2FSCK" -fn "$root" > "$tmp/e2fsck.log" 2>&1 || { cat "$tmp/e2fsck.log" >&2; exit 1; }
+# --- in ein ext4-Dateisystem schreiben ----------------------------------------------------
+# brand_ext4 <ext4-datei> <volume-name|"">: Overlay hinein, prüfen, ob alles angekommen ist.
+brand_ext4() {
+  local fs="$1" label="$2" cmds="$tmp/debugfs.cmds" f
+  {
+    echo "rm /System/Library/LaunchDaemons/org.puredarwin.hostname.plist"
+    echo "rm /usr/libexec/pd-set-hostname"
+    (cd "$tmp/stage" && find . -mindepth 1 -type d | sed 's|^\.||' | sort) | while read -r d; do
+      echo "mkdir $d"
+    done
+    (cd "$tmp/stage" && find . -type f | sed 's|^\.||' | sort) | while read -r f; do
+      mode=$(stat -f '%Lp' "$tmp/stage$f")
+      echo "rm $f"
+      echo "write $tmp/stage$f $f"
+      echo "set_inode_field $f mode 0100$mode"
+      echo "set_inode_field $f uid 0"
+      echo "set_inode_field $f gid 0"
+    done
+  } > "$cmds"
+  "$DEBUGFS" -w -f "$cmds" "$fs" > "$tmp/debugfs.log" 2>&1
+  [ -n "$label" ] && "$TUNE2FS" -L "$label" "$fs" >/dev/null
+  "$E2FSCK" -fn "$fs" > "$tmp/e2fsck.log" 2>&1 || { cat "$tmp/e2fsck.log" >&2; exit 1; }
 
-# Stichprobe: stehen die neuen Dateien wirklich im Image?
-for f in $(cd "$tmp/stage" && find . -type f | sed 's|^\.||'); do
-  if ! "$DEBUGFS" -R "cat $f" "$root" 2>/dev/null | cmp -s - "$tmp/stage$f"; then
-    echo "Nicht geschrieben: $f (siehe $tmp/debugfs.log)" >&2
-    exit 1
-  fi
-done
+  for f in $(cd "$tmp/stage" && find . -type f | sed 's|^\.||'); do
+    if ! "$DEBUGFS" -R "cat $f" "$fs" 2>/dev/null | cmp -s - "$tmp/stage$f"; then
+      echo "Nicht geschrieben: $f in $fs (siehe $tmp/debugfs.log)" >&2
+      exit 1
+    fi
+  done
+}
 
+brand_ext4 "$root" "Cloke HD"
 dd if="$root" of="$tmp/image.img" bs=512 seek="$root_start" conv=notrunc status=none
 
-# --- EFI-Partition: Loader mit Bootlogo und Boot-Argumente --------------------------------
+# --- EFI-Partition ------------------------------------------------------------------------
 read -r esp_start _ < <(gpt_part "$tmp/image.img" "$GUID_ESP")
 esp="$tmp/image.img@@$((esp_start * 512))"
-printf '%s\n' "$CLOKE_BOOT_ARGS" > "$tmp/boot-args.txt"
-mcopy -o -i "$esp" "$LOADER_EFI" ::/EFI/BOOT/BOOTX64.EFI
-mcopy -o -i "$esp" "$tmp/boot-args.txt" ::/EFI/BOOT/boot-args.txt
-mtype -i "$esp" ::/EFI/BOOT/BOOTX64.EFI | cmp -s - "$LOADER_EFI" ||
-  { echo "Loader nicht in der EFI-Partition angekommen" >&2; exit 1; }
-mtype -i "$esp" ::/EFI/BOOT/boot-args.txt | cmp -s - "$tmp/boot-args.txt" ||
-  { echo "boot-args.txt nicht in der EFI-Partition angekommen" >&2; exit 1; }
+
+# Manche PureDarwin-Images (arm64-Minimal) booten eine RAM-Disk statt der Wurzelpartition.
+if mdir -i "$esp" ::/ramdisk.img >/dev/null 2>&1; then
+  mcopy -n -i "$esp" ::/ramdisk.img "$tmp/ramdisk.ext4"
+  brand_ext4 "$tmp/ramdisk.ext4" ""
+  mcopy -o -i "$esp" "$tmp/ramdisk.ext4" ::/ramdisk.img
+  mtype -i "$esp" ::/ramdisk.img | cmp -s - "$tmp/ramdisk.ext4" ||
+    { echo "RAM-Disk nicht in der EFI-Partition angekommen" >&2; exit 1; }
+fi
+
+if [ -n "$LOADER_EFI" ]; then
+  mcopy -o -i "$esp" "$LOADER_EFI" "::/EFI/BOOT/$EFI_BINARY"
+  mtype -i "$esp" "::/EFI/BOOT/$EFI_BINARY" | cmp -s - "$LOADER_EFI" ||
+    { echo "Loader nicht in der EFI-Partition angekommen" >&2; exit 1; }
+fi
+if [ -n "$CLOKE_BOOT_ARGS" ]; then
+  printf '%s\n' "$CLOKE_BOOT_ARGS" > "$tmp/boot-args.txt"
+  mcopy -o -i "$esp" "$tmp/boot-args.txt" ::/EFI/BOOT/boot-args.txt
+  mtype -i "$esp" ::/EFI/BOOT/boot-args.txt | cmp -s - "$tmp/boot-args.txt" ||
+    { echo "boot-args.txt nicht in der EFI-Partition angekommen" >&2; exit 1; }
+fi
 
 mv "$tmp/image.img" "$CLOKE_IMG"
 rm -rf "$tmp"
 echo "Fertig: $CLOKE_IMG"
-echo "Starten mit: $HERE/run.sh"
+if [ "$CLOKE_ARCH" = x86_64 ]; then echo "Starten mit: $HERE/run.sh"; else echo "Starten mit: CLOKEOS_ARCH=$CLOKE_ARCH $HERE/run.sh"; fi

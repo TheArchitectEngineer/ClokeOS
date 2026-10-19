@@ -5,6 +5,8 @@
   ./vmctl.py send '<befehl>' [sekunden]  tippt einen Befehl in die Konsole und gibt die Antwort aus
   ./vmctl.py shot <datei.png>            Bildschirmfoto des VM-Bildschirms
   ./vmctl.py quit                        VM ausschalten
+
+Für eine arm64-VM mit CLOKEOS_ARCH=arm64 aufrufen, wie run.sh.
 """
 import json
 import os
@@ -13,7 +15,8 @@ import socket
 import sys
 import time
 
-STATE = os.path.join(os.environ.get('CLOKEOS_WORK', os.path.expanduser('~/ClokeOS-work')), 'vm')
+STATE = os.path.join(os.environ.get('CLOKEOS_WORK', os.path.expanduser('~/ClokeOS-work')), 'vm',
+                     os.environ.get('CLOKEOS_ARCH', 'x86_64'))
 SERIAL_LOG = os.path.join(STATE, 'serial.log')
 PROMPT = re.compile(rb'[#%] $')
 
