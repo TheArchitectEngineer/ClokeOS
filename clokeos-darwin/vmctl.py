@@ -4,6 +4,8 @@
   ./vmctl.py wait '<regex>' [sekunden]   wartet, bis die Konsole den Text zeigt
   ./vmctl.py send '<befehl>' [sekunden]  tippt einen Befehl in die Konsole und gibt die Antwort aus
   ./vmctl.py shot <datei.png>            Bildschirmfoto des VM-Bildschirms
+  ./vmctl.py key <taste> [...]           Tasten im VM-Fenster drücken (QEMU-Namen: ret, a, spc, ...),
+                                         z. B. ret für die Anmeldung des Desktops
   ./vmctl.py quit                        VM ausschalten
 
 Für eine arm64-VM mit CLOKEOS_ARCH=arm64 aufrufen, wie run.sh.
@@ -89,6 +91,16 @@ def shot(path):
     return 0
 
 
+def key(names):
+    for n in names:
+        r = qmp({'execute': 'send-key', 'arguments': {'keys': [{'type': 'qcode', 'data': n}]}})
+        if 'error' in r[0]:
+            print(r[0]['error']['desc'], file=sys.stderr)
+            return 1
+        time.sleep(.1)
+    return 0
+
+
 def main(argv):
     if len(argv) < 2:
         print(__doc__)
@@ -100,6 +112,8 @@ def main(argv):
         return send(rest[0], float(rest[1]) if len(rest) > 1 else 60)
     if cmd == 'shot':
         return shot(rest[0])
+    if cmd == 'key' and rest:
+        return key(rest)
     if cmd == 'quit':
         qmp({'execute': 'quit'})
         return 0

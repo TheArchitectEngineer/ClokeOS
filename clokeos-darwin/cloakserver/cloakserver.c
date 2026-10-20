@@ -29,7 +29,9 @@
 
 #include <arpa/inet.h>
 #include <dirent.h>
+#include <ctype.h>
 #include <errno.h>
+#include <pwd.h>
 #include <fcntl.h>
 #include <libgen.h>
 #include <limits.h>
@@ -181,6 +183,8 @@ static int cal_day = -1;
 static Cursor cur_arrow, cur_resize, cur_move;
 static int cascade;
 static bool debug;
+static Window loginwin;      /* Anmeldebildschirm */
+static bool locked, sleeping; /* gesperrt; Ruhezustand (Bildschirm schwarz) */
 
 static Atom WM_PROTOCOLS, WM_WINDOW_ROLE, WM_DELETE_WINDOW, WM_TAKE_FOCUS, WM_STATE, WM_CHANGE_STATE, UTF8_STRING,
   NET_SUPPORTED, NET_WM_NAME, NET_ACTIVE_WINDOW, NET_CLIENT_LIST, NET_WORKAREA, NET_SUPPORTING_WM_CHECK,
@@ -216,6 +220,7 @@ static void focus_client(Client *c);
 static void raise_client(Client *c);
 static void close_menu(void);
 static Window ui_window(int x, int y, int w, int h, long mask, bool argb, Atom type);
+static void show_tip(int i);
 
 static void warn(const char *fmt, ...) {
   va_list ap;
@@ -408,6 +413,7 @@ static void glass(cairo_t *cr, int sx, int sy, double alpha, int w, int h, doubl
   cairo_scale(cr, 4, 4);
   cairo_set_source_surface(cr, wall_blur, 0, 0);
   cairo_pattern_set_filter(cairo_get_source(cr), CAIRO_FILTER_BILINEAR);
+  cairo_pattern_set_extend(cairo_get_source(cr), CAIRO_EXTEND_PAD); /* sonst dunkle Kante am Rand */
   cairo_paint(cr);
   cairo_restore(cr);
   cairo_set_source_rgba(cr, t.r, t.g, t.b, alpha);
@@ -875,6 +881,7 @@ static void keep_ui_on_top(void) {
   XRaiseWindow(dpy, dock);
   XRaiseWindow(dpy, menubar);
   if (menuwin) XRaiseWindow(dpy, menuwin);
+  if (locked && loginwin) XRaiseWindow(dpy, loginwin);
 }
 
 static void raise_client(Client *c) {
@@ -1059,14 +1066,15 @@ static void draw_frame(Client *c) {
 static char sysinfo[10][2][96];
 static int nsysinfo;
 static char os_version[32] = "2.0", os_codename[32] = "Presidio", os_build[16] = "2A17";
+static char os_login[8] = "ja"; /* LOGIN in /etc/clokeos-release: "nein" startet ohne Anmeldung */
 
 static void read_release(void) {
   char *s = read_file("/etc/clokeos-release");
   if (!s) return;
   struct { const char *k; char *v; size_t n; } keys[] = {
     {"VERSION=\"", os_version, sizeof os_version}, {"CODENAME=\"", os_codename, sizeof os_codename},
-    {"BUILD=\"", os_build, sizeof os_build}};
-  for (int i = 0; i < 3; i++) {
+    {"BUILD=\"", os_build, sizeof os_build}, {"LOGIN=\"", os_login, sizeof os_login}};
+  for (int i = 0; i < 4; i++) {
     char *p = strstr(s, keys[i].k);
     if (!p) continue;
     p += strlen(keys[i].k);
@@ -1246,7 +1254,290 @@ static void show_about(long unused) {
 }
 
 static void confirm_power(long reboot) {
-  own_window(440, 140, reboot ? "Neustart" : "Ausschalten", paint_confirm, click_confirm, reboot);
+  own_window(500, 140, reboot ? "Neustart" : "Ausschalten", paint_confirm, click_confirm, reboot);
+}
+
+/* ---------------------------------------------------------------------------------------- */
+/* Anmeldung, wie #login in clokeos.html: Uhr, Konto, Passwortfeld, Ruhezustand, Neustart,     */
+/* Ausschalten über dem unscharfen Hintergrund. ClokeOS hat nur das Konto root; PureDarwin     */
+/* setzt ihm kein Passwort ("*"), dann genügt die Eingabetaste. Ist mit passwd eines gesetzt,  */
+/* prüft CloakServer es mit crypt().                                                          */
+
+static char pw[128];
+static int pwlen;
+static double shake_t0 = -1; /* Wackeln nach falschem Passwort */
+static int lg_arrow_x, lg_arrow_y, lg_btn_x[3], lg_btn_y;
+static const char *const POWER_KIND[3] = {"sleep", "restart", "off"};
+static const char *const POWER_LABEL[3] = {"Ruhezustand", "Neustart", "Ausschalten"};
+static cairo_surface_t *power_icon[3];
+
+static double now_s(void) {
+  struct timespec t;
+  clock_gettime(CLOCK_MONOTONIC, &t);
+  return t.tv_sec + t.tv_nsec / 1e9;
+}
+
+static struct passwd *account(void) { return getpwuid(0); }
+
+static const char *account_name(void) {
+  struct passwd *p = account();
+  if (p && p->pw_gecos && p->pw_gecos[0]) return p->pw_gecos;
+  return p ? p->pw_name : "root";
+}
+
+static bool account_has_password(void) {
+  struct passwd *p = account();
+  return p && p->pw_passwd && p->pw_passwd[0] && strcmp(p->pw_passwd, "*") && p->pw_passwd[0] != '!';
+}
+
+/* Versatz beim Wackeln, wie @keyframes shake: 25 % -8, 50 % +7, 75 % -4 Pixel in 0,4 s */
+static double shake_offset(void) {
+  if (shake_t0 < 0) return 0;
+  double t = (now_s() - shake_t0) / .4;
+  if (t >= 1) return 0;
+  static const double k[5] = {0, -8, 7, -4, 0};
+  int i = (int)(t * 4);
+  double f = t * 4 - i;
+  return k[i] + (k[i + 1] - k[i]) * f;
+}
+
+static void shadow_text(cairo_t *cr, double x, double y, const char *s, double px, bool bold, double a) {
+  text(cr, x, y + 2, s, px, bold, (RGBA){0, 0, 0, .22 * a}, 0, 1);
+  text(cr, x, y, s, px, bold, (RGBA){1, 1, 1, a}, 0, 1);
+}
+
+static void paint_login(cairo_t *cr, int w, int h, void *arg) {
+  (void)arg;
+  if (sleeping) { /* Ruhezustand: nur der Bildschirm ist aus */
+    cairo_set_source_rgb(cr, 0, 0, 0);
+    cairo_paint(cr);
+    return;
+  }
+  cairo_save(cr);
+  cairo_scale(cr, 4, 4);
+  cairo_set_source_surface(cr, wall_blur, 0, 0);
+  cairo_pattern_set_filter(cairo_get_source(cr), CAIRO_FILTER_BILINEAR);
+  cairo_pattern_set_extend(cairo_get_source(cr), CAIRO_EXTEND_PAD); /* sonst dunkle Kante am Rand */
+  cairo_paint(cr);
+  cairo_restore(cr);
+  cairo_set_source_rgba(cr, 10 / 255., 6 / 255., 20 / 255., .18);
+  cairo_paint(cr);
+
+  static const char *wd[] = {"Sonntag", "Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag"};
+  static const char *mo[] = {"Januar", "Februar", "März", "April", "Mai", "Juni", "Juli", "August", "September",
+                             "Oktober", "November", "Dezember"};
+  time_t t = time(NULL);
+  struct tm tm;
+  localtime_r(&t, &tm);
+  char buf[96];
+  double cx = w / 2.0;
+  int top = h * 12 / 100;
+  snprintf(buf, sizeof buf, "%s, %d. %s", wd[tm.tm_wday], tm.tm_mday, mo[tm.tm_mon]);
+  shadow_text(cr, cx, top + 12, buf, 20, true, .9);
+  snprintf(buf, sizeof buf, "%02d:%02d", tm.tm_hour, tm.tm_min);
+  shadow_text(cr, cx, top + 28 + 58, buf, 116, true, 1);
+
+  /* Knöpfe unten */
+  int py = h - 32 - 62;
+  lg_btn_y = py + 19;
+  for (int i = 0; i < 3; i++) {
+    double bx = cx + (i - 1) * 108;
+    lg_btn_x[i] = (int)bx;
+    cairo_new_path(cr);
+    cairo_arc(cr, bx, py + 19, 19, 0, 2 * M_PI);
+    cairo_set_source_rgba(cr, 1, 1, 1, .2);
+    cairo_fill(cr);
+    if (!power_icon[i]) {
+      char name[32];
+      snprintf(name, sizeof name, "power-%s.svg", POWER_KIND[i]);
+      power_icon[i] = svg_render(name, 16, 16, NULL);
+    }
+    if (power_icon[i]) {
+      cairo_set_source_surface(cr, power_icon[i], bx - 8, py + 11);
+      cairo_paint(cr);
+    }
+    text(cr, bx, py + 38 + 6 + 8, POWER_LABEL[i], 12, false, (RGBA){1, 1, 1, .85}, 0, 1);
+  }
+
+  /* Konto in der Mitte zwischen Uhr und Knöpfen */
+  int tb = top + 28 + 116, block = 78 + 10 + 22 + 10 + 30 + 10 + 16;
+  double uy = tb + ((py - tb) - block) / 2.0, sx = shake_offset();
+  cairo_pattern_t *g = cairo_pattern_create_radial(cx + sx, uy + 45, 30, cx + sx, uy + 45, 56);
+  cairo_pattern_add_color_stop_rgba(g, 0, 0, 0, 0, .25);
+  cairo_pattern_add_color_stop_rgba(g, 1, 0, 0, 0, 0);
+  cairo_set_source(cr, g);
+  cairo_paint(cr);
+  cairo_pattern_destroy(g);
+  g = cairo_pattern_create_linear(cx + sx - 39, uy, cx + sx + 39, uy + 78);
+  cairo_pattern_add_color_stop_rgb(g, 0, ACCENT.r, ACCENT.g, ACCENT.b);
+  cairo_pattern_add_color_stop_rgb(g, 1, ACCENT.r * .55, ACCENT.g * .55, ACCENT.b * .55);
+  cairo_new_path(cr);
+  cairo_arc(cr, cx + sx, uy + 39, 39, 0, 2 * M_PI);
+  cairo_set_source(cr, g);
+  cairo_fill(cr);
+  cairo_pattern_destroy(g);
+  const char *name = account_name();
+  char initial[8] = {0};
+  int il = 1;
+  while (name[il] && (name[il] & 0xc0) == 0x80) il++; /* erstes Zeichen in UTF-8 */
+  snprintf(initial, sizeof initial, "%.*s", il, name);
+  for (char *p = initial; *p; p++) *p = (char)toupper((unsigned char)*p);
+  text(cr, cx + sx, uy + 39, initial, 32, true, (RGBA){1, 1, 1, 1}, 0, 1);
+  shadow_text(cr, cx + sx, uy + 78 + 10 + 11, name, 17, true, 1);
+
+  double fx = cx - 110 + sx, fy = uy + 78 + 10 + 22 + 10;
+  rrect(cr, fx, fy, 220, 30, 15);
+  cairo_set_source_rgba(cr, 1, 1, 1, .2);
+  cairo_fill_preserve(cr);
+  cairo_set_source_rgba(cr, 1, 1, 1, .35);
+  cairo_set_line_width(cr, 1);
+  cairo_stroke(cr);
+  if (pwlen) {
+    char dots[3 * 24 + 1] = "";
+    int n = pwlen > 24 ? 24 : pwlen;
+    for (int i = 0; i < n; i++) strcat(dots, "•");
+    text(cr, fx + 14, fy + 15, dots, 13, false, (RGBA){1, 1, 1, 1}, 0, 0);
+  } else {
+    text(cr, fx + 14, fy + 15, "Passwort eingeben", 13, false, (RGBA){1, 1, 1, .7}, 0, 0);
+  }
+  lg_arrow_x = (int)(fx + 220 - 15);
+  lg_arrow_y = (int)(fy + 15);
+  cairo_new_path(cr);
+  cairo_arc(cr, lg_arrow_x, lg_arrow_y, 12, 0, 2 * M_PI);
+  cairo_set_source_rgba(cr, 1, 1, 1, .3);
+  cairo_fill(cr);
+  cairo_set_source_rgb(cr, 1, 1, 1);
+  cairo_set_line_width(cr, 2);
+  cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND);
+  cairo_set_line_join(cr, CAIRO_LINE_JOIN_ROUND);
+  double ax = lg_arrow_x - 7, ay = lg_arrow_y - 7, k = 14 / 16.0; /* Pfeil M3 8h10M9 4l4 4-4 4 */
+  cairo_move_to(cr, ax + 3 * k, ay + 8 * k);
+  cairo_line_to(cr, ax + 13 * k, ay + 8 * k);
+  cairo_move_to(cr, ax + 9 * k, ay + 4 * k);
+  cairo_line_to(cr, ax + 13 * k, ay + 8 * k);
+  cairo_line_to(cr, ax + 9 * k, ay + 12 * k);
+  cairo_stroke(cr);
+  if (!account_has_password())
+    text(cr, cx + sx, fy + 30 + 10 + 8, "Ohne Passwort: Die Eingabetaste meldet an.", 11.5, false, (RGBA){1, 1, 1, .72}, 0, 1);
+}
+
+static void draw_login(void) {
+  if (locked && loginwin) paint_window(loginwin, SW, SH, paint_login, NULL);
+}
+
+static void show_login(bool sleep) {
+  close_menu();
+  show_tip(-1);
+  locked = true;
+  sleeping = sleep;
+  pwlen = 0;
+  pw[0] = 0;
+  if (!loginwin) loginwin = ui_window(0, 0, SW, SH, ExposureMask | ButtonPressMask | KeyPressMask, false, NET_WM_WINDOW_TYPE_SPLASH);
+  XUnmapWindow(dpy, dock);
+  XUnmapWindow(dpy, menubar);
+  XMapRaised(dpy, loginwin);
+  XSync(dpy, False);
+  XSetInputFocus(dpy, loginwin, RevertToPointerRoot, CurrentTime);
+  XGrabKeyboard(dpy, loginwin, True, GrabModeAsync, GrabModeAsync, CurrentTime);
+  draw_login();
+}
+
+static void unlock(void) {
+  locked = sleeping = false;
+  memset(pw, 0, sizeof pw);
+  pwlen = 0;
+  XUngrabKeyboard(dpy, CurrentTime);
+  XUnmapWindow(dpy, loginwin);
+  XMapRaised(dpy, menubar);
+  XMapRaised(dpy, dock);
+  Client *c = clients;
+  while (c && c->minimized) c = c->next;
+  focus_client(c);
+  redraw_all();
+}
+
+static void try_login(void) {
+  struct passwd *p = account();
+  bool ok = !account_has_password();
+  if (!ok && p) {
+    const char *h = crypt(pw, p->pw_passwd);
+    ok = h && !strcmp(h, p->pw_passwd);
+  }
+  if (ok) {
+    unlock();
+  } else {
+    memset(pw, 0, sizeof pw);
+    pwlen = 0;
+    shake_t0 = now_s();
+    draw_login();
+  }
+}
+
+static void login_power(int i) {
+  if (i == 0) {
+    sleeping = true;
+    draw_login();
+  } else {
+    XSync(dpy, False);
+    spawn(i == 1 ? "/bin/reboot" : "/bin/poweroff");
+  }
+}
+
+static void login_click(int x, int y) {
+  if (sleeping) {
+    sleeping = false;
+    draw_login();
+    return;
+  }
+  if (hypot(x - lg_arrow_x, y - lg_arrow_y) <= 13) {
+    try_login();
+    return;
+  }
+  for (int i = 0; i < 3; i++)
+    if (hypot(x - lg_btn_x[i], y - lg_btn_y) <= 21) login_power(i);
+}
+
+static void login_key(XKeyEvent *e) {
+  if (sleeping) {
+    sleeping = false;
+    draw_login();
+    return;
+  }
+  char buf[16];
+  KeySym ks = NoSymbol;
+  int n = XLookupString(e, buf, sizeof buf, &ks, NULL);
+  if (ks == XK_Return || ks == XK_KP_Enter) {
+    try_login();
+    return;
+  }
+  if (ks == XK_BackSpace) {
+    if (pwlen) pw[--pwlen] = 0;
+  } else if (ks == XK_Escape) {
+    memset(pw, 0, sizeof pw);
+    pwlen = 0;
+  } else if (n > 0 && (unsigned char)buf[0] >= 32 && pwlen + n < (int)sizeof pw - 1) {
+    memcpy(pw + pwlen, buf, n);
+    pwlen += n;
+    pw[pwlen] = 0;
+  }
+  draw_login();
+}
+
+static void cmd_sleep(long unused) {
+  (void)unused;
+  show_login(true);
+}
+
+static void cmd_logout(long unused) {
+  (void)unused;
+  Window w[256];
+  int n = 0;
+  for (Client *c = clients; c && n < 256; c = c->next) w[n++] = c->win;
+  for (int i = 0; i < n; i++) {
+    Client *c = find_client(w[i]);
+    if (c) close_client(c);
+  }
+  show_login(false);
 }
 
 /* ---------------------------------------------------------------------------------------- */
@@ -1417,8 +1708,12 @@ static void build_menu(int which) {
     add_item("Aktivitätsanzeige", launch_app, 7, false);
     add_item("Programme", launch_app, 1, false);
     add_sep();
+    add_item("Ruhezustand", cmd_sleep, 0, false);
     add_item("Neustart …", confirm_power, 1, false);
     add_item("Ausschalten …", confirm_power, 0, false);
+    add_sep();
+    snprintf(buf, sizeof buf, "„%s“ abmelden …", account_name());
+    add_item(buf, cmd_logout, 0, false);
     break;
   case MB_APP: {
     const char *name = current_app_name();
@@ -1770,6 +2065,11 @@ static void on_button_press(XButtonEvent *e) {
   /* Klicks in ein Programmfenster kommen über den synchronen Griff aus grab_buttons(): Bis
    * XAllowEvents steht der Zeiger still. Deshalb immer zuerst freigeben, auch bei offenem Menü. */
   Client *gc = find_client(e->window);
+  if (locked) {
+    if (gc && e->window == gc->win) XAllowEvents(dpy, AsyncPointer, CurrentTime);
+    if (e->window == loginwin && e->button == Button1) login_click(e->x, e->y);
+    return;
+  }
   if (gc && e->window == gc->win) {
     if (menuwin) {
       close_menu();
@@ -1986,6 +2286,10 @@ static void on_client_message(XClientMessageEvent *e) {
 }
 
 static void on_key(XKeyEvent *e) {
+  if (locked) {
+    login_key(e);
+    return;
+  }
   KeySym ks = XLookupKeysym(e, 0);
   if (menuwin) {
     if (ks == XK_Escape) close_menu();
@@ -2017,8 +2321,13 @@ static void tick(void) {
   time_t t = time(NULL);
   struct tm tm;
   localtime_r(&t, &tm);
+  if (shake_t0 >= 0) { /* Wackeln läuft: nächstes Bild */
+    if (now_s() - shake_t0 >= .4) shake_t0 = -1;
+    draw_login();
+  }
   if (tm.tm_min == last_min) return;
   last_min = tm.tm_min;
+  if (locked) draw_login();
   if (theme_mode == 0 && want_dark() != dark) {
     apply_theme();
     redraw_all();
@@ -2222,6 +2531,7 @@ int main(int argc, char **argv) {
   XGrabKey(dpy, XKeysymToKeycode(dpy, XK_F4), Mod1Mask, root, True, GrabModeAsync, GrabModeAsync);
   render_mb_icons();
   scan_existing();
+  if (strcmp(os_login, "nein")) show_login(false);
   focus_client(clients);
   redraw_all();
   warn("läuft auf %dx%d, Thema %s", SW, SH, dark ? "dunkel" : "hell");
@@ -2294,6 +2604,7 @@ int main(int argc, char **argv) {
     FD_ZERO(&fds);
     FD_SET(fd, &fds);
     struct timeval tv = {1, 0};
+    if (shake_t0 >= 0) tv = (struct timeval){0, 30000}; /* Animation: etwa 30 Bilder pro Sekunde */
     select(fd + 1, &fds, NULL, NULL, &tv);
   }
 }

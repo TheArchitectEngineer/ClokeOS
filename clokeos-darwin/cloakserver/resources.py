@@ -8,7 +8,7 @@ Die Dock-Icons entstehen in clokeos.html aus JavaScript (ICON-Objekt). Das Skrip
 diesen Teil von macOS' eigener JavaScript-Engine ausführen (osascript -l JavaScript) und schreibt
 jedes Icon als eigenständige SVG-Datei mit den Verläufen aus dem <defs>-Block. Platzhalter, die
 CloakServer zur Laufzeit ersetzt: @MON@ und @DAY@ (Kalender), @FILL@ (Farbe von Logo und
-Menüleistensymbolen).
+Menüleistensymbolen). Dazu die Knöpfe des Anmeldebildschirms (power-*.svg).
 """
 import json
 import os
@@ -93,7 +93,12 @@ def main(html_path, out):
         vb = [float(v) for v in re.search(r'viewBox="([^"]+)"', svg).group(1).split()]
         with open(os.path.join(out, name + '.svg'), 'w', encoding='utf-8') as f:
             f.write(standalone(svg, '', (int(vb[2]), int(vb[3]))))
-    print('Ressourcen: %d Icons, Logo, %d Menüleistensymbole' % (len(icons), len(MENUBAR_ICONS)))
+    # Knöpfe des Anmeldebildschirms (<div class="lg-power">)
+    for kind in ('sleep', 'restart', 'off'):
+        m = re.search(r'data-p="%s"><span>(<svg.*?</svg>)' % kind, html, re.S)
+        with open(os.path.join(out, 'power-%s.svg' % kind), 'w', encoding='utf-8') as f:
+            f.write(standalone(m.group(1), '', (16, 16)))
+    print('Ressourcen: %d Icons, Logo, %d Menüleistensymbole, 3 Anmeldeknöpfe' % (len(icons), len(MENUBAR_ICONS)))
 
 
 if __name__ == '__main__':

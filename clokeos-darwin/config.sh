@@ -85,6 +85,8 @@ CLOKE_HOST="clokeos"
 # Zeitzone als POSIX-TZ-Regel: PureDarwin hat keine Zeitzonen-Datenbank, die Uhr der VM läuft in UTC.
 # Gilt für Shell und Desktop (Uhr in der Menüleiste). Mitteleuropa mit Sommerzeit:
 CLOKE_TZ="CET-1CEST,M3.5.0,M10.5.0/3"
+# Desktop: Anmeldebildschirm wie in clokeos.html vor dem Desktop ("ja") oder direkt zum Desktop ("nein")
+CLOKE_LOGIN="ja"
 CLOKE_IMG="$WORK/out/clokeos-$CLOKE_VERSION-$CLOKE_ARCH.img"
 [ "$CLOKE_FLAVOR" = desktop ] && CLOKE_IMG="$WORK/out/clokeos-$CLOKE_VERSION-$CLOKE_ARCH-desktop.img"
 
