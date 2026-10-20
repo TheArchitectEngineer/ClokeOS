@@ -31,6 +31,7 @@
 #include <dirent.h>
 #include <ctype.h>
 #include <errno.h>
+#include <grp.h>
 #include <pwd.h>
 #include <fcntl.h>
 #include <libgen.h>
@@ -127,13 +128,13 @@ static const App APPS[] = {
   {"programme", "Programme", "xfce4-appfinder", "Xfce4-appfinder"},
   {"search", "Search", "netsurf-gtk3", "Netsurf-gtk3 Netsurf* NetSurf*"},
   {"terminal", "Terminal", "xfce4-terminal", "Xfce4-terminal XTerm UXTerm"},
-  {"notizen", "Notizen", TERM_APP("notizen", "Notizen", "84x28", "nano /var/root/Notizen.txt"), ""},
+  {"notizen", "Notizen", TERM_APP("notizen", "Notizen", "84x28", "nano \"$HOME/Notizen.txt\""), ""},
   {"rechner", "Rechner", "xcalc", "XCalc"},
   {"kalender", "Kalender", TERM_APP("kalender", "Kalender", "72x22", "/usr/libexec/clokeos-kalender"), ""},
   {"aktivitaet", "Aktivitätsanzeige", TERM_APP("aktivitaet", "Aktivitätsanzeige", "92x30", "/usr/libexec/clokeos-aktivitaet"), ""},
   {"einstellungen", "Systemeinstellungen", "xfce4-settings-manager", "Xfce4-settings* Xfce4-*-settings Xfwm4-settings"},
   {NULL, NULL, NULL, NULL}, /* Trennstrich */
-  {"papierkorb", "Papierkorb", "mkdir -p /var/root/.Trash && thunar /var/root/.Trash", ""},
+  {"papierkorb", "Papierkorb", "mkdir -p \"$HOME/.Trash\" && thunar \"$HOME/.Trash\"", ""},
 };
 #define NAPPS ((int)(sizeof APPS / sizeof APPS[0]))
 #define APP_DATEIEN 0
@@ -604,18 +605,36 @@ static void render_icons(void) {
   }
 }
 
-static void spawn(const char *cmd) {
+/* Konto des angemeldeten Benutzers, NULL = niemand angemeldet (siehe "Konten und Sitzung") */
+typedef struct {
+  uid_t uid;
+  gid_t gid;
+  char name[32], full[64], home[256], shell[64], passwd[128];
+} Account;
+static Account *session;
+
+/* Rechte eines Kontos annehmen (im Kindprozess); root bleibt root */
+static bool become(const Account *a) {
+  if (!a || a->uid == 0) return true;
+  return initgroups(a->name, (int)a->gid) == 0 && setgid(a->gid) == 0 && setuid(a->uid) == 0;
+}
+
+/* Programme laufen als der angemeldete Benutzer, nur Ausschalten und Neustart als root. */
+static void spawn_as(const char *cmd, bool system) {
   char buf[1024];
   snprintf(buf, sizeof buf, "cd \"$HOME\" && exec %s", cmd);
   pid_t pid = fork();
   if (pid == 0) {
     setsid();
     signal(SIGCHLD, SIG_DFL);
+    if (!system && !become(session)) _exit(126);
     execl("/bin/sh", "sh", "-c", buf, (char *)NULL);
     _exit(127);
   }
   if (pid < 0) warn("kann %s nicht starten: %s", cmd, strerror(errno));
 }
+
+static void spawn(const char *cmd) { spawn_as(cmd, false); }
 
 static int app_for_class(const char *cls) {
   for (int i = 0; i < NAPPS; i++) {
@@ -1274,7 +1293,7 @@ static void click_confirm(Client *c, int x, int y) {
   if (y < by || y > by + 28) return;
   if (x >= x2 && x <= x2 + w2) {
     XSync(dpy, False);
-    spawn(reboot ? "/bin/reboot" : "/bin/poweroff");
+    spawn_as(reboot ? "/bin/reboot" : "/bin/poweroff", true);
   } else if (x >= x1 && x <= x1 + w1) {
     close_client(c);
   }
@@ -1336,10 +1355,160 @@ static void confirm_power(long reboot) {
 }
 
 /* ---------------------------------------------------------------------------------------- */
-/* Anmeldung, wie #login in clokeos.html: Uhr, Konto, Passwortfeld, Ruhezustand, Neustart,     */
-/* Ausschalten über dem unscharfen Hintergrund. ClokeOS hat nur das Konto root; PureDarwin     */
-/* setzt ihm kein Passwort ("*"), dann genügt die Eingabetaste. Ist mit passwd eines gesetzt,  */
-/* prüft CloakServer es mit crypt().                                                          */
+/* Konten und Sitzung. Wie im Prototyp gibt es den lokalen Benutzer gast (/Users/gast), dazu   */
+/* root („System Administrator“) für Verwaltungsaufgaben, denn PureDarwin hat kein su und kein */
+/* sudo. CloakServer läuft als root wie loginwindow bei macOS und startet die Programme als    */
+/* der angemeldete Benutzer, mit eigenem D-Bus für die Sitzung. Beim Abmelden beendet er alle  */
+/* Prozesse des Benutzers.                                                                     */
+
+static Account accounts[8], session_acc;
+static int naccounts, sel_account; /* Konten auf der Anmeldung, das ausgewählte */
+
+static void add_account(const struct passwd *p) {
+  if (naccounts >= 8) return;
+  Account *a = &accounts[naccounts++];
+  a->uid = p->pw_uid;
+  a->gid = p->pw_gid;
+  snprintf(a->name, sizeof a->name, "%s", p->pw_name);
+  snprintf(a->full, sizeof a->full, "%s", p->pw_gecos && p->pw_gecos[0] ? p->pw_gecos : p->pw_name);
+  snprintf(a->home, sizeof a->home, "%s", p->pw_dir ? p->pw_dir : "/");
+  snprintf(a->shell, sizeof a->shell, "%s", p->pw_shell ? p->pw_shell : "/bin/sh");
+  snprintf(a->passwd, sizeof a->passwd, "%s", p->pw_passwd ? p->pw_passwd : "*");
+}
+
+/* Benutzer ab UID 500 wie bei macOS, mit einer Shell zum Anmelden; root zuletzt */
+static void load_accounts(void) {
+  naccounts = 0;
+  setpwent();
+  for (struct passwd *p; (p = getpwent());)
+    if (p->pw_uid >= 500 && p->pw_uid < 60000 && p->pw_shell && !strstr(p->pw_shell, "false") &&
+        !strstr(p->pw_shell, "nologin"))
+      add_account(p);
+  endpwent();
+  struct passwd *r = getpwuid(0);
+  if (r) {
+    add_account(r);
+  } else {
+    struct passwd fb = {.pw_name = "root", .pw_passwd = "*", .pw_gecos = "System Administrator",
+                        .pw_dir = "/var/root", .pw_shell = "/bin/zsh"};
+    add_account(&fb);
+  }
+  if (sel_account >= naccounts) sel_account = 0;
+}
+
+/* PureDarwin setzt root kein Passwort ("*"), gast hat ein leeres Feld: Dann genügt die
+ * Eingabetaste. Ist mit passwd eines gesetzt, prüft CloakServer es mit crypt(). */
+static bool account_has_password(const Account *a) {
+  return a->passwd[0] && strcmp(a->passwd, "*") && a->passwd[0] != '!';
+}
+
+static const char *session_name(void) { return session ? session->full : "System Administrator"; }
+
+/* Umgebung der Sitzung; die von cloakserver-session (root) kommt beim Abmelden zurück */
+static const char *const SESSION_ENV[] = {"HOME", "USER", "LOGNAME", "SHELL", "XDG_RUNTIME_DIR",
+                                          "DBUS_SESSION_BUS_ADDRESS", "XUSERFILESEARCHPATH"};
+#define NSESSION_ENV ((int)(sizeof SESSION_ENV / sizeof SESSION_ENV[0]))
+static char *root_env[NSESSION_ENV];
+
+static void save_root_env(void) {
+  for (int i = 0; i < NSESSION_ENV; i++) {
+    const char *v = getenv(SESSION_ENV[i]);
+    root_env[i] = v ? strdup(v) : NULL;
+  }
+}
+
+static void restore_root_env(void) {
+  for (int i = 0; i < NSESSION_ENV; i++) {
+    if (root_env[i]) setenv(SESSION_ENV[i], root_env[i], 1);
+    else unsetenv(SESSION_ENV[i]);
+  }
+}
+
+/* D-Bus für die Sitzung, gestartet als der Benutzer: dbus-launch gibt die Adresse aus und endet */
+static void start_session_bus(const Account *a) {
+  int fd[2];
+  if (access("/bin/dbus-launch", X_OK) || pipe(fd)) return;
+  pid_t pid = fork();
+  if (pid == 0) {
+    setsid();
+    signal(SIGCHLD, SIG_DFL);
+    dup2(fd[1], 1);
+    close(fd[0]);
+    close(fd[1]);
+    if (!become(a)) _exit(126);
+    if (chdir(a->home)) { /* dann eben im aktuellen Ordner */ }
+    execl("/bin/dbus-launch", "dbus-launch", (char *)NULL);
+    _exit(127);
+  }
+  close(fd[1]);
+  char out[1024];
+  size_t n = 0;
+  double t0 = now_s();
+  while (pid > 0 && n < sizeof out - 1 && now_s() - t0 < 20) {
+    fd_set r;
+    FD_ZERO(&r);
+    FD_SET(fd[0], &r);
+    struct timeval tv = {1, 0};
+    if (select(fd[0] + 1, &r, NULL, NULL, &tv) <= 0) continue;
+    ssize_t k = read(fd[0], out + n, sizeof out - 1 - n);
+    if (k <= 0) break;
+    n += k;
+  }
+  close(fd[0]);
+  out[n] = 0;
+  const char *key = "DBUS_SESSION_BUS_ADDRESS=";
+  char *v = strstr(out, key);
+  if (v) {
+    v += strlen(key);
+    v[strcspn(v, "\n")] = 0;
+    setenv("DBUS_SESSION_BUS_ADDRESS", v, 1);
+  } else {
+    warn("kein D-Bus für %s", a->name);
+  }
+}
+
+static void start_session(const Account *a) {
+  session_acc = *a;
+  session = &session_acc;
+  warn("angemeldet: %s (UID %u)", a->name, (unsigned)a->uid);
+  if (a->uid == 0) return; /* root behält die Umgebung von cloakserver-session */
+  char buf[PATH_MAX];
+  setenv("HOME", a->home, 1);
+  setenv("USER", a->name, 1);
+  setenv("LOGNAME", a->name, 1);
+  setenv("SHELL", a->shell, 1);
+  snprintf(buf, sizeof buf, "%s/%%N%%C:%s/%%N", a->home, a->home);
+  setenv("XUSERFILESEARCHPATH", buf, 1);
+  mkdir("/var/run/user", 0755);
+  snprintf(buf, sizeof buf, "/var/run/user/%u", (unsigned)a->uid);
+  mkdir(buf, 0700);
+  if (chown(buf, a->uid, a->gid)) warn("chown %s: %s", buf, strerror(errno));
+  setenv("XDG_RUNTIME_DIR", buf, 1);
+  unsetenv("DBUS_SESSION_BUS_ADDRESS");
+  start_session_bus(a);
+}
+
+static void end_session(void) {
+  if (!session) return;
+  if (session->uid != 0) {
+    if (fork() == 0) { /* als der Benutzer alle seine Prozesse beenden, auch D-Bus und xfconfd */
+      if (!become(session)) _exit(1);
+      signal(SIGTERM, SIG_IGN);
+      kill(-1, SIGTERM);
+      sleep(3);
+      kill(-1, SIGKILL);
+      _exit(0);
+    }
+    restore_root_env();
+  }
+  warn("abgemeldet: %s", session->name);
+  session = NULL;
+}
+
+/* ---------------------------------------------------------------------------------------- */
+/* Anmeldung, wie #login in clokeos.html: Uhr, Konten, Passwortfeld, Ruhezustand, Neustart,    */
+/* Ausschalten über dem unscharfen Hintergrund. Mehrere Konten stehen nebeneinander, ein Klick */
+/* oder die Pfeiltasten wählen eines. Gesperrt (Ruhezustand) zeigt sie nur das angemeldete.    */
 
 static char pw[128];
 static int pwlen;
@@ -1348,19 +1517,11 @@ static int lg_arrow_x, lg_arrow_y, lg_btn_x[3], lg_btn_y;
 static const char *const POWER_KIND[3] = {"sleep", "restart", "off"};
 static const char *const POWER_LABEL[3] = {"Ruhezustand", "Neustart", "Ausschalten"};
 static cairo_surface_t *power_icon[3];
+static int lg_av_x[8], lg_av_y;
 
-static struct passwd *account(void) { return getpwuid(0); }
-
-static const char *account_name(void) {
-  struct passwd *p = account();
-  if (p && p->pw_gecos && p->pw_gecos[0]) return p->pw_gecos;
-  return p ? p->pw_name : "root";
-}
-
-static bool account_has_password(void) {
-  struct passwd *p = account();
-  return p && p->pw_passwd && p->pw_passwd[0] && strcmp(p->pw_passwd, "*") && p->pw_passwd[0] != '!';
-}
+static int login_count(void) { return session ? 1 : naccounts; }
+static const Account *login_account(int i) { return session ? session : &accounts[i]; }
+static int login_sel(void) { return session ? 0 : sel_account; }
 
 /* Versatz beim Wackeln, wie @keyframes shake: 25 % -8, 50 % +7, 75 % -4 Pixel in 0,4 s */
 static double shake_offset(void) {
@@ -1431,33 +1592,44 @@ static void paint_login(cairo_t *cr, int w, int h, void *arg) {
     text(cr, bx, py + 38 + 6 + 8, POWER_LABEL[i], 12, false, (RGBA){1, 1, 1, .85}, 0, 1);
   }
 
-  /* Konto in der Mitte zwischen Uhr und Knöpfen */
+  /* Konten in der Mitte zwischen Uhr und Knöpfen, das ausgewählte groß, die anderen kleiner
+   * und blasser; root grau wie das Administratorkonto bei macOS */
   int tb = top + 28 + 116, block = 78 + 10 + 22 + 10 + 30 + 10 + 16;
   double uy = tb + ((py - tb) - block) / 2.0, sx = shake_offset();
-  cairo_pattern_t *g = cairo_pattern_create_radial(cx + sx, uy + 45, 30, cx + sx, uy + 45, 56);
-  cairo_pattern_add_color_stop_rgba(g, 0, 0, 0, 0, .25);
-  cairo_pattern_add_color_stop_rgba(g, 1, 0, 0, 0, 0);
-  cairo_set_source(cr, g);
-  cairo_paint(cr);
-  cairo_pattern_destroy(g);
-  g = cairo_pattern_create_linear(cx + sx - 39, uy, cx + sx + 39, uy + 78);
-  cairo_pattern_add_color_stop_rgb(g, 0, ACCENT.r, ACCENT.g, ACCENT.b);
-  cairo_pattern_add_color_stop_rgb(g, 1, ACCENT.r * .55, ACCENT.g * .55, ACCENT.b * .55);
-  cairo_new_path(cr);
-  cairo_arc(cr, cx + sx, uy + 39, 39, 0, 2 * M_PI);
-  cairo_set_source(cr, g);
-  cairo_fill(cr);
-  cairo_pattern_destroy(g);
-  const char *name = account_name();
-  char initial[8] = {0};
-  int il = 1;
-  while (name[il] && (name[il] & 0xc0) == 0x80) il++; /* erstes Zeichen in UTF-8 */
-  snprintf(initial, sizeof initial, "%.*s", il, name);
-  for (char *p = initial; *p; p++) *p = (char)toupper((unsigned char)*p);
-  text(cr, cx + sx, uy + 39, initial, 32, true, (RGBA){1, 1, 1, 1}, 0, 1);
-  shadow_text(cr, cx + sx, uy + 78 + 10 + 11, name, 17, true, 1);
+  int n = login_count();
+  lg_av_y = (int)(uy + 39);
+  for (int i = 0; i < n; i++) {
+    const Account *a = login_account(i);
+    bool on = i == login_sel();
+    double ax = cx + (i - (n - 1) / 2.0) * 170 + (on ? sx : 0), r = on ? 39 : 30, al = on ? 1 : .6;
+    RGBA c = a->uid == 0 ? (RGBA){.56, .56, .6, 1} : ACCENT;
+    lg_av_x[i] = (int)ax;
+    cairo_pattern_t *g = cairo_pattern_create_radial(ax, lg_av_y + 6, r * .77, ax, lg_av_y + 6, r * 1.44);
+    cairo_pattern_add_color_stop_rgba(g, 0, 0, 0, 0, .25 * al);
+    cairo_pattern_add_color_stop_rgba(g, 1, 0, 0, 0, 0);
+    cairo_set_source(cr, g);
+    cairo_paint(cr);
+    cairo_pattern_destroy(g);
+    g = cairo_pattern_create_linear(ax - r, lg_av_y - r, ax + r, lg_av_y + r);
+    cairo_pattern_add_color_stop_rgba(g, 0, c.r, c.g, c.b, al);
+    cairo_pattern_add_color_stop_rgba(g, 1, c.r * .55, c.g * .55, c.b * .55, al);
+    cairo_new_path(cr);
+    cairo_arc(cr, ax, lg_av_y, r, 0, 2 * M_PI);
+    cairo_set_source(cr, g);
+    cairo_fill(cr);
+    cairo_pattern_destroy(g);
+    char initial[8] = {0};
+    int il = 1;
+    while (a->full[il] && (a->full[il] & 0xc0) == 0x80) il++; /* erstes Zeichen in UTF-8 */
+    snprintf(initial, sizeof initial, "%.*s", il, a->full);
+    for (char *p = initial; *p; p++) *p = (char)toupper((unsigned char)*p);
+    text(cr, ax, lg_av_y, initial, on ? 32 : 25, true, (RGBA){1, 1, 1, al}, 0, 1);
+    shadow_text(cr, ax, uy + 78 + 10 + 11, a->full, on ? 17 : 14, on, on ? 1 : .8);
+  }
+  const Account *cur = login_account(login_sel());
+  double lx = lg_av_x[login_sel()]; /* Feld und Hinweis unter dem ausgewählten Konto */
 
-  double fx = cx - 110 + sx, fy = uy + 78 + 10 + 22 + 10;
+  double fx = lx - 110, fy = uy + 78 + 10 + 22 + 10;
   rrect(cr, fx, fy, 220, 30, 15);
   cairo_set_source_rgba(cr, 1, 1, 1, .2);
   cairo_fill_preserve(cr);
@@ -1489,8 +1661,8 @@ static void paint_login(cairo_t *cr, int w, int h, void *arg) {
   cairo_line_to(cr, ax + 13 * k, ay + 8 * k);
   cairo_line_to(cr, ax + 9 * k, ay + 12 * k);
   cairo_stroke(cr);
-  if (!account_has_password())
-    text(cr, cx + sx, fy + 30 + 10 + 8, "Ohne Passwort: Die Eingabetaste meldet an.", 11.5, false, (RGBA){1, 1, 1, .72}, 0, 1);
+  if (!account_has_password(cur))
+    text(cr, lx, fy + 30 + 10 + 8, "Ohne Passwort: Die Eingabetaste meldet an.", 11.5, false, (RGBA){1, 1, 1, .72}, 0, 1);
 }
 
 static void draw_login(void) {
@@ -1498,6 +1670,7 @@ static void draw_login(void) {
 }
 
 static void show_login(bool sleep) {
+  if (!session) load_accounts();
   close_menu();
   show_tip(-1);
   locked = true;
@@ -1529,13 +1702,14 @@ static void unlock(void) {
 }
 
 static void try_login(void) {
-  struct passwd *p = account();
-  bool ok = !account_has_password();
-  if (!ok && p) {
-    const char *h = crypt(pw, p->pw_passwd);
-    ok = h && !strcmp(h, p->pw_passwd);
+  const Account *a = login_account(login_sel());
+  bool ok = !account_has_password(a);
+  if (!ok) {
+    const char *h = crypt(pw, a->passwd);
+    ok = h && !strcmp(h, a->passwd);
   }
   if (ok) {
+    if (!session) start_session(a);
     unlock();
   } else {
     memset(pw, 0, sizeof pw);
@@ -1551,8 +1725,15 @@ static void login_power(int i) {
     draw_login();
   } else {
     XSync(dpy, False);
-    spawn(i == 1 ? "/bin/reboot" : "/bin/poweroff");
+    spawn_as(i == 1 ? "/bin/reboot" : "/bin/poweroff", true);
   }
+}
+
+static void select_account(int i) {
+  sel_account = i;
+  memset(pw, 0, sizeof pw);
+  pwlen = 0;
+  draw_login();
 }
 
 static void login_click(int x, int y) {
@@ -1561,6 +1742,11 @@ static void login_click(int x, int y) {
     draw_login();
     return;
   }
+  for (int i = 0; !session && i < naccounts; i++) /* Avatar oder Name */
+    if (i != sel_account && abs(x - lg_av_x[i]) < 80 && y > lg_av_y - 40 && y < lg_av_y + 70) {
+      select_account(i);
+      return;
+    }
   if (hypot(x - lg_arrow_x, y - lg_arrow_y) <= 13) {
     try_login();
     return;
@@ -1580,6 +1766,10 @@ static void login_key(XKeyEvent *e) {
   int n = XLookupString(e, buf, sizeof buf, &ks, NULL);
   if (ks == XK_Return || ks == XK_KP_Enter) {
     try_login();
+    return;
+  }
+  if (!session && naccounts > 1 && (ks == XK_Left || ks == XK_Right || ks == XK_Tab)) {
+    select_account((sel_account + (ks == XK_Left ? naccounts - 1 : 1)) % naccounts);
     return;
   }
   if (ks == XK_BackSpace) {
@@ -1609,6 +1799,7 @@ static void cmd_logout(long unused) {
     Client *c = find_client(w[i]);
     if (c) close_client(c);
   }
+  end_session();
   show_login(false);
 }
 
@@ -1784,7 +1975,7 @@ static void build_menu(int which) {
     add_item("Neustart …", confirm_power, 1, false);
     add_item("Ausschalten …", confirm_power, 0, false);
     add_sep();
-    snprintf(buf, sizeof buf, "„%s“ abmelden …", account_name());
+    snprintf(buf, sizeof buf, "„%s“ abmelden …", session_name());
     add_item(buf, cmd_logout, 0, false);
     break;
   case MB_APP: {
@@ -2685,7 +2876,10 @@ int main(int argc, char **argv) {
   XGrabKey(dpy, XKeysymToKeycode(dpy, XK_F4), Mod1Mask, root, True, GrabModeAsync, GrabModeAsync);
   render_mb_icons();
   scan_existing();
+  save_root_env();
+  load_accounts();
   if (strcmp(os_login, "nein")) show_login(false);
+  else start_session(&accounts[0]);
   focus_client(clients);
   redraw_all();
   warn("läuft auf %dx%d, Thema %s", SW, SH, dark ? "dunkel" : "hell");

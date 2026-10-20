@@ -88,7 +88,7 @@ Bei der PCI-Konfiguration verlegt PureDarwins `IOPCIFamily` die Konsole und schr
 
 ### Desktop: CloakServer
 
-![ClokeOS-Desktop in QEMU am Tag: Das ClokeOS-Menü liegt als Glas über Fundus (Thunar), das Dock über dem Terminal mit clokefetch; die Fenster haben runde Ecken und weiche Schatten](clokeos-darwin/desktop.png)
+![ClokeOS-Desktop in QEMU am Tag, angemeldet als Gast: Das ClokeOS-Menü mit „Gast“ abmelden liegt als Glas über Fundus (Thunar) mit /Users/gast, das Dock über dem Terminal mit clokefetch; die Fenster haben runde Ecken und weiche Schatten](clokeos-darwin/desktop.png)
 
 ![Derselbe Desktop im Dunkelmodus: Abendhimmel mit Sternen, dunkle Fensterrahmen, das Dock als helleres violettes Glas, der Papierkorb so groß wie die übrigen Symbole, darüber das Namensschild „Papierkorb“](clokeos-darwin/desktop-dunkel.png)
 
@@ -98,7 +98,7 @@ Die Desktop-Variante baut auf PureDarwins Vorschau-Image `puredarwin.img` auf (6
 cd clokeos-darwin && CLOKEOS_FLAVOR=desktop ./brand.sh && CLOKEOS_FLAVOR=desktop ./run.sh
 ```
 
-`brand.sh` lädt dafür einmal das Desktop-Image (Prüfsumme wird geprüft) und erzeugt `~/ClokeOS-work/out/clokeos-2.0-x86_64-desktop.img`. Bei Emulation auf einem Mac mit Apple-Chip steht etwa 100 Sekunden lang das Bootlogo mit Fortschrittsbalken, dann startet Xorg, CloakServer zeigt kurz wieder den Umhang an derselben Stelle, und nach knapp zwei Minuten steht die Anmeldung da; ohne Fenster meldet `./vmctl.py key ret` an. Die serielle Konsole mit zsh bleibt daneben erhalten, `vmctl.py` funktioniert wie beim Minimal-Image.
+`brand.sh` lädt dafür einmal das Desktop-Image (Prüfsumme wird geprüft) und erzeugt `~/ClokeOS-work/out/clokeos-2.0-x86_64-desktop.img`. Bei Emulation auf einem Mac mit Apple-Chip steht etwa 100 Sekunden lang das Bootlogo mit Fortschrittsbalken, dann startet Xorg, CloakServer zeigt kurz wieder den Umhang an derselben Stelle, und nach knapp zwei Minuten steht die Anmeldung da; ohne Fenster meldet `./vmctl.py key ret` als Gast an. Die serielle Konsole mit zsh bleibt daneben erhalten, `vmctl.py` funktioniert wie beim Minimal-Image.
 
 CloakServer (`clokeos-darwin/cloakserver/`) ist der Fensterserver von ClokeOS, zunächst als X11-Fenstermanager mit eigener Oberfläche, geschrieben in C mit Xlib, cairo, pango und librsvg:
 
@@ -111,9 +111,11 @@ CloakServer (`clokeos-darwin/cloakserver/`) ist der Fensterserver von ClokeOS, z
 - „Über ClokeOS“ wie im Prototyp, mit Version und Build aus `/etc/clokeos-release` und den Werten des Rechners (`sysctl`)
 - Anmeldung wie im Prototyp, vor dem Desktop und nach dem Abmelden (siehe unten)
 
-![Anmeldebildschirm in QEMU: unscharfes Goldenes Tor, Datum und große Uhr, Avatar „S“ für System Administrator, Passwortfeld mit dem Hinweis, dass die Eingabetaste genügt, darunter Ruhezustand, Neustart und Ausschalten](clokeos-darwin/anmeldung.png)
+![Anmeldebildschirm in QEMU: unscharfes Goldenes Tor, Datum und große Uhr, darunter zwei Konten, groß und violett „G“ für Gast, kleiner und grau „S“ für System Administrator; unter Gast das Passwortfeld mit dem Hinweis, dass die Eingabetaste genügt, unten Ruhezustand, Neustart und Ausschalten](clokeos-darwin/anmeldung.png)
 
-Die Anmeldung zeigt Datum und Uhr über dem unscharfen Hintergrund, darunter das Konto mit Avatar, Passwortfeld und den Knöpfen Ruhezustand, Neustart und Ausschalten. ClokeOS hat wie PureDarwin nur das Konto root („System Administrator“), und PureDarwin setzt ihm kein Passwort (`*` in `/etc/master.passwd`); dann genügt die Eingabetaste, wie der Hinweis sagt. Hat root ein Passwort (`passwd`), prüft CloakServer es mit `crypt()`; ein falsches schüttelt das Feld wie im Prototyp und leert es. „Abmelden“ im ClokeOS-Menü schließt alle Programme und kehrt zur Anmeldung zurück, „Ruhezustand“ schaltet nur den Bildschirm schwarz, bis eine Taste oder ein Klick kommt. Mit `CLOKE_LOGIN="nein"` in `config.sh` startet der Desktop ohne Anmeldung.
+Die Anmeldung zeigt Datum und Uhr über dem unscharfen Hintergrund, darunter die Konten mit Avatar, das Passwortfeld unter dem ausgewählten Konto und die Knöpfe Ruhezustand, Neustart und Ausschalten. Wie im Prototyp gibt es den lokalen Benutzer Gast (Kontoname `gast`, UID 501, Gruppe staff, Ordner `/Users/gast` mit Desktop, Dokumente, Downloads, Bilder und Musik, auf dem Schreibtisch `Willkommen.txt`); `brand.sh` legt ihn nach `CLOKE_USER` in `config.sh` an. Daneben steht root („System Administrator“, grau) für Verwaltungsaufgaben, denn PureDarwin hat weder su noch sudo. Ein Klick oder die Pfeiltasten wählen das Konto. Beide haben kein Passwort, Gast ein leeres Feld und root PureDarwins `*` in `/etc/master.passwd`; dann genügt die Eingabetaste, wie der Hinweis sagt. Steht dort ein Passwort-Hash, prüft CloakServer ihn mit `crypt()`; ein falsches Passwort schüttelt das Feld wie im Prototyp und leert es. Wie bei macOS kann nur root `/etc/master.passwd` lesen, die Programme der Sitzung finden die Namen in `/etc/passwd`.
+
+CloakServer selbst läuft als root, wie loginwindow bei macOS, und startet die Programme als der angemeldete Benutzer: mit dessen Rechten, Ordner und Umgebung (`HOME`, `USER`, `XDG_RUNTIME_DIR=/var/run/user/<UID>`) und einem eigenen D-Bus für die Sitzung (`dbus-launch` als der Benutzer). Fundus öffnet so `/Users/gast`, Notizen und Papierkorb liegen im Benutzerordner, und Thunar warnt nicht mehr vor dem root-Konto. „Abmelden“ im ClokeOS-Menü schließt alle Fenster, beendet danach alle Prozesse des Benutzers (auch D-Bus und xfconfd) und kehrt zur Anmeldung zurück. „Ruhezustand“ schaltet nur den Bildschirm schwarz; danach zeigt die Anmeldung nur das angemeldete Konto, und die Sitzung läuft weiter. Ausschalten und Neustart führt CloakServer als root aus. Mit `CLOKE_LOGIN="nein"` startet der Desktop ohne Anmeldung mit dem ersten Konto (Gast).
 
 Hinter den Dock-Symbolen stehen Programme des PureDarwin-Images:
 
@@ -137,7 +139,8 @@ Grenzen:
 - Die Unschärfe ist eine Näherung: Der Compositor verkleinert den Hintergrund viermal auf die Hälfte und zieht ihn wieder auf. Titelleisten sind deckend, nicht aus Glas.
 - Animationen ruckeln unter Emulation: Ein Bild der bewegten Fläche kostet dort 150 bis 800 ms. Damit eine Animation nicht in einem Sprung endet, zeigt CloakServer jede in mindestens vier Bildern; „Ins Dock“ dauert in QEMU so gut 1 s, das Zurückholen eines großen Terminals 3 s, gedacht sind 0,34 und 0,3 s.
 - Die Programme sind englisch, denn PureDarwins libc kennt keine deutsche Locale (`Locale not supported by C library`). Ihre Menüs stehen im Programmfenster, nicht in der Menüleiste.
-- Bei Emulation brauchen Programme 10 bis 25 Sekunden zum Start. Die Sitzung läuft als root; eigene Benutzerkonten gibt es noch nicht.
+- Bei Emulation brauchen Programme 10 bis 25 Sekunden zum Start.
+- Konten legt nur `brand.sh` an. Eine Benutzerverwaltung in den Systemeinstellungen fehlt ebenso wie su und sudo; als Gast gibt es keine Verwaltungsrechte, dafür meldet man sich als System Administrator an.
 - Nur x86_64. PureDarwins Desktop-Image für arm64 (3,1 GiB) ist nicht geladen; dort startet Xorg, GL ist laut PureDarwin aber kaputt.
 - Das Desktop-Image gehört nicht zu den Releases (6 GiB), `release.sh` baut nur das Minimal-Image.
 
@@ -186,7 +189,7 @@ Der Kernel ist das kleinere Problem, denn XNU ist Open Source (Apple Public Sour
 
 1. ~~**Darwin in einer VM booten.**~~ Erledigt mit PureDarwin 20.5 in QEMU (siehe oben).
 2. ~~**Branding.**~~ Erledigt: `SystemVersion.plist`, `sw_vers`, Hostname, Anmeldetext, Volume-Name und das Bootlogo, das PureDarwins xnu-loader jetzt vor dem Kernelstart über GOP zeichnet (siehe Bootlogo).
-3. **Fensterserver.** Begonnen: CloakServer läuft in der Desktop-Variante als X11-Fenstermanager auf Xorg und PureDarwins GOP-Treiber, mit Hintergrund, Menüleiste, Dock und Fenstern im ClokeOS-Stil (siehe [Desktop: CloakServer](#desktop-cloakserver)). Dafür übergibt der Loader dem Kernel den Framebuffer wieder, und eine 15-Byte-Korrektur in `IOGOPFramebuffer` behebt die falschen Farben. CloakServer setzt das Bild inzwischen selbst zusammen (Schatten, runde Ecken, Glas über Fenstern). Dazu kommt die Anmeldung wie im Prototyp. Fenster öffnen, schrumpfen ins Dock und kommen animiert zurück. Als Nächstes: eigene Benutzerkonten, arm64 (dort startet Xorg, GL ist laut PureDarwin aber noch kaputt), und auf längere Sicht ein eigener Wayland-Compositor statt Xorg (wlroots samt Headern ist im Desktop-Image, PureDarwin hat dafür ein eigenes Backend).
+3. **Fensterserver.** Begonnen: CloakServer läuft in der Desktop-Variante als X11-Fenstermanager auf Xorg und PureDarwins GOP-Treiber, mit Hintergrund, Menüleiste, Dock und Fenstern im ClokeOS-Stil (siehe [Desktop: CloakServer](#desktop-cloakserver)). Dafür übergibt der Loader dem Kernel den Framebuffer wieder, und eine 15-Byte-Korrektur in `IOGOPFramebuffer` behebt die falschen Farben. CloakServer setzt das Bild inzwischen selbst zusammen (Schatten, runde Ecken, Glas über Fenstern). Dazu kommt die Anmeldung wie im Prototyp, mit dem Konto Gast, dessen Programme nicht mehr als root laufen. Fenster öffnen, schrumpfen ins Dock und kommen animiert zurück. Als Nächstes: Benutzerverwaltung (Konten anlegen, Passwörter, sudo), arm64 (dort startet Xorg, GL ist laut PureDarwin aber noch kaputt), und auf längere Sicht ein eigener Wayland-Compositor statt Xorg (wlroots samt Headern ist im Desktop-Image, PureDarwin hat dafür ein eigenes Backend).
 4. **Shell portieren.** Menüleiste und Dock gibt es jetzt nativ in CloakServer. Offen sind Fundus, Search und die übrigen Apps aus `clokeos.html` als native Programme; bis dahin stehen Thunar, NetSurf und andere Programme des PureDarwin-Images hinter den Dock-Symbolen. Alternativ eine Browser-Engine als Shell-Laufzeit: Mit WebKitGTK könnte `clokeos.html` fast unverändert laufen; PureDarwin arbeitet daran, laut Statusseite läuft es noch nicht.
 5. **Installer-Image.** Bootfähiges ISO mit Bootloader, Kernel, Userland und CloakServer.
 

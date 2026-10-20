@@ -13,7 +13,7 @@
 #   - x86_64: die EFI-Partition bekommt den Loader mit Bootlogo (loader/build.sh) und die
 #     Boot-Argumente aus config.sh, beides mit mtools
 #   - desktop: dazu overlay-desktop/ und CloakServer (cloakserver/build.sh), der beim Start
-#     Xorg mit dem ClokeOS-Desktop öffnet
+#     Xorg mit dem ClokeOS-Desktop öffnet, und das Benutzerkonto aus config.sh (CLOKE_USER)
 set -euo pipefail
 source "$(dirname "$0")/config.sh"
 need "$DEBUGFS" "$E2FSCK" "$TUNE2FS" python3 mcopy mtype mdir
@@ -87,6 +87,56 @@ if [[ -z $CLOKEOS_GREETED && -r /etc/motd ]]; then
 fi
 EOF
 
+# --- Desktop: Benutzerkonto wie im Prototyp ------------------------------------------------
+# Ohne Passwort (leeres Feld, die Eingabetaste meldet an), Gruppe staff, Ordner wie in clokeos.html.
+# PureDarwin hat kein su und kein sudo; für Verwaltung gibt es auf der Anmeldung root.
+: > "$tmp/extra.cmds"
+if [ "$CLOKE_FLAVOR" = desktop ] && [ -n "$CLOKE_USER" ]; then
+  home="/Users/$CLOKE_USER"
+  for f in master.passwd:root passwd:root group:staff; do
+    "$DEBUGFS" -R "cat /etc/${f%:*}" "$root" 2>/dev/null > "$tmp/stage/etc/${f%:*}"
+    grep -q "^${f#*:}:" "$tmp/stage/etc/${f%:*}" || { echo "/etc/${f%:*} im Basisimage nicht gefunden" >&2; exit 1; }
+  done
+  printf '%s::%s:20::0:0:%s:%s:/bin/zsh\n' "$CLOKE_USER" "$CLOKE_USER_UID" "$CLOKE_USER_NAME" "$home" \
+    >> "$tmp/stage/etc/master.passwd"
+  printf '%s:*:%s:20:%s:%s:/bin/zsh\n' "$CLOKE_USER" "$CLOKE_USER_UID" "$CLOKE_USER_NAME" "$home" \
+    >> "$tmp/stage/etc/passwd"
+  sed -i '' "s/^staff:\(.*\)$/staff:\1,$CLOKE_USER/" "$tmp/stage/etc/group"
+  # wie bei macOS nur für root lesbar; die übrigen Programme lesen /etc/passwd
+  chmod 600 "$tmp/stage/etc/master.passwd"
+
+  h="$tmp/stage$home"
+  mkdir -p "$h"/{Desktop,Dokumente,Downloads,Bilder,Musik,.Trash,.config/gtk-3.0}
+  cp "$HERE/overlay-desktop/var/root/.config/gtk-3.0/gtk.css" "$h/.config/gtk-3.0/"
+  for f in profile zprofile zshrc; do printf 'test -r /etc/%s && . /etc/%s\n' $f $f > "$h/.$f"; done
+  printf "alias ll='ls -la'\n" >> "$h/.zshrc"
+  cat > "$h/Desktop/Willkommen.txt" <<EOF
+Willkommen bei ClokeOS $CLOKE_VERSION „$CLOKE_CODENAME“
+
+ClokeOS ist eine macOS-ähnliche Oberfläche auf Darwin-Basis: der Kernel XNU,
+darunter PureDarwin $PD_VERSION, darüber CloakServer als Fensterserver.
+Ein paar Dinge zum Ausprobieren:
+
+• Im Terminal: clokefetch, uname -a, sw_vers
+• Fenster ziehen, an der Ecke vergrößern, gelb = ins Dock
+• Erscheinungsbild in der Menüleiste: automatisch, hell oder dunkel
+• Abmelden im ClokeOS-Menü
+
+Dieses Konto hat kein Passwort. Für Verwaltungsaufgaben meldest du dich als
+System Administrator an; su und sudo gibt es in ClokeOS noch nicht.
+EOF
+  # Besitzer und Rechte im Image: alles unter $home gehört dem Konto
+  {
+    echo "set_inode_field /Users mode 040755"
+    (cd "$tmp/stage" && find ".$home" | sed 's|^\.||' | sort) | while read -r f; do
+      [ -d "$tmp/stage$f" ] && echo "set_inode_field $f mode 040755"
+      echo "set_inode_field $f uid $CLOKE_USER_UID"
+      echo "set_inode_field $f gid 20"
+    done
+    echo "set_inode_field $home/.Trash mode 040700"
+  } > "$tmp/extra.cmds"
+fi
+
 # --- in ein ext4-Dateisystem schreiben ----------------------------------------------------
 # brand_ext4 <ext4-datei> <volume-name|"">: Overlay hinein, prüfen, ob alles angekommen ist.
 brand_ext4() {
@@ -105,6 +155,7 @@ brand_ext4() {
       echo "set_inode_field $f uid 0"
       echo "set_inode_field $f gid 0"
     done
+    cat "$tmp/extra.cmds"
   } > "$cmds"
   "$DEBUGFS" -w -f "$cmds" "$fs" > "$tmp/debugfs.log" 2>&1
   [ -n "$label" ] && "$TUNE2FS" -L "$label" "$fs" >/dev/null

@@ -87,6 +87,10 @@ CLOKE_HOST="clokeos"
 CLOKE_TZ="CET-1CEST,M3.5.0,M10.5.0/3"
 # Desktop: Anmeldebildschirm wie in clokeos.html vor dem Desktop ("ja") oder direkt zum Desktop ("nein")
 CLOKE_LOGIN="ja"
+# Desktop: Benutzerkonto wie im Prototyp, ohne Passwort, Ordner /Users/<name>; leer = nur root
+CLOKE_USER="gast"
+CLOKE_USER_NAME="Gast"
+CLOKE_USER_UID=501
 CLOKE_IMG="$WORK/out/clokeos-$CLOKE_VERSION-$CLOKE_ARCH.img"
 [ "$CLOKE_FLAVOR" = desktop ] && CLOKE_IMG="$WORK/out/clokeos-$CLOKE_VERSION-$CLOKE_ARCH-desktop.img"
 
