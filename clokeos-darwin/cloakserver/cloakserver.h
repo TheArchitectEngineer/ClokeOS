@@ -29,6 +29,8 @@ Pixmap cs_wallpaper(void);
 
 /* apps.c: Programme als .app-Bundles wie bei macOS */
 enum { APP_OK, APP_APPKIT, APP_ARM64, APP_MISSING, APP_NOEXEC };
+/* Darlings Mac-Frameworks (AppKit, Foundation …, macapps/), gefunden über DYLD_FRAMEWORK_PATH */
+#define MAC_FRAMEWORKS "/Library/ClokeOS/MacFrameworks"
 typedef struct {
   char path[1024];      /* /System/Applications/Rechner.app */
   char name[96];        /* CFBundleDisplayName, CFBundleName oder Ordnername */
@@ -41,6 +43,7 @@ typedef struct {
   char missing[160];    /* kind != APP_OK: was fehlt */
   int kind;             /* APP_*: lässt es sich starten? */
   bool mac, hidden;     /* Mach-O wie bei macOS; LSUIElement */
+  bool macfw;           /* braucht Frameworks aus MAC_FRAMEWORKS: Start mit DYLD_FRAMEWORK_PATH */
   long mtime;
 } Bundle;
 typedef struct {

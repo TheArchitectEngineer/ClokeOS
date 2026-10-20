@@ -763,8 +763,9 @@ static bool become(const Account *a) {
   return initgroups(a->name, (int)a->gid) == 0 && setgid(a->gid) == 0 && setuid(a->uid) == 0;
 }
 
-/* Programme laufen als der angemeldete Benutzer, nur Ausschalten und Neustart als root. */
-static pid_t spawn_as(const char *cmd, bool system) {
+/* Programme laufen als der angemeldete Benutzer, nur Ausschalten und Neustart als root.
+ * macfw: ein Mac-Programm mit Darlings Frameworks, dyld sucht sie über DYLD_FRAMEWORK_PATH. */
+static pid_t spawn_env(const char *cmd, bool system, bool macfw) {
   char buf[1024];
   snprintf(buf, sizeof buf, "cd \"$HOME\" && exec %s", cmd);
   pid_t pid = fork();
@@ -772,6 +773,7 @@ static pid_t spawn_as(const char *cmd, bool system) {
     setsid();
     signal(SIGCHLD, SIG_DFL);
     if (!system && !become(session)) _exit(126);
+    if (macfw) setenv("DYLD_FRAMEWORK_PATH", MAC_FRAMEWORKS, 1);
     execl("/bin/sh", "sh", "-c", buf, (char *)NULL);
     _exit(127);
   }
@@ -779,6 +781,7 @@ static pid_t spawn_as(const char *cmd, bool system) {
   return pid;
 }
 
+static pid_t spawn_as(const char *cmd, bool system) { return spawn_env(cmd, system, false); }
 static pid_t spawn(const char *cmd) { return spawn_as(cmd, false); }
 
 /* 'Pfad' für sh -c */
@@ -901,7 +904,7 @@ static void launch(int i) {
   char q[2600];
   sh_quote(q, sizeof q, a->b.exec);
   if (!app_running(i)) a->bounce_t0 = now_s();
-  a->pid = spawn(q);
+  a->pid = spawn_env(q, false, a->b.macfw);
   draw_dock();
 }
 

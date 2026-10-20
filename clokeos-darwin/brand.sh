@@ -14,7 +14,8 @@
 #     Boot-Argumente aus config.sh, beides mit mtools
 #   - desktop: dazu overlay-desktop/ und CloakServer (cloakserver/build.sh), der beim Start
 #     Xorg mit dem ClokeOS-Desktop öffnet, die Programme als .app-Bundles wie bei macOS
-#     (cloakserver/bundles.py) und das Benutzerkonto aus config.sh (CLOKE_USER)
+#     (cloakserver/bundles.py) und das Benutzerkonto aus config.sh (CLOKE_USER); sind die
+#     Darling-Quellen geladen, auch die Mac-Frameworks samt Hallo.app (macapps/install.sh)
 set -euo pipefail
 source "$(dirname "$0")/config.sh"
 need "$DEBUGFS" "$E2FSCK" "$TUNE2FS" python3 mcopy mtype mdir
@@ -40,6 +41,7 @@ if [ "$CLOKE_FLAVOR" = desktop ]; then
   "$HERE/cloakserver/build.sh" "$tmp/stage"
   python3 -I "$HERE/cloakserver/bundles.py" "$tmp/stage" "$WORK/out/CloakServer/Resources/icons" \
     "$CLOKE_VERSION" "$CLOKE_BUILD"
+  "$HERE/macapps/install.sh" "$tmp/stage"
 fi
 find "$tmp/stage" -name .DS_Store -delete
 
@@ -163,6 +165,11 @@ brand_ext4() {
       echo "set_inode_field $f uid 0"
       echo "set_inode_field $f gid 0"
     done
+    # Symlinks (Framework-Bundles: Versions/Current, Resources, die Programmdatei)
+    (cd "$tmp/stage" && find . -type l | sed 's|^\.||' | sort) | while read -r f; do
+      echo "rm $f"
+      echo "symlink $f $(readlink "$tmp/stage$f")"
+    done
     cat "$tmp/extra.cmds"
   } > "$cmds"
   "$DEBUGFS" -w -f "$cmds" "$fs" > "$tmp/debugfs.log" 2>&1
@@ -172,6 +179,12 @@ brand_ext4() {
   for f in $(cd "$tmp/stage" && find . -type f | sed 's|^\.||'); do
     if ! "$DEBUGFS" -R "cat $f" "$fs" 2>/dev/null | cmp -s - "$tmp/stage$f"; then
       echo "Nicht geschrieben: $f in $fs (siehe $tmp/debugfs.log)" >&2
+      exit 1
+    fi
+  done
+  for f in $(cd "$tmp/stage" && find . -type l | sed 's|^\.||'); do
+    if ! "$DEBUGFS" -R "stat $f" "$fs" 2>/dev/null | grep -qF "Fast link dest: \"$(readlink "$tmp/stage$f")\""; then
+      echo "Symlink nicht geschrieben: $f in $fs (siehe $tmp/debugfs.log)" >&2
       exit 1
     fi
   done

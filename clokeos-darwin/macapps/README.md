@@ -10,6 +10,10 @@ Stand 20.10.2026:
 - **AppKit-Probe.** AppKit, Cocoa, CoreGraphics, Onyx2D, CoreText, QuartzCore, CoreImage, CoreData
   und ImageIO aus darling-cocotron. Eine x86_64-Cocoa-App aus Apples SDK (`hallo.m`) zeigt ihr
   Fenster in CloakServer, reagiert auf Maus und Tastatur und beendet sich sauber.
+- **Im Desktop-Image.** `brand.sh` legt mit `install.sh` die Frameworks nach
+  `/Library/ClokeOS/MacFrameworks` und `Hallo.app` nach `/Applications`, sobald die Darling-Quellen
+  geladen sind. CloakServer erkennt Mac-Programme, deren Frameworks dort liegen, und startet sie aus
+  Launchpad und Dock mit `DYLD_FRAMEWORK_PATH`.
 
 ```bash
 macapps/machcheck.py /pfad/zu/Programm.app
@@ -57,4 +61,5 @@ Dateien:
 - `appkit/sysstubs.c`: Platzhalter für OpenGL, IOKit und LaunchServices, nicht exportiert.
 - `appkit/include/`: Ersatz für Darlings private Header und schlankere Apple-Header.
 - `patches/`: Korrekturen an Darling-Fehlern und Anpassungen an ClokeOS (sed).
-- `fprobe.m`, `hallo.m`: Prüfprogramm (Foundation) und Test-App (Cocoa).
+- `fprobe.m`, `hallo.m`: Prüfprogramm (Foundation) und Test-App (Cocoa), `hallo-icon.svg` ihr Icon.
+- `install.sh`: Frameworks und `Hallo.app` in die Stage des Desktop-Images (von `brand.sh`).

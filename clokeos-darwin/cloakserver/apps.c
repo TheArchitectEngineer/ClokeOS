@@ -330,6 +330,19 @@ static void check_thin(Bundle *b, const unsigned char *m, size_t len) {
           snprintf(real, sizeof real, "%s", path);
         /* @rpath hängt von LC_RPATH ab; das prüft erst dyld beim Start */
         if (path[0] != '@' || real[0] == '/') {
+          /* Ein Framework, das im System fehlt, findet dyld mit DYLD_FRAMEWORK_PATH in den
+           * Mac-Frameworks (…/AppKit.framework/Versions/C/AppKit -> MAC_FRAMEWORKS/AppKit.framework/…) */
+          const char *fw = strstr(path, ".framework/");
+          if (fw && access(real, F_OK)) {
+            const char *s = fw;
+            while (s > path && s[-1] != '/') s--;
+            char alt[1100];
+            snprintf(alt, sizeof alt, "%s/%s", MAC_FRAMEWORKS, s);
+            if (!access(alt, F_OK)) {
+              snprintf(real, sizeof real, "%s", alt);
+              b->macfw = true;
+            }
+          }
           if (access(real, F_OK) && b->kind == APP_OK) {
             lib_name(path, b->missing, sizeof b->missing);
             b->kind = (strstr(path, "/AppKit.framework/") || strstr(path, "/Cocoa.framework/") ||
