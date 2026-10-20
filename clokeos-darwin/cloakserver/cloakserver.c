@@ -73,13 +73,13 @@ void freeifaddrs(struct ifaddrs *);
 #define TITLE_H   36   /* Prototyp: 38; auf 800 Pixel Höhe etwas knapper */
 #define BORDER    1
 #define RADIUS    10
-#define DS        50   /* Dock-Symbolgröße */
-#define DOCK_PAD_X 8
-#define DOCK_PAD_Y 6
+#define DOCK_PAD_X 8   /* entlang des Docks */
+#define DOCK_PAD_Y 6   /* quer dazu */
 #define DOCK_GAP  5
-#define DOCK_H    (DS + 2 * DOCK_PAD_Y)
-#define DOCK_BOTTOM 6
-#define DOCK_RESERVED (DOCK_H + DOCK_BOTTOM + 6)
+#define DOCK_H    (ds + 2 * DOCK_PAD_Y) /* Dicke des Docks */
+#define DOCK_MARGIN 6  /* Abstand zum Bildschirmrand */
+static int ds = 50;    /* Dock-Symbolgröße; ds_pref aus den Systemeinstellungen (40, 50, 64), ds ist */
+static int ds_pref = 50; /* kleiner, wenn das Dock sonst nicht auf den Bildschirm passt */
 #define GLASS_O   .43  /* --glass-o bei "Liquid Glass" 50 */
 
 typedef struct { double r, g, b, a; } RGBA;
@@ -113,32 +113,28 @@ static const RGBA L_MIN = {0xfe / 255., 0xbc / 255., 0x2e / 255., 1};
 static const RGBA L_ZOOM = {0x28 / 255., 0xc8 / 255., 0x40 / 255., 1};
 
 /* ---------------------------------------------------------------------------------------- */
-/* Programme im Dock: Icon und Name aus clokeos.html, dahinter echte Programme des Images.    */
+/* Programme sind .app-Bundles wie bei macOS (apps.c). Icon und Name der Systemprogramme kommen */
+/* aus clokeos.html, dahinter stehen echte Programme des Images (cloakserver/bundles.py).      */
 
 typedef struct {
-  const char *id, *name, *cmd;
-  const char *classes; /* WM_CLASS (res_class), durch Leerzeichen getrennt, * = beliebiger Teil */
+  Bundle b;
+  cairo_surface_t *icon, *icon_lp; /* im Dock (ds) und im Launchpad (LP_ICON) */
+  pid_t pid;                       /* zuletzt gestartet: Fenster ohne bekannte Klasse finden */
+  double bounce_t0;                /* Hüpfen im Dock beim Start */
+  bool gone, seen;                 /* Bundle gelöscht; beim Durchsuchen gefunden */
 } App;
+static App *apps;
+static int napps, app_fundus = -1;
 
-/* Programme, die im Terminal laufen, erkennt CloakServer an der Fensterrolle clokeos-<id>. */
-#define TERM_APP(id, title, size, cmd) \
-  "xfce4-terminal --disable-server --role=clokeos-" id " --title='" title "' --dynamic-title-mode=none --geometry=" size " -x " cmd
-
-static const App APPS[] = {
-  {"dateien", "Fundus", "thunar", "Thunar"},
-  {"programme", "Programme", "xfce4-appfinder", "Xfce4-appfinder"},
-  {"search", "Search", "netsurf-gtk3", "Netsurf-gtk3 Netsurf* NetSurf*"},
-  {"terminal", "Terminal", "xfce4-terminal", "Xfce4-terminal XTerm UXTerm"},
-  {"notizen", "Notizen", TERM_APP("notizen", "Notizen", "84x28", "nano \"$HOME/Notizen.txt\""), ""},
-  {"rechner", "Rechner", "xcalc", "XCalc"},
-  {"kalender", "Kalender", TERM_APP("kalender", "Kalender", "72x22", "/usr/libexec/clokeos-kalender"), ""},
-  {"aktivitaet", "Aktivitätsanzeige", TERM_APP("aktivitaet", "Aktivitätsanzeige", "92x30", "/usr/libexec/clokeos-aktivitaet"), ""},
-  {"einstellungen", "Systemeinstellungen", "xfce4-settings-manager", "Xfce4-settings* Xfce4-*-settings Xfwm4-settings"},
-  {NULL, NULL, NULL, NULL}, /* Trennstrich */
-  {"papierkorb", "Papierkorb", "mkdir -p \"$HOME/.Trash\" && thunar \"$HOME/.Trash\"", ""},
-};
-#define NAPPS ((int)(sizeof APPS / sizeof APPS[0]))
-#define APP_DATEIEN 0
+/* Dock: Fundus, die behaltenen Programme, laufende andere, Trennstrich, Papierkorb */
+enum { DOCK_SEP = -1, DOCK_TRASH = -2 };
+typedef struct { int app, pos; } DockItem;
+static DockItem ditems[64];
+static int nditems;
+static char dock_ids[48][128]; /* „Im Dock behalten“: Bundle-Kennungen */
+static int ndock_ids;
+enum { POS_BOTTOM, POS_LEFT, POS_RIGHT };
+static int dock_pos; /* Systemeinstellungen > Schreibtisch & Dock */
 
 /* ---------------------------------------------------------------------------------------- */
 
@@ -150,7 +146,7 @@ struct Client {
   int minw, minh;
   char title[256];
   char cls[128];
-  int app;             /* Index in APPS oder -1 */
+  int app;             /* Index in apps oder -1 */
   bool minimized, zoomed, can_delete, can_focus, take_focus, argb;
   int zx, zy, zw, zh;  /* Lage vor dem Zoomen */
   int hover, pressed;  /* Ampelknopf: 0 keiner, 1 schließen, 2 ins Dock, 3 zoomen */
@@ -188,7 +184,7 @@ static const Theme *T = &LIGHT;
 static char resdir[PATH_MAX];
 static cairo_surface_t *wall_img, *wall_blur; /* ganzer Bildschirm, Unschärfe in 1/4 Größe */
 static Pixmap wall_pm;
-static cairo_surface_t *icons[NAPPS], *icon_trash_full;
+static cairo_surface_t *icon_trash, *icon_trash_full;
 static int cal_day = -1;
 static Cursor cur_arrow, cur_resize, cur_move;
 static int cascade;
@@ -201,7 +197,7 @@ static Atom WM_PROTOCOLS, WM_WINDOW_ROLE, WM_DELETE_WINDOW, WM_TAKE_FOCUS, WM_ST
   NET_WM_WINDOW_TYPE, NET_WM_WINDOW_TYPE_DOCK, NET_WM_WINDOW_TYPE_DESKTOP, NET_WM_WINDOW_TYPE_SPLASH,
   NET_WM_WINDOW_TYPE_NOTIFICATION, NET_WM_WINDOW_TYPE_TOOLTIP, NET_WM_WINDOW_TYPE_MENU,
   NET_WM_WINDOW_TYPE_POPUP_MENU, NET_WM_WINDOW_TYPE_DROPDOWN_MENU, NET_WM_WINDOW_TYPE_COMBO,
-  NET_WM_WINDOW_TYPE_DND, NET_CLOSE_WINDOW, NET_FRAME_EXTENTS, NET_NUMBER_OF_DESKTOPS,
+  NET_WM_WINDOW_TYPE_DND, NET_CLOSE_WINDOW, NET_FRAME_EXTENTS, NET_NUMBER_OF_DESKTOPS, NET_WM_PID,
   NET_CURRENT_DESKTOP, MOTIF_WM_HINTS, XROOTPMAP_ID, ESETROOT_PMAP_ID;
 
 /* Menü, das gerade offen ist */
@@ -212,10 +208,9 @@ static int nmenu, menu_hover = -1, menu_w, menu_h, menu_owner = -1; /* Menüleis
 enum { MB_LOGO, MB_APP, MB_FILE, MB_WINDOW, MB_WIFI, MB_SPOT, MB_CC, MB_CLOCK, MB_N };
 static int mb_x[MB_N], mb_w[MB_N];
 
-/* Dock: dock_y ist die Oberkante des Glases. Mit Compositor reicht das Fenster dock_top Pixel
- * höher (durchsichtig), damit ein Symbol beim Starten darüber hüpfen kann. */
-static int dock_x, dock_y, dock_w, dock_top, dock_hover = -1, dock_item_x[NAPPS];
-static double bounce_t0[NAPPS];
+/* Dock: dock_x, dock_y, dock_w, dock_h ist das Glas. Mit Compositor ist das Fenster dock_lift
+ * Pixel zur Bildschirmmitte hin größer (durchsichtig), damit ein Symbol beim Starten hüpfen kann. */
+static int dock_x, dock_y, dock_w, dock_h, dock_lift, dock_hover = -1;
 
 /* Bewegen und Größe ändern */
 static Client *drag;
@@ -234,6 +229,13 @@ static void close_menu(void);
 static Window ui_window(int x, int y, int w, int h, long mask, bool argb, Atom type);
 static void show_tip(int i);
 static void dock_target(Client *c, double *x, double *y);
+static bool app_running(int i);
+static void show_launchpad(void);
+static void show_settings(long section);
+static void show_app_problem(int i);
+static void update_workarea(void);
+static void save_prefs(void);
+static void load_prefs(void);
 
 static void warn(const char *fmt, ...) {
   va_list ap;
@@ -341,7 +343,8 @@ typedef struct { double k, tx, ty; } Fit;
 
 static cairo_surface_t *svg_render_fit(const char *name, int w, int h, const char *const *subst, const Fit *fit) {
   char path[PATH_MAX];
-  snprintf(path, sizeof path, "%s/%s", resdir, name);
+  if (name[0] == '/') snprintf(path, sizeof path, "%s", name);
+  else snprintf(path, sizeof path, "%s/%s", resdir, name);
   char *src = read_file(path);
   if (!src) {
     warn("fehlt: %s", path);
@@ -625,6 +628,7 @@ static void set_theme_mode(long mode) {
   theme_mode = (int)mode;
   bool was = dark;
   if (want_dark() != was || !wall_img) apply_theme();
+  save_prefs();
   redraw_all();
 }
 
@@ -633,31 +637,116 @@ static void set_theme_mode(long mode) {
 
 static const char *MONTHS[] = {"JAN", "FEB", "MÄRZ", "APR", "MAI", "JUNI", "JULI", "AUG", "SEPT", "OKT", "NOV", "DEZ"};
 
-static void render_icons(void) {
+static const char *const *cal_subst(void) {
+  static char day[8];
+  static const char *cal[5];
   time_t t = time(NULL);
   struct tm tm;
   localtime_r(&t, &tm);
-  char day[8];
   snprintf(day, sizeof day, "%d", tm.tm_mday);
-  const char *cal[] = {"@MON@", MONTHS[tm.tm_mon], "@DAY@", day, NULL};
+  cal[0] = "@MON@", cal[1] = MONTHS[tm.tm_mon], cal[2] = "@DAY@", cal[3] = day, cal[4] = NULL;
   cal_day = tm.tm_mday;
-  for (int i = 0; i < NAPPS; i++) {
-    if (!APPS[i].id) continue;
-    if (icons[i]) cairo_surface_destroy(icons[i]);
-    char name[64];
-    snprintf(name, sizeof name, "icons/%s.svg", APPS[i].id);
-    icons[i] = svg_render(name, DS, DS, strcmp(APPS[i].id, "kalender") ? NULL : cal);
-    Fit f = icons[i] ? icon_fit(icons[i]) : (Fit){1, 0, 0};
-    if (f.k != 1) {
-      cairo_surface_destroy(icons[i]);
-      icons[i] = svg_render_fit(name, DS, DS, NULL, &f);
+  return cal;
+}
+
+/* Bild mittig in size x size einpassen */
+static cairo_surface_t *scaled(cairo_surface_t *src, int size) {
+  int w = cairo_image_surface_get_width(src), h = cairo_image_surface_get_height(src);
+  cairo_surface_t *s = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, size, size);
+  if (w <= 0 || h <= 0) return s;
+  double k = (double)size / (w > h ? w : h);
+  cairo_t *cr = cairo_create(s);
+  cairo_translate(cr, (size - w * k) / 2, (size - h * k) / 2);
+  cairo_scale(cr, k, k);
+  cairo_set_source_surface(cr, src, 0, 0);
+  cairo_pattern_set_filter(cairo_get_source(cr), CAIRO_FILTER_GOOD);
+  cairo_paint(cr);
+  cairo_destroy(cr);
+  return s;
+}
+
+typedef struct { const unsigned char *d; size_t n, pos; } MemReader;
+static cairo_status_t mem_read(void *closure, unsigned char *out, unsigned int len) {
+  MemReader *m = closure;
+  if (m->pos + len > m->n) return CAIRO_STATUS_READ_ERROR;
+  memcpy(out, m->d + m->pos, len);
+  m->pos += len;
+  return CAIRO_STATUS_SUCCESS;
+}
+
+/* Programme ohne eigenes Icon: abgerundetes Quadrat mit Anfangsbuchstaben */
+static cairo_surface_t *generic_icon(const char *name, int size) {
+  cairo_surface_t *s = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, size, size);
+  cairo_t *cr = cairo_create(s);
+  double k = size / 64.0, hue = 0;
+  for (const char *p = name; *p; p++) hue += (unsigned char)*p;
+  RGBA a = {.45 + .3 * sin(hue), .45 + .3 * sin(hue + 2.1), .45 + .3 * sin(hue + 4.2), 1};
+  cairo_pattern_t *g = cairo_pattern_create_linear(0, 4 * k, 0, 60 * k);
+  cairo_pattern_add_color_stop_rgb(g, 0, a.r + .15, a.g + .15, a.b + .15);
+  cairo_pattern_add_color_stop_rgb(g, 1, a.r * .7, a.g * .7, a.b * .7);
+  rrect(cr, 4 * k, 4 * k, 56 * k, 56 * k, 13 * k);
+  cairo_set_source(cr, g);
+  cairo_fill(cr);
+  cairo_pattern_destroy(g);
+  char initial[8] = {0};
+  int il = 1;
+  while (name[0] && name[il] && (name[il] & 0xc0) == 0x80) il++;
+  snprintf(initial, sizeof initial, "%.*s", il, name[0] ? name : "?");
+  for (char *p = initial; *p; p++) *p = (char)toupper((unsigned char)*p);
+  text(cr, size / 2.0, size / 2.0, initial, 30 * k, true, (RGBA){1, 1, 1, 1}, 0, 1);
+  cairo_destroy(cr);
+  return s;
+}
+
+/* Icon eines Bundles in size x size: SVG (mit den Platzhaltern des Kalenders), PNG oder .icns */
+static cairo_surface_t *bundle_icon(const Bundle *b, int size, const char *const *subst) {
+  const char *ext = strrchr(b->icon, '.');
+  cairo_surface_t *s = NULL;
+  if (b->icon[0] && ext && !strcasecmp(ext, ".svg")) {
+    s = svg_render(b->icon, size, size, subst);
+    Fit f = s ? icon_fit(s) : (Fit){1, 0, 0};
+    if (s && f.k != 1) {
+      cairo_surface_destroy(s);
+      s = svg_render_fit(b->icon, size, size, subst, &f);
     }
-    if (!strcmp(APPS[i].id, "papierkorb")) {
-      /* der volle Papierkorb an derselben Stelle, sonst springt der Eimer */
-      if (icon_trash_full) cairo_surface_destroy(icon_trash_full);
-      icon_trash_full = svg_render_fit("icons/papierkorb-voll.svg", DS, DS, NULL, &f);
+  } else if (b->icon[0] && ext && !strcasecmp(ext, ".icns")) {
+    size_t n = 0;
+    unsigned char *png = icns_png(b->icon, size * 2, &n);
+    if (png) {
+      MemReader m = {png, n, 0};
+      cairo_surface_t *p = cairo_image_surface_create_from_png_stream(mem_read, &m);
+      if (cairo_surface_status(p) == CAIRO_STATUS_SUCCESS) s = scaled(p, size);
+      cairo_surface_destroy(p);
+      free(png);
     }
+  } else if (b->icon[0]) {
+    cairo_surface_t *p = cairo_image_surface_create_from_png(b->icon);
+    if (cairo_surface_status(p) == CAIRO_STATUS_SUCCESS) s = scaled(p, size);
+    cairo_surface_destroy(p);
   }
+  return s ? s : generic_icon(b->name, size);
+}
+
+static void render_app_icon(App *a) {
+  if (a->icon) cairo_surface_destroy(a->icon);
+  if (a->icon_lp) cairo_surface_destroy(a->icon_lp); /* das Launchpad zeichnet es bei Bedarf neu */
+  a->icon_lp = NULL;
+  a->icon = bundle_icon(&a->b, ds, cal_subst());
+}
+
+static void render_icons(void) {
+  for (int i = 0; i < napps; i++)
+    if (!apps[i].gone) render_app_icon(&apps[i]);
+  /* der volle Papierkorb an derselben Stelle wie der leere, sonst springt der Eimer */
+  if (icon_trash) cairo_surface_destroy(icon_trash);
+  if (icon_trash_full) cairo_surface_destroy(icon_trash_full);
+  icon_trash = svg_render("icons/papierkorb.svg", ds, ds, NULL);
+  Fit f = icon_trash ? icon_fit(icon_trash) : (Fit){1, 0, 0};
+  if (icon_trash && f.k != 1) {
+    cairo_surface_destroy(icon_trash);
+    icon_trash = svg_render_fit("icons/papierkorb.svg", ds, ds, NULL, &f);
+  }
+  icon_trash_full = svg_render_fit("icons/papierkorb-voll.svg", ds, ds, NULL, &f);
 }
 
 /* Konto des angemeldeten Benutzers, NULL = niemand angemeldet (siehe "Konten und Sitzung") */
@@ -675,7 +764,7 @@ static bool become(const Account *a) {
 }
 
 /* Programme laufen als der angemeldete Benutzer, nur Ausschalten und Neustart als root. */
-static void spawn_as(const char *cmd, bool system) {
+static pid_t spawn_as(const char *cmd, bool system) {
   char buf[1024];
   snprintf(buf, sizeof buf, "cd \"$HOME\" && exec %s", cmd);
   pid_t pid = fork();
@@ -687,41 +776,182 @@ static void spawn_as(const char *cmd, bool system) {
     _exit(127);
   }
   if (pid < 0) warn("kann %s nicht starten: %s", cmd, strerror(errno));
+  return pid;
 }
 
-static void spawn(const char *cmd) { spawn_as(cmd, false); }
+static pid_t spawn(const char *cmd) { return spawn_as(cmd, false); }
 
-static int app_for_class(const char *cls) {
-  for (int i = 0; i < NAPPS; i++) {
-    if (!APPS[i].id || !APPS[i].classes[0]) continue;
-    char list[256];
-    snprintf(list, sizeof list, "%s", APPS[i].classes);
-    for (char *tok = strtok(list, " "); tok; tok = strtok(NULL, " ")) {
-      size_t n = strlen(tok);
-      char *star = strchr(tok, '*');
-      if (star && star == tok + n - 1) {
-        if (!strncasecmp(cls, tok, n - 1)) return i;
-      } else if (star) { /* Präfix*Suffix */
-        size_t pre = star - tok, suf = n - pre - 1, cl = strlen(cls);
-        if (cl >= pre + suf && !strncasecmp(cls, tok, pre) && !strcasecmp(cls + cl - suf, star + 1)) return i;
-      } else if (!strcasecmp(cls, tok)) {
-        return i;
-      }
+/* 'Pfad' für sh -c */
+static void sh_quote(char *out, size_t n, const char *s) {
+  size_t k = 0;
+  if (n < 3) return;
+  out[k++] = '\'';
+  for (; *s && k + 6 < n; s++) {
+    if (*s == '\'') {
+      memcpy(out + k, "'\\''", 4);
+      k += 4;
+    } else {
+      out[k++] = *s;
     }
   }
+  out[k++] = '\'';
+  out[k] = 0;
+}
+
+/* ---------------------------------------------------------------------------------------- */
+/* Programme finden: /System/Applications, /Applications, ~/Applications (Unterordner wie      */
+/* Utilities eine Ebene tief), Fundus wie der Finder in /System/Library/CoreServices.          */
+
+static int app_by_ident(const char *id) {
+  for (int i = 0; i < napps; i++)
+    if (!apps[i].gone && !strcmp(apps[i].b.ident, id)) return i;
   return -1;
 }
 
-static int app_for_role(Window w) {
+static void add_bundle(const char *path) {
+  for (int i = 0; i < napps; i++)
+    if (!strcmp(apps[i].b.path, path)) {
+      apps[i].seen = true;
+      if (apps[i].gone || bundle_mtime(path) != apps[i].b.mtime) {
+        bundle_read(path, &apps[i].b);
+        render_app_icon(&apps[i]);
+      }
+      apps[i].gone = false;
+      return;
+    }
+  App *na = realloc(apps, (napps + 1) * sizeof *apps);
+  if (!na) return;
+  apps = na;
+  App *a = &apps[napps];
+  memset(a, 0, sizeof *a);
+  if (!bundle_read(path, &a->b)) return;
+  a->seen = true;
+  napps++;
+  render_app_icon(a);
+  if (debug) warn("Programm %s (%s), Start %s", a->b.name, a->b.ident, a->b.kind == APP_OK ? "möglich" : a->b.missing);
+}
+
+static void scan_dir(const char *dir, int depth) {
+  DIR *d = opendir(dir);
+  if (!d) return;
+  for (struct dirent *e; (e = readdir(d));) {
+    if (e->d_name[0] == '.') continue;
+    char p[PATH_MAX];
+    snprintf(p, sizeof p, "%s/%s", dir, e->d_name);
+    size_t n = strlen(e->d_name);
+    struct stat st;
+    if (n > 4 && !strcmp(e->d_name + n - 4, ".app")) add_bundle(p);
+    else if (depth > 0 && !stat(p, &st) && S_ISDIR(st.st_mode)) scan_dir(p, depth - 1);
+  }
+  closedir(d);
+}
+
+static void app_dir(char *out, size_t n, int k) { /* k = 0..4: die Ordner, deren Änderung zählt */
+  const char *home = getenv("HOME") ? getenv("HOME") : "/var/root";
+  static const char *fixed[] = {"/System/Applications", "/System/Applications/Utilities", "/Applications",
+                                "/Applications/Utilities"};
+  if (k < 4) snprintf(out, n, "%s", fixed[k]);
+  else snprintf(out, n, "%s/Applications", home);
+}
+
+static long apps_signature(void) {
+  long sig = 0;
+  for (int k = 0; k < 5; k++) {
+    char p[PATH_MAX];
+    struct stat st;
+    app_dir(p, sizeof p, k);
+    if (!stat(p, &st)) sig = sig * 31 + (long)st.st_mtime + (long)st.st_ino;
+  }
+  return sig;
+}
+
+static long apps_sig;
+
+static void scan_apps(void) {
+  for (int i = 0; i < napps; i++) apps[i].seen = false;
+  add_bundle("/System/Library/CoreServices/Fundus.app");
+  char p[PATH_MAX];
+  app_dir(p, sizeof p, 0);
+  scan_dir(p, 1);
+  app_dir(p, sizeof p, 2);
+  scan_dir(p, 1);
+  app_dir(p, sizeof p, 4);
+  scan_dir(p, 1);
+  for (int i = 0; i < napps; i++) apps[i].gone = !apps[i].seen;
+  app_fundus = app_by_ident("com.clokeos.fundus");
+  apps_sig = apps_signature();
+}
+
+/* Programm starten wie ein Doppelklick im Finder: Contents/MacOS/<CFBundleExecutable> */
+static void launch(int i) {
+  if (i < 0 || i >= napps || apps[i].gone) return;
+  App *a = &apps[i];
+  if (!strcmp(a->b.internal, "launchpad")) {
+    show_launchpad();
+    return;
+  }
+  if (!strcmp(a->b.internal, "settings")) {
+    show_settings(-1);
+    return;
+  }
+  if (a->b.kind != APP_OK) {
+    show_app_problem(i);
+    return;
+  }
+  char q[2600];
+  sh_quote(q, sizeof q, a->b.exec);
+  if (!app_running(i)) a->bounce_t0 = now_s();
+  a->pid = spawn(q);
+  draw_dock();
+}
+
+static void launch_app(long i) { launch((int)i); }
+static void launch_ident(const char *id) { launch(app_by_ident(id)); }
+
+/* Klassenliste aus CLWindowClasses: durch Leerzeichen getrennt, * = beliebiger Teil */
+static bool class_matches(const char *classes, const char *cls) {
+  char list[256];
+  snprintf(list, sizeof list, "%s", classes);
+  char *save = NULL;
+  for (char *tok = strtok_r(list, " ", &save); tok; tok = strtok_r(NULL, " ", &save)) {
+    size_t n = strlen(tok);
+    char *star = strchr(tok, '*');
+    if (star && star == tok + n - 1) {
+      if (!strncasecmp(cls, tok, n - 1)) return true;
+    } else if (star) { /* Präfix*Suffix */
+      size_t pre = star - tok, suf = n - pre - 1, cl = strlen(cls);
+      if (cl >= pre + suf && !strncasecmp(cls, tok, pre) && !strcasecmp(cls + cl - suf, star + 1)) return true;
+    } else if (!strcasecmp(cls, tok)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/* Zu welchem Programm gehört ein Fenster? Fensterrolle = Bundle-Kennung (Programme im
+ * Terminal), WM_CLASS, die PID des gestarteten Programms oder Name der Startdatei. */
+static int app_for_window(Window w, const char *cls) {
   XTextProperty tp;
   int app = -1;
   if (XGetTextProperty(dpy, w, &tp, WM_WINDOW_ROLE) && tp.value) {
-    const char *r = (const char *)tp.value;
-    if (!strncmp(r, "clokeos-", 8))
-      for (int i = 0; i < NAPPS; i++)
-        if (APPS[i].id && !strcmp(APPS[i].id, r + 8)) app = i;
+    app = app_by_ident((const char *)tp.value);
     XFree(tp.value);
   }
+  for (int i = 0; app < 0 && i < napps; i++)
+    if (!apps[i].gone && apps[i].b.classes[0] && class_matches(apps[i].b.classes, cls)) app = i;
+  Atom type;
+  int fmt;
+  unsigned long n, after;
+  unsigned char *data = NULL;
+  if (app < 0 && XGetWindowProperty(dpy, w, NET_WM_PID, 0, 1, False, XA_CARDINAL, &type, &fmt, &n, &after, &data) == Success &&
+      data && n == 1) {
+    pid_t pid = (pid_t) * (long *)data;
+    for (int i = 0; app < 0 && i < napps; i++)
+      if (!apps[i].gone && apps[i].pid == pid) app = i;
+  }
+  if (data) XFree(data);
+  for (int i = 0; app < 0 && cls[0] && i < napps; i++)
+    if (!apps[i].gone && (!strcasecmp(cls, apps[i].b.exec_name) || !strcasecmp(cls, apps[i].b.name))) app = i;
   return app;
 }
 
@@ -804,7 +1034,14 @@ static void send_configure(Client *c) {
   XSendEvent(dpy, c->win, False, StructureNotifyMask, (XEvent *)&ce);
 }
 
-static int work_bottom(void) { return SH - DOCK_RESERVED; }
+/* Platz für Fenster: ohne Menüleiste und Dock (unten, links oder rechts) */
+static void work_area(int *x0, int *y0, int *x1, int *y1) {
+  int r = DOCK_H + DOCK_MARGIN + 6;
+  *x0 = 0, *y0 = MENUBAR_H, *x1 = SW, *y1 = SH;
+  if (dock_pos == POS_LEFT) *x0 = r;
+  else if (dock_pos == POS_RIGHT) *x1 = SW - r;
+  else *y1 = SH - r;
+}
 
 static void apply_geometry(Client *c) {
   int fw = c->w + 2 * c->bw, fh = c->h + c->th + 2 * c->bw;
@@ -818,8 +1055,10 @@ static void apply_geometry(Client *c) {
 }
 
 static void place(Client *c, Window transient_for, bool has_pos) {
-  int top = MENUBAR_H + c->th + c->bw + 4, bottom = work_bottom();
-  if (c->w > SW - 2 * c->bw) c->w = SW - 2 * c->bw;
+  int x0, y0, x1, bottom;
+  work_area(&x0, &y0, &x1, &bottom);
+  int top = y0 + c->th + c->bw + 4;
+  if (c->w > x1 - x0 - 2 * c->bw) c->w = x1 - x0 - 2 * c->bw;
   if (c->h > bottom - top) c->h = bottom - top;
   Client *p = transient_for ? find_client(transient_for) : NULL;
   if (p) {
@@ -827,13 +1066,12 @@ static void place(Client *c, Window transient_for, bool has_pos) {
     c->y = p->y + (p->h - c->h) / 2;
   } else if (!has_pos || (c->x == 0 && c->y == 0)) {
     /* mittig, jedes neue Fenster etwas weiter rechts unten */
-    c->x = (SW - c->w) / 2 + (cascade - 2) * 48;
+    c->x = (x0 + x1 - c->w) / 2 + (cascade - 2) * 48;
     c->y = top + 16 + cascade * 32;
     cascade = (cascade + 1) % 5;
-    if (c->x < c->bw) c->x = c->bw;
   }
-  if (c->x + c->w > SW) c->x = SW - c->w - c->bw;
-  if (c->x < c->bw) c->x = c->bw;
+  if (c->x + c->w > x1) c->x = x1 - c->w - c->bw;
+  if (c->x < x0 + c->bw) c->x = x0 + c->bw;
   if (c->y + c->h > bottom) c->y = bottom - c->h;
   if (c->y < top) c->y = top;
 }
@@ -906,9 +1144,7 @@ static Client *manage(Window w, bool already_mapped, bool own) {
     if (ch.res_name) XFree(ch.res_name);
     if (ch.res_class) XFree(ch.res_class);
   }
-  c->app = app_for_role(w);
-  if (c->app < 0) c->app = app_for_class(c->cls);
-  if (c->app < 0 && strstr(c->cls, "ettings")) c->app = 8;
+  c->app = app_for_window(w, c->cls);
   update_title(c);
 
   Atom *protos;
@@ -1018,9 +1254,17 @@ static void unmanage(Client *c, bool destroyed) {
   draw_menubar();
 }
 
+static Window lpwin;
+static bool lp_open;
+static void lp_click(int x, int y);
+static void lp_key(XKeyEvent *e);
+static void hide_launchpad(void);
+static void draw_launchpad(void);
+
 static void keep_ui_on_top(void) {
+  if (lp_open) XRaiseWindow(dpy, lpwin);
   XRaiseWindow(dpy, dock);
-  XRaiseWindow(dpy, menubar);
+  if (!lp_open) XRaiseWindow(dpy, menubar);
   if (menuwin) XRaiseWindow(dpy, menuwin);
   if (locked && loginwin) XRaiseWindow(dpy, loginwin);
 }
@@ -1126,11 +1370,13 @@ static void zoom_client(Client *c) {
     c->x = c->zx; c->y = c->zy; c->w = c->zw; c->h = c->zh;
     c->zoomed = false;
   } else {
+    int x0, y0, x1, y1;
+    work_area(&x0, &y0, &x1, &y1);
     c->zx = c->x; c->zy = c->y; c->zw = c->w; c->zh = c->h;
-    c->x = c->bw + 4;
-    c->y = MENUBAR_H + 4 + c->th + c->bw;
-    c->w = SW - 2 * c->bw - 8;
-    c->h = work_bottom() - c->y - c->bw - 2;
+    c->x = x0 + c->bw + 4;
+    c->y = y0 + 4 + c->th + c->bw;
+    c->w = x1 - x0 - 2 * c->bw - 8;
+    c->h = y1 - c->y - c->bw - 2;
     c->zoomed = true;
   }
   apply_geometry(c);
@@ -1203,7 +1449,7 @@ static void paint_frame(cairo_t *cr, int w, int h, void *arg) {
       cairo_stroke(cr);
     }
   }
-  const char *title = c->title[0] ? c->title : (c->app >= 0 ? APPS[c->app].name : c->cls);
+  const char *title = c->title[0] ? c->title : (c->app >= 0 ? apps[c->app].b.name : c->cls);
   if (w - 2 * 84 > 24) text(cr, w / 2.0, cy, title, 12.5, true, active ? T->fg : T->fg2, w - 2 * 84, 1);
 }
 
@@ -1311,7 +1557,7 @@ static void paint_about(Client *c, cairo_t *cr) {
 }
 
 static void click_about(Client *c, int x, int y) {
-  if (y >= c->h - 48 && y <= c->h - 18 && fabs(x - c->w / 2.0) < 110) spawn(APPS[8].cmd);
+  if (y >= c->h - 48 && y <= c->h - 18 && fabs(x - c->w / 2.0) < 110) launch_ident("com.clokeos.systemeinstellungen");
 }
 
 static void paint_confirm(Client *c, cairo_t *cr) {
@@ -1522,11 +1768,22 @@ static void start_session_bus(const Account *a) {
   }
 }
 
+static void user_env(const Account *a);
+
 static void start_session(const Account *a) {
   session_acc = *a;
   session = &session_acc;
   warn("angemeldet: %s (UID %u)", a->name, (unsigned)a->uid);
-  if (a->uid == 0) return; /* root behält die Umgebung von cloakserver-session */
+  if (a->uid != 0) user_env(a); /* root behält die Umgebung von cloakserver-session */
+  /* ~/Applications und die Einstellungen des Benutzers (Dock, Erscheinungsbild) */
+  scan_apps();
+  load_prefs();
+  render_icons();
+  if (want_dark() != dark) apply_theme();
+  update_workarea();
+}
+
+static void user_env(const Account *a) {
   char buf[PATH_MAX];
   setenv("HOME", a->home, 1);
   setenv("USER", a->name, 1);
@@ -1924,17 +2181,24 @@ static void draw_menu(void) {
   if (menuwin) paint_window(menuwin, menu_w, menu_h, paint_menu, NULL);
 }
 
-static void open_menu(int x, int y, int owner, bool above) {
-  close_menu();
+static int menu_width(void) {
   int w = 200;
   for (int i = 0; i < nmenu; i++) {
     int tw = text_width(menu[i].label, menu[i].kind == 2 ? 11 : 12.5, menu[i].kind == 2) + 64;
     if (tw > w) w = tw;
   }
+  return w;
+}
+
+static void open_menu(int x, int y, int owner, bool above) {
+  close_menu();
+  int w = menu_width();
   int h = item_y(nmenu) + 6;
   if (above) y -= h;
   if (x + w > SW - 4) x = SW - 4 - w;
   if (x < 4) x = 4;
+  if (y + h > SH - 4) y = SH - 4 - h; /* Dock links oder rechts: nicht unten aus dem Bild */
+  if (y < MENUBAR_H) y = MENUBAR_H;
   menu_w = w;
   menu_h = h;
   menu_owner = owner;
@@ -1984,7 +2248,6 @@ static void activate_item(int i) {
   fn(arg);
 }
 
-static void launch_app(long i) { spawn(APPS[i].cmd); }
 static void cmd_minimize(long unused) { (void)unused; minimize_client(focused); }
 static void cmd_zoom(long unused) { (void)unused; zoom_client(focused); }
 static void cmd_close(long unused) { (void)unused; close_client(focused); }
@@ -1994,23 +2257,23 @@ static void cmd_activate(long p) {
 }
 static void cmd_hide_app(long app) {
   for (Client *c = clients; c; c = c->next)
-    if (c->app == app && !c->draw) minimize_client(c);
+    if (c->app == app) minimize_client(c);
 }
 static void cmd_quit_app(long app) {
   for (Client *c = clients; c; c = c->next)
-    if (c->app == app && !c->draw) close_client(c);
+    if (c->app == app) close_client(c);
 }
-static void cmd_spot(long unused) { (void)unused; spawn(APPS[1].cmd); }
+static void cmd_spot(long unused) { (void)unused; show_launchpad(); }
 
 static int current_app(void) {
-  if (!focused) return APP_DATEIEN;
+  if (!focused) return app_fundus;
   return focused->app;
 }
 
 static const char *current_app_name(void) {
-  if (!focused) return "Fundus";
+  if (!focused) return app_fundus >= 0 ? apps[app_fundus].b.name : "Fundus";
+  if (focused->app >= 0) return apps[focused->app].b.name;
   if (focused->draw) return "ClokeOS";
-  if (focused->app >= 0) return APPS[focused->app].name;
   return focused->cls[0] ? focused->cls : "Programm";
 }
 
@@ -2022,9 +2285,9 @@ static void build_menu(int which) {
   case MB_LOGO:
     add_item("Über ClokeOS", show_about, 0, false);
     add_sep();
-    add_item("Systemeinstellungen …", launch_app, 8, false);
-    add_item("Aktivitätsanzeige", launch_app, 7, false);
-    add_item("Programme", launch_app, 1, false);
+    add_item("Systemeinstellungen …", show_settings, -1, false);
+    add_item("Aktivitätsanzeige", launch_app, app_by_ident("com.clokeos.aktivitaet"), app_by_ident("com.clokeos.aktivitaet") < 0);
+    add_item("Programme", cmd_spot, 0, false);
     add_sep();
     add_item("Ruhezustand", cmd_sleep, 0, false);
     add_item("Neustart …", confirm_power, 1, false);
@@ -2039,7 +2302,7 @@ static void build_menu(int which) {
     add_item(focused && app >= 0 ? buf : "Über ClokeOS", show_about, 0, false);
     add_sep();
     bool running = false;
-    for (Client *c = clients; c; c = c->next) running |= c->app == app && app >= 0 && !c->draw;
+    for (Client *c = clients; c; c = c->next) running |= c->app == app && app >= 0;
     snprintf(buf, sizeof buf, "%s ausblenden", name);
     add_item(buf, cmd_hide_app, app, !running);
     snprintf(buf, sizeof buf, "%s beenden", name);
@@ -2100,7 +2363,7 @@ static void build_menu(int which) {
     snprintf(buf, sizeof buf, "%s, %d. %s %d", wd[tm.tm_wday], tm.tm_mday, mo[tm.tm_mon], tm.tm_year + 1900);
     add_head(buf);
     add_sep();
-    add_item("Kalender öffnen", launch_app, 6, false);
+    add_item("Kalender öffnen", launch_app, app_by_ident("com.clokeos.kalender"), app_by_ident("com.clokeos.kalender") < 0);
     break;
   }
   }
@@ -2219,38 +2482,99 @@ static void menubar_open(int i) {
 /* ---------------------------------------------------------------------------------------- */
 /* Dock                                                                                       */
 
+static bool in_dock(int i) {
+  for (int k = 0; k < nditems; k++)
+    if (ditems[k].app == i) return true;
+  return false;
+}
+
+static bool kept_in_dock(int i) {
+  for (int k = 0; k < ndock_ids; k++)
+    if (!strcmp(dock_ids[k], apps[i].b.ident)) return true;
+  return false;
+}
+
+/* Reihenfolge wie bei macOS: Fundus, behaltene Programme, laufende andere, Trennstrich, Papierkorb.
+ * pos ist die Lage entlang des Docks, vom Anfang des Glases. */
 static void layout_dock(void) {
-  int x = DOCK_PAD_X, n = 0;
-  for (int i = 0; i < NAPPS; i++) {
-    if (n++) x += DOCK_GAP;
-    dock_item_x[i] = x;
-    x += APPS[i].id ? DS : 1 + 6;
+  nditems = 0;
+#define DOCK_ADD(a) (nditems < 64 ? (void)(ditems[nditems++].app = (a)) : (void)0)
+  if (app_fundus >= 0) DOCK_ADD(app_fundus);
+  for (int k = 0; k < ndock_ids; k++) {
+    int i = app_by_ident(dock_ids[k]);
+    if (i >= 0 && !in_dock(i)) DOCK_ADD(i);
   }
-  dock_w = x + DOCK_PAD_X;
-  dock_x = (SW - dock_w) / 2;
-  dock_y = SH - DOCK_BOTTOM - DOCK_H;
+  for (int i = 0; i < napps; i++)
+    if (!apps[i].gone && !apps[i].b.hidden && !in_dock(i) && (app_running(i) || apps[i].bounce_t0 > 0)) DOCK_ADD(i);
+  DOCK_ADD(DOCK_SEP);
+  DOCK_ADD(DOCK_TRASH);
+#undef DOCK_ADD
+  int p = DOCK_PAD_X;
+  for (int k = 0; k < nditems; k++) {
+    if (k) p += DOCK_GAP;
+    ditems[k].pos = p;
+    p += ditems[k].app == DOCK_SEP ? 7 : ds;
+  }
+  int len = p + DOCK_PAD_X;
+  /* passt es nicht, wird es kleiner wie bei macOS; die Symbole zeichnet draw_dock() neu */
+  int room = dock_pos == POS_BOTTOM ? SW - 2 * DOCK_MARGIN : SH - MENUBAR_H - 2 * DOCK_MARGIN;
+  int icons = nditems - 1, want = ds_pref;
+  if (len - icons * ds + icons * ds_pref > room && icons > 0) want = (room - (len - icons * ds)) / icons;
+  if (want < 24) want = 24;
+  if (want != ds) {
+    ds = want;
+    render_icons();
+    layout_dock();
+    return;
+  }
+  if (dock_pos == POS_BOTTOM) {
+    dock_w = len, dock_h = DOCK_H;
+    dock_x = (SW - len) / 2, dock_y = SH - DOCK_MARGIN - DOCK_H;
+  } else {
+    dock_w = DOCK_H, dock_h = len;
+    dock_y = MENUBAR_H + (SH - MENUBAR_H - len) / 2;
+    dock_x = dock_pos == POS_LEFT ? DOCK_MARGIN : SW - DOCK_MARGIN - DOCK_H;
+  }
+}
+
+/* Fenster des Docks: das Glas und dock_lift Pixel zur Bildschirmmitte hin */
+static void dock_window_rect(int *x, int *y, int *w, int *h) {
+  *x = dock_x, *y = dock_y, *w = dock_w, *h = dock_h;
+  if (dock_pos == POS_BOTTOM) *y -= dock_lift, *h += dock_lift;
+  else if (dock_pos == POS_LEFT) *w += dock_lift;
+  else *x -= dock_lift, *w += dock_lift;
+}
+static int glass_ox(void) { return dock_pos == POS_RIGHT ? dock_lift : 0; }
+static int glass_oy(void) { return dock_pos == POS_BOTTOM ? dock_lift : 0; }
+
+/* Ecke des Symbols k im Glas; off verschiebt es zur Bildschirmmitte (Überfahren, Hüpfen) */
+static void item_xy(int k, double off, double *x, double *y) {
+  int p = ditems[k].pos;
+  if (dock_pos == POS_BOTTOM) *x = p, *y = DOCK_PAD_Y - off;
+  else if (dock_pos == POS_LEFT) *x = DOCK_PAD_Y + off, *y = p;
+  else *x = DOCK_PAD_Y - off, *y = p;
 }
 
 static bool app_running(int i) {
   for (Client *c = clients; c; c = c->next)
-    if (c->app == i && !c->draw) return true;
+    if (c->app == i) return true;
   return false;
 }
 
 /* Hüpfen beim Starten wie .dk.bounce in clokeos.html: zweimal 18 Pixel hoch in je 0,55 s */
 #define BOUNCE_S 1.1
 static double bounce_offset(int i) {
-  if (!dock_top || bounce_t0[i] <= 0) return 0;
-  double t = now_s() - bounce_t0[i];
+  if (!dock_lift || i < 0 || apps[i].bounce_t0 <= 0) return 0;
+  double t = now_s() - apps[i].bounce_t0;
   if (t >= BOUNCE_S) return 0;
   return 18 * sin(M_PI * fmod(t, BOUNCE_S / 2) / (BOUNCE_S / 2));
 }
 
 static void paint_dock(cairo_t *cr, int w, int h, void *arg) {
-  (void)arg;
-  cairo_translate(cr, 0, dock_top);
-  h -= dock_top;
-  double r = DS * .42 + 6;
+  (void)arg, (void)w, (void)h;
+  cairo_translate(cr, glass_ox(), glass_oy());
+  w = dock_w, h = dock_h;
+  double r = ds * .42 + 6;
   rrect(cr, 0, 0, w, h, r);
   cairo_clip(cr);
   glass(cr, dock_x, dock_y, T->dock, w, h, r);
@@ -2274,22 +2598,27 @@ static void paint_dock(cairo_t *cr, int w, int h, void *arg) {
   cairo_stroke(cr);
 
   bool full = trash_full();
-  for (int i = 0; i < NAPPS; i++) {
-    int x = dock_item_x[i];
-    if (!APPS[i].id) {
+  for (int k = 0; k < nditems; k++) {
+    int i = ditems[k].app, p = ditems[k].pos;
+    if (i == DOCK_SEP) {
       set(cr, T->line_strong);
-      cairo_rectangle(cr, x + 3, DOCK_PAD_Y + 2, 1, DS - 4);
+      if (dock_pos == POS_BOTTOM) cairo_rectangle(cr, p + 3, DOCK_PAD_Y + 2, 1, ds - 4);
+      else cairo_rectangle(cr, DOCK_PAD_Y + 2, p + 3, ds - 4, 1);
       cairo_fill(cr);
       continue;
     }
-    cairo_surface_t *ic = !strcmp(APPS[i].id, "papierkorb") && full ? icon_trash_full : icons[i];
+    cairo_surface_t *ic = i == DOCK_TRASH ? (full ? icon_trash_full : icon_trash) : apps[i].icon;
+    double x, y;
+    item_xy(k, (k == dock_hover ? 2 : 0) + bounce_offset(i), &x, &y);
     if (ic) {
-      cairo_set_source_surface(cr, ic, x, DOCK_PAD_Y - (i == dock_hover ? 2 : 0) - bounce_offset(i));
+      cairo_set_source_surface(cr, ic, x, y);
       cairo_paint(cr);
     }
-    if (app_running(i)) {
+    if (i >= 0 && app_running(i)) { /* Punkt außen neben dem Symbol */
+      double dx = dock_pos == POS_BOTTOM ? p + ds / 2.0 : dock_pos == POS_LEFT ? DOCK_PAD_Y - 3 : DOCK_PAD_Y + ds + 3;
+      double dy = dock_pos == POS_BOTTOM ? DOCK_PAD_Y + ds + 3 : p + ds / 2.0;
       cairo_new_path(cr);
-      cairo_arc(cr, x + DS / 2.0, DOCK_PAD_Y + DS + 3, 2, 0, 2 * M_PI);
+      cairo_arc(cr, dx, dy, 2, 0, 2 * M_PI);
       seta(cr, T->fg, .7);
       cairo_fill(cr);
     }
@@ -2297,16 +2626,33 @@ static void paint_dock(cairo_t *cr, int w, int h, void *arg) {
 }
 
 static void draw_dock(void) {
+  static int lx = -1, ly, lw, lh;
   layout_dock();
-  paint_window(dock, dock_w, DOCK_H + dock_top, paint_dock, NULL);
+  int x, y, w, h;
+  dock_window_rect(&x, &y, &w, &h);
+  if (x != lx || y != ly || w != lw || h != lh) { /* Programme kamen dazu, andere Lage, andere Größe */
+    XMoveResizeWindow(dpy, dock, x, y, w, h);
+    if (!comp_on) shape_round(dock, w, h, ds * .42 + 6, false);
+    lx = x, ly = y, lw = w, lh = h;
+  }
+  paint_window(dock, w, h, paint_dock, NULL);
 }
 
 static int dock_item_at(int x, int y) {
-  y -= dock_top;
-  if (y < 0 || y > DOCK_H) return -1;
-  for (int i = 0; i < NAPPS; i++)
-    if (APPS[i].id && x >= dock_item_x[i] && x < dock_item_x[i] + DS) return i;
+  x -= glass_ox(), y -= glass_oy();
+  int along = dock_pos == POS_BOTTOM ? x : y, across = dock_pos == POS_BOTTOM ? y : x;
+  if (across < 0 || across > DOCK_H) return -1;
+  for (int k = 0; k < nditems; k++)
+    if (ditems[k].app != DOCK_SEP && along >= ditems[k].pos && along < ditems[k].pos + ds) return k;
   return -1;
+}
+
+/* Mitte des Symbols k auf dem Bildschirm */
+static void item_center(int k, double *x, double *y) {
+  double ix, iy;
+  item_xy(k, 0, &ix, &iy);
+  *x = dock_x + ix + ds / 2.0;
+  *y = dock_y + iy + ds / 2.0;
 }
 
 static int tip_w;
@@ -2322,15 +2668,20 @@ static void paint_tip(cairo_t *cr, int w, int h, void *arg) {
   text(cr, w / 2.0, h / 2.0, tip_text, 12, false, T->fg, 0, 1);
 }
 
-static void show_tip(int i) {
-  if (i < 0 || !APPS[i].id) {
+/* Namensschild über dem Symbol, beim Dock links und rechts daneben */
+static void show_tip(int k) {
+  if (k < 0 || k >= nditems || ditems[k].app == DOCK_SEP) {
     if (tipwin) XUnmapWindow(dpy, tipwin);
     return;
   }
-  tip_text = APPS[i].name;
+  tip_text = ditems[k].app == DOCK_TRASH ? "Papierkorb" : apps[ditems[k].app].b.name;
   tip_w = text_width(tip_text, 12, false) + 24;
   int th = 24;
-  int x = dock_x + dock_item_x[i] + DS / 2 - tip_w / 2, y = dock_y - th - 10;
+  double cx, cy;
+  item_center(k, &cx, &cy);
+  int x = (int)cx - tip_w / 2, y = dock_y - th - 10;
+  if (dock_pos == POS_LEFT) x = dock_x + dock_w + 10, y = (int)cy - th / 2;
+  else if (dock_pos == POS_RIGHT) x = dock_x - 10 - tip_w, y = (int)cy - th / 2;
   if (!tipwin) tipwin = ui_window(x, y, tip_w, th, ExposureMask, true, NET_WM_WINDOW_TYPE_TOOLTIP);
   XMoveResizeWindow(dpy, tipwin, x, y, tip_w, th);
   if (!comp_on) shape_round(tipwin, tip_w, th, th / 2.0, false);
@@ -2338,22 +2689,26 @@ static void show_tip(int i) {
   paint_window(tipwin, tip_w, th, paint_tip, NULL);
 }
 
-static void dock_click(int i) {
-  if (i < 0) return;
-  if (!strcmp(APPS[i].id, "papierkorb")) {
-    spawn(APPS[i].cmd);
+static void open_trash(void) { spawn("mkdir -p \"$HOME/.Trash\" && exec thunar \"$HOME/.Trash\""); }
+static void cmd_open_trash(long unused) { (void)unused; open_trash(); }
+
+static void dock_click(int k) {
+  if (k < 0 || k >= nditems) return;
+  int i = ditems[k].app;
+  if (i == DOCK_TRASH) {
+    open_trash();
     return;
   }
+  if (i < 0) return;
   Client *top = NULL;
   bool any_min = false;
   for (Client *c = clients; c; c = c->next)
-    if (c->app == i && !c->draw) {
+    if (c->app == i) {
       if (!top) top = c;
       any_min |= c->minimized;
     }
   if (!top) {
-    spawn(APPS[i].cmd);
-    bounce_t0[i] = now_s();
+    launch(i);
     return;
   }
   if (any_min)
@@ -2362,17 +2717,551 @@ static void dock_click(int i) {
   restore_client(top);
 }
 
-static void dock_menu(int i) {
+static void cmd_keep(long i) {
+  if (ndock_ids < 48 && !kept_in_dock((int)i)) snprintf(dock_ids[ndock_ids++], 128, "%s", apps[i].b.ident);
+  save_prefs();
+  draw_dock();
+}
+
+static void cmd_unkeep(long i) {
+  int w = 0;
+  for (int k = 0; k < ndock_ids; k++)
+    if (strcmp(dock_ids[k], apps[i].b.ident)) memmove(dock_ids[w++], dock_ids[k], 128);
+  ndock_ids = w;
+  save_prefs();
+  show_tip(-1);
+  draw_dock();
+}
+
+static void cmd_show_in_fundus(long i) {
+  char dir[PATH_MAX], q[PATH_MAX + 64], cmd[PATH_MAX + 80];
+  snprintf(dir, sizeof dir, "%s", apps[i].b.path);
+  char *slash = strrchr(dir, '/');
+  if (slash) *slash = 0;
+  sh_quote(q, sizeof q, dir);
+  snprintf(cmd, sizeof cmd, "thunar %s", q);
+  spawn(cmd);
+}
+
+static void dock_menu(int k) {
+  if (k < 0 || k >= nditems) return;
+  int i = ditems[k].app;
   nmenu = 0;
-  add_head(APPS[i].name);
-  bool running = app_running(i);
-  add_item(running ? "Neues Fenster" : "Öffnen", launch_app, i, false);
-  if (running) {
+  if (i == DOCK_TRASH) {
+    add_head("Papierkorb");
+    add_item("Öffnen", cmd_open_trash, 0, false);
+  } else if (i >= 0) {
+    add_head(apps[i].b.name);
+    bool running = app_running(i);
+    add_item(running ? "Neues Fenster" : "Öffnen", launch_app, i, false);
     add_sep();
-    add_item("Alle ausblenden", cmd_hide_app, i, false);
-    add_item("Beenden", cmd_quit_app, i, false);
+    if (i != app_fundus) {
+      bool kept = kept_in_dock(i);
+      add_item(kept ? "Aus dem Dock entfernen" : "Im Dock behalten", kept ? cmd_unkeep : cmd_keep, i, false);
+    }
+    add_item("Im Fundus zeigen", cmd_show_in_fundus, i, false);
+    if (running) {
+      add_sep();
+      add_item("Alle ausblenden", cmd_hide_app, i, false);
+      add_item("Beenden", cmd_quit_app, i, false);
+    }
+  } else {
+    return;
   }
-  open_menu(dock_x + dock_item_x[i], dock_y - 8, -1, true);
+  double cx, cy;
+  item_center(k, &cx, &cy);
+  if (dock_pos == POS_BOTTOM) open_menu((int)cx - ds / 2, dock_y - 8, -1, true);
+  else if (dock_pos == POS_LEFT) open_menu(dock_x + dock_w + 8, (int)cy - ds / 2, -1, false);
+  else open_menu(dock_x - 8 - menu_width(), (int)cy - ds / 2, -1, false);
+}
+
+/* ---------------------------------------------------------------------------------------- */
+/* Einstellungen des Benutzers wie bei macOS in ~/Library/Preferences: das Dock in               */
+/* com.clokeos.dock.plist (orientation, tilesize, persistent-apps wie com.apple.dock), das       */
+/* Erscheinungsbild in .GlobalPreferences.plist (AppleInterfaceStyle). Grundeinstellung des      */
+/* Docks aus /Library/Preferences/com.clokeos.dock.plist.                                        */
+
+static void pref_path(char *out, size_t n, const char *file) {
+  snprintf(out, n, "%s/Library/Preferences/%s", getenv("HOME") ? getenv("HOME") : "/var/root", file);
+}
+
+static void own_by_session(const char *path) {
+  if (session && chown(path, session->uid, session->gid)) warn("chown %s: %s", path, strerror(errno));
+}
+
+static void load_prefs(void) {
+  char p[PATH_MAX], v[64];
+  size_t n = 0;
+  pref_path(p, sizeof p, "com.clokeos.dock.plist");
+  unsigned char *d = read_bytes(p, &n);
+  if (!d) d = read_bytes("/Library/Preferences/com.clokeos.dock.plist", &n);
+  int k = d ? plist_get_array(d, "persistent-apps", dock_ids, 48) : -1;
+  ndock_ids = k > 0 ? k : 0;
+  dock_pos = POS_BOTTOM;
+  if (plist_get(d, n, "orientation", v, sizeof v)) dock_pos = !strcmp(v, "left") ? POS_LEFT : !strcmp(v, "right") ? POS_RIGHT : POS_BOTTOM;
+  ds = ds_pref = 50;
+  if (plist_get(d, n, "tilesize", v, sizeof v) && atoi(v) >= 32 && atoi(v) <= 96) ds = ds_pref = atoi(v);
+  free(d);
+  pref_path(p, sizeof p, ".GlobalPreferences.plist");
+  d = read_bytes(p, &n);
+  theme_mode = 0; /* wie im Prototyp: automatisch */
+  if (d) {
+    if (plist_get(d, n, "AppleInterfaceStyle", v, sizeof v) && !strcmp(v, "Dark")) theme_mode = 2;
+    else if (!plist_get(d, n, "AppleInterfaceStyleSwitchesAutomatically", v, sizeof v) || !strcmp(v, "0")) theme_mode = 1;
+  }
+  free(d);
+}
+
+static void save_prefs(void) {
+  if (!session) return;
+  char p[PATH_MAX];
+  const char *home = getenv("HOME") ? getenv("HOME") : "/var/root";
+  snprintf(p, sizeof p, "%s/Library", home);
+  if (!mkdir(p, 0755)) own_by_session(p);
+  snprintf(p, sizeof p, "%s/Library/Preferences", home);
+  if (!mkdir(p, 0755)) own_by_session(p);
+  static const char *pos_name[] = {"bottom", "left", "right"};
+  const char *ids[48];
+  for (int k = 0; k < ndock_ids; k++) ids[k] = dock_ids[k];
+  PlistItem dk[] = {{.key = "orientation", .s = pos_name[dock_pos]}, {.key = "tilesize", .i = ds_pref},
+                    {.key = "persistent-apps", .arr = ids, .narr = ndock_ids}};
+  pref_path(p, sizeof p, "com.clokeos.dock.plist");
+  if (plist_write(p, dk, 3)) own_by_session(p);
+  else warn("kann %s nicht schreiben", p);
+  PlistItem g[2];
+  int ng = 0;
+  if (theme_mode == 2) g[ng++] = (PlistItem){.key = "AppleInterfaceStyle", .s = "Dark"};
+  g[ng++] = (PlistItem){.key = "AppleInterfaceStyleSwitchesAutomatically", .i = theme_mode == 0};
+  pref_path(p, sizeof p, ".GlobalPreferences.plist");
+  if (plist_write(p, g, ng)) own_by_session(p);
+}
+
+static void set_dock_pos(long pos) {
+  dock_pos = (int)pos;
+  show_tip(-1);
+  draw_dock();
+  update_workarea();
+  save_prefs();
+}
+
+static void set_dock_size(long size) {
+  ds = ds_pref = (int)size;
+  show_tip(-1);
+  render_icons();
+  draw_dock();
+  update_workarea();
+  save_prefs();
+}
+
+/* Absatz mit Zeilenumbruch; gibt die Höhe zurück */
+static int text_block(cairo_t *cr, double x, double y, const char *s, double px, bool bold, RGBA col, int width) {
+  PangoLayout *l = pango_cairo_create_layout(cr);
+  PangoFontDescription *f = pango_font_description_from_string(bold ? "DejaVu Sans Bold" : "DejaVu Sans");
+  pango_font_description_set_absolute_size(f, px * PANGO_SCALE);
+  pango_layout_set_font_description(l, f);
+  pango_layout_set_width(l, width * PANGO_SCALE);
+  pango_layout_set_wrap(l, PANGO_WRAP_WORD_CHAR);
+  pango_layout_set_text(l, s, -1);
+  int w, h;
+  pango_layout_get_pixel_size(l, &w, &h);
+  cairo_move_to(cr, x, y);
+  set(cr, col);
+  pango_cairo_show_layout(cr, l);
+  pango_font_description_free(f);
+  g_object_unref(l);
+  return h;
+}
+
+static void button(cairo_t *cr, double x, double y, double w, const char *label, bool primary) {
+  rrect(cr, x, y, w, 28, 14);
+  if (primary) {
+    set(cr, ACCENT);
+    cairo_fill(cr);
+  } else {
+    set(cr, dark ? (RGBA){1, 1, 1, .12} : (RGBA){1, 1, 1, .95});
+    cairo_fill_preserve(cr);
+    set(cr, T->line_strong);
+    cairo_set_line_width(cr, 1);
+    cairo_stroke(cr);
+  }
+  text(cr, x + w / 2, y + 14, label, 12.5, false, primary ? (RGBA){1, 1, 1, 1} : T->fg, 0, 1);
+}
+
+/* ---------------------------------------------------------------------------------------- */
+/* Hinweis, wenn sich ein Programm nicht öffnen lässt, wie bei macOS. Vor allem Mac-Programme:  */
+/* Sie liegen als Mach-O für x86_64 oder arm64 im Bundle und laden Frameworks wie AppKit.       */
+
+static void problem_text(const App *a, char *buf, size_t n) {
+  switch (a->b.kind) {
+  case APP_APPKIT:
+    snprintf(buf, n, "Das ist ein Mac-Programm mit grafischer Oberfläche. Es braucht %s, und das gibt es in ClokeOS "
+                     "noch nicht: PureDarwin hat CoreFoundation und die Objective-C-Laufzeit, aber noch kein AppKit.",
+             a->b.missing);
+    break;
+  case APP_ARM64:
+    snprintf(buf, n, "Das Programm ist nur für Mac mit Apple-Chip (arm64) gebaut. Dieses ClokeOS läuft auf Intel "
+                     "(x86_64); es braucht eine Intel- oder Universal-Fassung.");
+    break;
+  case APP_MISSING:
+    snprintf(buf, n, "Das Mac-Programm braucht %s, das es in ClokeOS nicht gibt.", a->b.missing);
+    break;
+  default:
+    snprintf(buf, n, "Das Programmpaket ist unvollständig: %s.", a->b.missing);
+  }
+}
+
+static void paint_problem(Client *c, cairo_t *cr) {
+  if (c->data < 0 || c->data >= napps) return;
+  const App *a = &apps[c->data];
+  cairo_surface_t *ic = bundle_icon(&a->b, 64, NULL);
+  cairo_set_source_surface(cr, ic, 22, 22);
+  cairo_paint(cr);
+  cairo_surface_destroy(ic);
+  char t[200], body[600];
+  snprintf(t, sizeof t, "„%s“ kann nicht geöffnet werden.", a->b.name);
+  text(cr, 104, 34, t, 13, true, T->fg, c->w - 124, 0);
+  problem_text(a, body, sizeof body);
+  text_block(cr, 104, 50, body, 11.5, false, T->fg2, c->w - 124);
+  button(cr, c->w - 20 - 80, c->h - 44, 80, "OK", true);
+}
+
+static void click_problem(Client *c, int x, int y) {
+  if (x >= c->w - 100 && x <= c->w - 20 && y >= c->h - 44 && y <= c->h - 16) close_client(c);
+}
+
+static void show_app_problem(int i) { own_window(500, 168, "Programm", paint_problem, click_problem, i); }
+
+/* ---------------------------------------------------------------------------------------- */
+/* Launchpad („Programme“) wie #launchpad in clokeos.html: alle Programme als Raster über dem   */
+/* unscharfen Hintergrund, oben ein Suchfeld. Tippen sucht, die Eingabetaste startet das erste, */
+/* Esc oder ein Klick daneben schließt. Die Menüleiste verschwindet, das Dock bleibt.           */
+
+#define LP_ICON 76
+static char lp_query[64];
+static int lp_n, lp_app[96], lp_x[96], lp_y[96], lp_cell;
+
+static int lp_cmp(const void *a, const void *b) {
+  return strcasecmp(apps[*(const int *)a].b.name, apps[*(const int *)b].b.name);
+}
+
+static bool lp_match(const char *name) {
+  if (!lp_query[0]) return true;
+  size_t n = strlen(lp_query);
+  for (const char *p = name; *p; p++)
+    if (!strncasecmp(p, lp_query, n)) return true;
+  return false;
+}
+
+static void paint_launchpad(cairo_t *cr, int w, int h, void *arg) {
+  (void)arg, (void)h;
+  cairo_save(cr);
+  cairo_scale(cr, 4, 4);
+  cairo_set_source_surface(cr, wall_blur, 0, 0);
+  cairo_pattern_set_filter(cairo_get_source(cr), CAIRO_FILTER_BILINEAR);
+  cairo_pattern_set_extend(cairo_get_source(cr), CAIRO_EXTEND_PAD);
+  cairo_paint(cr);
+  cairo_restore(cr);
+  cairo_set_source_rgba(cr, 20 / 255., 12 / 255., 36 / 255., dark ? .35 : .22);
+  cairo_paint(cr);
+
+  /* Suchfeld */
+  double fx = (w - 240) / 2.0, fy = 48;
+  rrect(cr, fx, fy, 240, 28, 8);
+  cairo_set_source_rgba(cr, 1, 1, 1, .2);
+  cairo_fill_preserve(cr);
+  cairo_set_source_rgba(cr, 1, 1, 1, .35);
+  cairo_set_line_width(cr, 1);
+  cairo_stroke(cr);
+  if (lp_query[0]) text(cr, w / 2.0, fy + 14, lp_query, 13, false, (RGBA){1, 1, 1, 1}, 220, 1);
+  else text(cr, w / 2.0, fy + 14, "Suchen", 13, false, (RGBA){1, 1, 1, .7}, 0, 1);
+
+  int list[96];
+  lp_n = 0;
+  for (int i = 0; i < napps && lp_n < 96; i++)
+    if (!apps[i].gone && !apps[i].b.hidden && strcmp(apps[i].b.internal, "launchpad") && i != app_fundus &&
+        lp_match(apps[i].b.name))
+      list[lp_n++] = i;
+  qsort(list, lp_n, sizeof list[0], lp_cmp);
+  int gw = w - 32 < 900 ? w - 32 : 900, cols = (gw + 18) / (130 + 18);
+  if (cols < 1) cols = 1;
+  lp_cell = (gw - (cols - 1) * 18) / cols;
+  double x0 = (w - gw) / 2.0, y0 = fy + 28 + 44;
+  for (int j = 0; j < lp_n; j++) {
+    App *a = &apps[list[j]];
+    double cx = x0 + (j % cols) * (lp_cell + 18) + lp_cell / 2.0, y = y0 + (j / cols) * (LP_ICON + 8 + 16 + 28);
+    lp_app[j] = list[j], lp_x[j] = (int)cx, lp_y[j] = (int)y;
+    if (!a->icon_lp) a->icon_lp = bundle_icon(&a->b, LP_ICON, cal_subst());
+    cairo_set_source_surface(cr, a->icon_lp, cx - LP_ICON / 2.0, y);
+    cairo_paint(cr);
+    if (a->b.kind != APP_OK) { /* lässt sich nicht öffnen: Verbotszeichen wie im Finder */
+      double bx = cx + LP_ICON / 2.0 - 12, by = y + LP_ICON - 12;
+      cairo_new_path(cr);
+      cairo_arc(cr, bx, by, 11, 0, 2 * M_PI);
+      cairo_set_source_rgba(cr, 0, 0, 0, .55);
+      cairo_fill(cr);
+      cairo_set_source_rgb(cr, 1, 1, 1);
+      cairo_set_line_width(cr, 2.2);
+      cairo_arc(cr, bx, by, 7, 0, 2 * M_PI);
+      cairo_stroke(cr);
+      cairo_move_to(cr, bx - 5, by + 5);
+      cairo_line_to(cr, bx + 5, by - 5);
+      cairo_stroke(cr);
+    }
+    text(cr, cx, y + LP_ICON + 8 + 9, a->b.name, 13, false, (RGBA){0, 0, 0, .35}, lp_cell + 16, 1);
+    text(cr, cx, y + LP_ICON + 8 + 8, a->b.name, 13, false, (RGBA){1, 1, 1, 1}, lp_cell + 16, 1);
+  }
+  if (!lp_n) text(cr, w / 2.0, y0 + 40, "Keine Treffer", 15, false, (RGBA){1, 1, 1, .8}, 0, 1);
+}
+
+static void draw_launchpad(void) {
+  if (lp_open) paint_window(lpwin, SW, SH, paint_launchpad, NULL);
+}
+
+static void show_launchpad(void) {
+  if (locked) return;
+  close_menu();
+  show_tip(-1);
+  if (!lpwin) lpwin = ui_window(0, 0, SW, SH, ExposureMask | ButtonPressMask | KeyPressMask, false, NET_WM_WINDOW_TYPE_SPLASH);
+  lp_query[0] = 0;
+  lp_open = true;
+  scan_apps();
+  XMapRaised(dpy, lpwin);
+  XRaiseWindow(dpy, dock);
+  XSync(dpy, False);
+  XSetInputFocus(dpy, lpwin, RevertToPointerRoot, CurrentTime);
+  XGrabKeyboard(dpy, lpwin, True, GrabModeAsync, GrabModeAsync, CurrentTime);
+  draw_launchpad();
+}
+
+static void hide_launchpad(void) {
+  if (!lp_open) return;
+  lp_open = false;
+  XUngrabKeyboard(dpy, CurrentTime);
+  XUnmapWindow(dpy, lpwin);
+  XRaiseWindow(dpy, menubar);
+  focus_client(focused);
+}
+
+static void lp_click(int x, int y) {
+  for (int j = 0; j < lp_n; j++)
+    if (abs(x - lp_x[j]) < lp_cell / 2 && y >= lp_y[j] - 4 && y < lp_y[j] + LP_ICON + 30) {
+      int i = lp_app[j];
+      hide_launchpad();
+      launch(i);
+      return;
+    }
+  if (abs(x - SW / 2) < 120 && y >= 48 && y <= 76) return; /* ins Suchfeld */
+  hide_launchpad();
+}
+
+static void lp_key(XKeyEvent *e) {
+  char buf[16];
+  KeySym ks = NoSymbol;
+  int n = XLookupString(e, buf, sizeof buf, &ks, NULL);
+  size_t l = strlen(lp_query);
+  if (ks == XK_Escape) {
+    if (!l) {
+      hide_launchpad();
+      return;
+    }
+    lp_query[0] = 0;
+  } else if (ks == XK_Return || ks == XK_KP_Enter) {
+    if (lp_n > 0) {
+      int i = lp_app[0];
+      hide_launchpad();
+      launch(i);
+    }
+    return;
+  } else if (ks == XK_BackSpace) {
+    while (l > 0 && (lp_query[l - 1] & 0xc0) == 0x80) l--; /* ganzes UTF-8-Zeichen */
+    if (l > 0) l--;
+    lp_query[l] = 0;
+  } else if (n == 1 && (unsigned char)buf[0] >= 0xa0 && l + 2 < sizeof lp_query) { /* Latin-1 -> UTF-8 */
+    lp_query[l] = (char)(0xc0 | (unsigned char)buf[0] >> 6);
+    lp_query[l + 1] = (char)(0x80 | ((unsigned char)buf[0] & 0x3f));
+    lp_query[l + 2] = 0;
+  } else if (n == 1 && (unsigned char)buf[0] >= 32 && (unsigned char)buf[0] < 127 && l + 1 < sizeof lp_query) {
+    lp_query[l] = buf[0];
+    lp_query[l + 1] = 0;
+  } else {
+    return;
+  }
+  draw_launchpad();
+}
+
+/* ---------------------------------------------------------------------------------------- */
+/* Systemeinstellungen wie im Prototyp: links die Bereiche, rechts die Einstellungen.           */
+/* Erscheinungsbild (Hell, Dunkel, Automatisch), Schreibtisch & Dock (Lage, Größe), Programme   */
+/* (wie man installiert). Alles Übrige bleibt in den Xfce-Einstellungen.                        */
+
+enum { ST_SECTION, ST_THEME, ST_DOCKPOS, ST_DOCKSIZE, ST_XFCE, ST_OPENAPPS };
+static struct { int x, y, w, h, act; long arg; } st_hit[24];
+static int nst_hit;
+static const char *const ST_NAMES[] = {"Erscheinungsbild", "Schreibtisch & Dock", "Programme"};
+static const int DOCK_SIZES[3] = {40, 50, 64};
+
+static void st_add(double x, double y, double w, double h, int act, long arg) {
+  if (nst_hit < 24) st_hit[nst_hit++] = (typeof(st_hit[0])){(int)x, (int)y, (int)w, (int)h, act, arg};
+}
+
+/* kleines Bild eines Bildschirms: Hintergrund, Menüleiste, Fenster, Dock an der Stelle pos */
+static void mini_screen(cairo_t *cr, double x, double y, double w, double h, int look, int pos) {
+  cairo_save(cr);
+  rrect(cr, x, y, w, h, 8);
+  cairo_clip(cr);
+  for (int half = 0; half < 2; half++) {
+    bool d = look == 1 || (look == 2 && half == 1);
+    cairo_pattern_t *g = cairo_pattern_create_linear(0, y, 0, y + h);
+    if (d) {
+      cairo_pattern_add_color_stop_rgb(g, 0, .17, .13, .25);
+      cairo_pattern_add_color_stop_rgb(g, 1, .38, .23, .36);
+    } else {
+      cairo_pattern_add_color_stop_rgb(g, 0, .55, .72, .92);
+      cairo_pattern_add_color_stop_rgb(g, 1, .96, .86, .80);
+    }
+    cairo_rectangle(cr, x + (look == 2 ? half * w / 2 : 0), y, look == 2 ? w / 2 : w, h);
+    cairo_set_source(cr, g);
+    cairo_fill(cr);
+    cairo_pattern_destroy(g);
+    if (look != 2) break;
+  }
+  bool d = look == 1;
+  cairo_rectangle(cr, x, y, w, 7);
+  cairo_set_source_rgba(cr, d ? 0 : 1, d ? 0 : 1, d ? 0 : 1, .45);
+  cairo_fill(cr);
+  double wx = x + w * .2, wy = y + 16, ww = w * .55, wh = h * .5;
+  rrect(cr, wx, wy, ww, wh, 4);
+  if (d) cairo_set_source_rgb(cr, .14, .13, .17);
+  else cairo_set_source_rgb(cr, .97, .96, .98);
+  cairo_fill(cr);
+  const RGBA L[3] = {L_CLOSE, L_MIN, L_ZOOM};
+  for (int i = 0; i < 3; i++) {
+    cairo_new_path(cr);
+    cairo_arc(cr, wx + 5 + i * 5, wy + 4.5, 1.6, 0, 2 * M_PI);
+    set(cr, L[i]);
+    cairo_fill(cr);
+  }
+  if (pos == POS_BOTTOM) rrect(cr, x + w * .3, y + h - 11, w * .4, 8, 3);
+  else if (pos == POS_LEFT) rrect(cr, x + 3, y + h * .3, 8, h * .5, 3);
+  else rrect(cr, x + w - 11, y + h * .3, 8, h * .5, 3);
+  cairo_set_source_rgba(cr, 1, 1, 1, d ? .35 : .7);
+  cairo_fill(cr);
+  cairo_restore(cr);
+  rrect(cr, x + .5, y + .5, w - 1, h - 1, 8);
+  set(cr, T->line_strong);
+  cairo_set_line_width(cr, 1);
+  cairo_stroke(cr);
+}
+
+static void option(cairo_t *cr, double x, double y, const char *label, bool on, int look, int pos, int act, long arg) {
+  mini_screen(cr, x, y, 120, 76, look, pos);
+  if (on) {
+    rrect(cr, x - 3, y - 3, 126, 82, 10);
+    set(cr, ACCENT);
+    cairo_set_line_width(cr, 3);
+    cairo_stroke(cr);
+  }
+  text(cr, x + 60, y + 76 + 16, label, 12, on, T->fg, 0, 1);
+  st_add(x - 4, y - 4, 128, 108, act, arg);
+}
+
+static void paint_settings(Client *c, cairo_t *cr) {
+  int w = c->w, h = c->h, sec = (int)c->data;
+  nst_hit = 0;
+  /* Seitenleiste */
+  cairo_rectangle(cr, 0, 0, 196, h);
+  seta(cr, T->fg, .04);
+  cairo_fill(cr);
+  cairo_rectangle(cr, 196, 0, 1, h);
+  set(cr, T->line);
+  cairo_fill(cr);
+  static const RGBA ICO[3] = {{.49, .36, 1, 1}, {.2, .55, .95, 1}, {.2, .72, .45, 1}};
+  for (int i = 0; i < 3; i++) {
+    double y = 16 + i * 32;
+    if (i == sec) {
+      rrect(cr, 10, y, 176, 28, 7);
+      set(cr, ACCENT);
+      cairo_fill(cr);
+    }
+    rrect(cr, 18, y + 5, 18, 18, 5);
+    set(cr, i == sec ? (RGBA){1, 1, 1, .9} : ICO[i]);
+    cairo_fill(cr);
+    text(cr, 44, y + 14, ST_NAMES[i], 12.5, false, i == sec ? (RGBA){1, 1, 1, 1} : T->fg, 140, 0);
+    st_add(10, y, 176, 28, ST_SECTION, i);
+  }
+  text(cr, 18, h - 26, "Xfce-Einstellungen …", 12, false, ACCENT, 170, 0);
+  st_add(10, h - 40, 176, 28, ST_XFCE, 0);
+
+  double x0 = 216;
+  text(cr, x0, 34, ST_NAMES[sec], 19, true, T->fg, w - x0 - 20, 0);
+  if (sec == 0) {
+    static const char *const names[3] = {"Hell", "Dunkel", "Automatisch"};
+    static const int mode[3] = {1, 2, 0};
+    for (int i = 0; i < 3; i++)
+      option(cr, x0 + i * 140, 70, names[i], theme_mode == mode[i], i, POS_BOTTOM, ST_THEME, mode[i]);
+    text_block(cr, x0, 192, "Automatisch: hell am Tag, dunkel von 19 bis 7 Uhr. Fenster, Dock und Menüs wechseln "
+                            "sofort mit, ebenso Fundus, Terminal und die übrigen GTK-Programme.",
+               11.5, false, T->fg2, w - x0 - 24);
+  } else if (sec == 1) {
+    text(cr, x0, 66, "Position auf dem Bildschirm", 12.5, true, T->fg, 0, 0);
+    static const char *const names[3] = {"Links", "Unten", "Rechts"};
+    static const int pos[3] = {POS_LEFT, POS_BOTTOM, POS_RIGHT};
+    for (int i = 0; i < 3; i++)
+      option(cr, x0 + i * 140, 84, names[i], dock_pos == pos[i], dark ? 1 : 0, pos[i], ST_DOCKPOS, pos[i]);
+    text(cr, x0, 222, "Größe", 12.5, true, T->fg, 0, 0);
+    static const char *const sizes[3] = {"Klein", "Mittel", "Groß"};
+    for (int i = 0; i < 3; i++) {
+      double bx = x0 + i * 100, by = 238;
+      button(cr, bx, by, 90, sizes[i], ds_pref == DOCK_SIZES[i]);
+      st_add(bx, by, 90, 28, ST_DOCKSIZE, DOCK_SIZES[i]);
+    }
+    text_block(cr, x0, 286, "Rechtsklick auf ein Symbol: „Im Dock behalten“ oder „Aus dem Dock entfernen“. ClokeOS "
+                            "merkt sich das Dock für jeden Benutzer in ~/Library/Preferences.",
+               11.5, false, T->fg2, w - x0 - 24);
+  } else {
+    int nmac = 0, nall = 0;
+    for (int i = 0; i < napps; i++)
+      if (!apps[i].gone && !apps[i].b.internal[0]) nall++, nmac += apps[i].b.mac;
+    char buf[700];
+    snprintf(buf, sizeof buf,
+             "Programme sind wie bei macOS Pakete mit der Endung .app: Ordner mit Contents/Info.plist, "
+             "Contents/MacOS und Contents/Resources. Zum Installieren ziehst du das Paket in den Ordner "
+             "„Programme“ (/Applications), nur für dich nach ~/Applications; zum Entfernen in den Papierkorb. "
+             "Launchpad und Dock zeigen neue Programme nach ein, zwei Sekunden.\n\n"
+             "Mac-Programme erkennt ClokeOS an ihrer Info.plist und zeigt ihr Icon. Starten lassen sich "
+             "Programme für Intel ohne eigene Oberfläche; Programme mit Fenstern brauchen AppKit, das ClokeOS "
+             "noch fehlt.\n\nGefunden: %d Programme, davon %d Mac-Programme.",
+             nall, nmac);
+    text_block(cr, x0, 58, buf, 11.5, false, T->fg2, w - x0 - 24);
+    button(cr, x0, h - 52, 200, "Ordner „Programme“ öffnen", false);
+    st_add(x0, h - 52, 200, 28, ST_OPENAPPS, 0);
+  }
+}
+
+static void click_settings(Client *c, int x, int y) {
+  for (int k = 0; k < nst_hit; k++) {
+    if (x < st_hit[k].x || y < st_hit[k].y || x >= st_hit[k].x + st_hit[k].w || y >= st_hit[k].y + st_hit[k].h) continue;
+    long arg = st_hit[k].arg;
+    switch (st_hit[k].act) {
+    case ST_SECTION: c->data = arg; break;
+    case ST_THEME: set_theme_mode(arg); break;
+    case ST_DOCKPOS: set_dock_pos(arg); break;
+    case ST_DOCKSIZE: set_dock_size(arg); break;
+    case ST_XFCE: launch_ident("org.xfce.settings.manager"); break;
+    case ST_OPENAPPS: spawn("exec thunar /Applications"); break;
+    }
+    draw_own(c);
+    return;
+  }
+}
+
+static void show_settings(long section) {
+  static long last;
+  if (section >= 0) last = section;
+  Client *c = own_window(680, 400, "Systemeinstellungen", paint_settings, click_settings, last);
+  if (c) c->app = app_by_ident("com.clokeos.systemeinstellungen");
+  draw_menubar();
+  draw_dock();
 }
 
 static void redraw_all(void) {
@@ -2401,6 +3290,13 @@ static void on_button_press(XButtonEvent *e) {
     if (e->window == loginwin && e->button == Button1) login_click(e->x, e->y);
     return;
   }
+  if (lp_open && e->window != dock) {
+    if (gc && e->window == gc->win) XAllowEvents(dpy, AsyncPointer, CurrentTime);
+    if (e->window == lpwin && e->button == Button1) lp_click(e->x, e->y);
+    else hide_launchpad();
+    return;
+  }
+  if (lp_open) hide_launchpad(); /* Klick ins Dock */
   if (gc && e->window == gc->win) {
     if (menuwin) {
       close_menu();
@@ -2583,6 +3479,7 @@ static void on_expose(XExposeEvent *e) {
   else if (e->window == dock) draw_dock();
   else if (e->window == menuwin) draw_menu();
   else if (e->window == tipwin) paint_window(tipwin, tip_w, 24, paint_tip, NULL);
+  else if (e->window == lpwin) draw_launchpad();
   else {
     Client *c = find_client(e->window);
     if (!c) return;
@@ -2619,6 +3516,10 @@ static void on_client_message(XClientMessageEvent *e) {
 static void on_key(XKeyEvent *e) {
   if (locked) {
     login_key(e);
+    return;
+  }
+  if (lp_open && !menuwin) {
+    lp_key(e);
     return;
   }
   KeySym ks = XLookupKeysym(e, 0);
@@ -2661,9 +3562,10 @@ static bool animate(void) {
     if (c->anim != ANIM_OPEN) { /* der Weg bis zum Dock */
       double tx, ty;
       dock_target(c, &tx, &ty);
-      x0 = fmin(x0, tx - DS);
-      x1 = fmax(x1, tx + DS);
-      y1 = fmax(y1, ty + DS);
+      x0 = fmin(x0, tx - ds);
+      x1 = fmax(x1, tx + ds);
+      y0 = fmin(y0, ty - ds);
+      y1 = fmax(y1, ty + ds);
     }
     comp_dirty(x0 - 56, y0 - 56, x1 - x0 + 112, y1 - y0 + 112);
     /* nach der Zeit wie im Prototyp, aber höchstens ein Viertel pro Bild: Auch wenn ein Bild
@@ -2676,9 +3578,9 @@ static bool animate(void) {
     if (c->anim == ANIM_MIN) XUnmapWindow(dpy, c->frame);
     c->anim = ANIM_NONE;
   }
-  for (int i = 0; i < NAPPS; i++) {
-    if (bounce_t0[i] <= 0) continue;
-    if (t - bounce_t0[i] >= BOUNCE_S) bounce_t0[i] = 0;
+  for (int i = 0; i < napps; i++) {
+    if (apps[i].bounce_t0 <= 0) continue;
+    if (t - apps[i].bounce_t0 >= BOUNCE_S) apps[i].bounce_t0 = 0;
     else any = true;
     draw_dock();
   }
@@ -2687,6 +3589,15 @@ static bool animate(void) {
 
 static void tick(void) {
   static int last_min = -1;
+  static double last_scan;
+  if (now_s() - last_scan > 2) { /* ein Bundle nach /Applications kopiert oder gelöscht */
+    last_scan = now_s();
+    if (apps_signature() != apps_sig) {
+      scan_apps();
+      draw_dock();
+      draw_launchpad();
+    }
+  }
   time_t t = time(NULL);
   struct tm tm;
   localtime_r(&t, &tm);
@@ -2739,6 +3650,7 @@ static void setup_atoms(void) {
   NET_WM_WINDOW_TYPE_COMBO = atom("_NET_WM_WINDOW_TYPE_COMBO");
   NET_WM_WINDOW_TYPE_DND = atom("_NET_WM_WINDOW_TYPE_DND");
   NET_CLOSE_WINDOW = atom("_NET_CLOSE_WINDOW");
+  NET_WM_PID = atom("_NET_WM_PID");
   NET_FRAME_EXTENTS = atom("_NET_FRAME_EXTENTS");
   NET_NUMBER_OF_DESKTOPS = atom("_NET_NUMBER_OF_DESKTOPS");
   NET_CURRENT_DESKTOP = atom("_NET_CURRENT_DESKTOP");
@@ -2760,7 +3672,13 @@ static void setup_ewmh(void) {
   long one = 1, zero = 0;
   XChangeProperty(dpy, root, NET_NUMBER_OF_DESKTOPS, XA_CARDINAL, 32, PropModeReplace, (unsigned char *)&one, 1);
   XChangeProperty(dpy, root, NET_CURRENT_DESKTOP, XA_CARDINAL, 32, PropModeReplace, (unsigned char *)&zero, 1);
-  long wa[4] = {0, MENUBAR_H, SW, work_bottom() - MENUBAR_H};
+  update_workarea();
+}
+
+static void update_workarea(void) {
+  int x0, y0, x1, y1;
+  work_area(&x0, &y0, &x1, &y1);
+  long wa[4] = {x0, y0, x1 - x0, y1 - y0};
   XChangeProperty(dpy, root, NET_WORKAREA, XA_CARDINAL, 32, PropModeReplace, (unsigned char *)wa, 4);
 }
 
@@ -2788,8 +3706,10 @@ static Window ui_window(int x, int y, int w, int h, long mask, bool argb, Atom t
 /* Wohin ein Fenster ins Dock fliegt: zu seinem Symbol, sonst zur Mitte des Docks */
 static void dock_target(Client *c, double *x, double *y) {
   layout_dock();
-  *x = dock_x + (c->app >= 0 ? dock_item_x[c->app] + DS / 2.0 : dock_w / 2.0);
-  *y = dock_y + DOCK_PAD_Y + DS / 2.0;
+  *x = dock_x + dock_w / 2.0;
+  *y = dock_y + dock_h / 2.0;
+  for (int k = 0; k < nditems; k++)
+    if (c->app >= 0 && ditems[k].app == c->app) item_center(k, x, y);
 }
 
 static void anim_style(Client *c, WinStyle *st) {
@@ -2804,7 +3724,7 @@ static void anim_style(Client *c, WinStyle *st) {
   double fw = c->w + 2 * c->bw, fh = c->h + c->th + 2 * c->bw;
   double cx = c->x - c->bw + fw / 2, cy = c->y - c->th - c->bw + fh / 2, tx, ty;
   dock_target(c, &tx, &ty);
-  st->shrink = (1 - DS / fmax(fw, fh)) * e;
+  st->shrink = (1 - ds / fmax(fw, fh)) * e;
   st->dx = (tx - cx) * e;
   st->dy = (ty - cy) * e;
   st->fade = e;
@@ -2814,7 +3734,9 @@ static void anim_style(Client *c, WinStyle *st) {
  * Dock-Schatten in clokeos.html, verkleinert, weil Unschärfe unter Emulation teuer ist) */
 WinStyle cs_window_style(Window w) {
   WinStyle st = {WK_PLAIN, 0, 0, 0, 0};
-  if (w == dock) return (WinStyle){WK_GLASS, DS * .42 + 6, 22, 10, .28, .top = dock_top};
+  if (w == dock)
+    return (WinStyle){WK_GLASS, ds * .42 + 6, 22, 10, .28, .it = dock_pos == POS_BOTTOM ? dock_lift : 0,
+                      .ir = dock_pos == POS_LEFT ? dock_lift : 0, .il = dock_pos == POS_RIGHT ? dock_lift : 0};
   if (w && w == menuwin) return (WinStyle){WK_GLASS, 14, 16, 8, .26};
   if (w && w == tipwin) return (WinStyle){WK_GLASS, 12, 10, 4, .2};
   for (Client *c = clients; c; c = c->next)
@@ -2919,14 +3841,19 @@ int main(int argc, char **argv) {
   apply_theme();
   if (use_comp && !comp_init(dpy, scr, root, SW, SH)) warn("ohne Compositor: keine Schatten, Glas zeigt nur das Hintergrundbild");
   setup_ewmh();
-  layout_dock();
   menubar = ui_window(0, 0, SW, MENUBAR_H, ExposureMask | ButtonPressMask | PointerMotionMask, false,
                       NET_WM_WINDOW_TYPE_DOCK);
-  dock_top = comp_on ? 20 : 0;
-  dock = ui_window(dock_x, dock_y - dock_top, dock_w, DOCK_H + dock_top,
-                   ExposureMask | ButtonPressMask | PointerMotionMask | LeaveWindowMask,
+  dock_lift = comp_on ? 20 : 0;
+  scan_apps();
+  load_prefs();
+  render_icons();
+  if (want_dark() != dark) apply_theme();
+  layout_dock();
+  update_workarea();
+  int dwx, dwy, dww, dwh;
+  dock_window_rect(&dwx, &dwy, &dww, &dwh);
+  dock = ui_window(dwx, dwy, dww, dwh, ExposureMask | ButtonPressMask | PointerMotionMask | LeaveWindowMask,
                    true, NET_WM_WINDOW_TYPE_DOCK);
-  if (!comp_on) shape_round(dock, dock_w, DOCK_H, DS * .42 + 6, false);
   XMapRaised(dpy, menubar);
   XMapRaised(dpy, dock);
   XGrabKey(dpy, XKeysymToKeycode(dpy, XK_Tab), Mod1Mask, root, True, GrabModeAsync, GrabModeAsync);

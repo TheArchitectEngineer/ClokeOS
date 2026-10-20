@@ -19,13 +19,43 @@ typedef struct {
   double radius;
   int blur, offset; /* Schatten: Unschärfe und Versatz nach unten in Pixeln, 0 = keiner */
   double alpha;
-  int top;          /* Glas und Schatten erst ab dieser Höhe (Dock: Platz zum Hüpfen darüber) */
+  int it, ir, ib, il; /* Glas und Schatten nur innerhalb dieser Ränder (Dock: Platz zum Hüpfen) */
   /* Animation, 0 = unverändert: verkleinern um shrink (0..1) zur Mitte, ausblenden um fade
    * (0..1), verschieben um dx, dy */
   double shrink, fade, dx, dy;
 } WinStyle;
 WinStyle cs_window_style(Window w);
 Pixmap cs_wallpaper(void);
+
+/* apps.c: Programme als .app-Bundles wie bei macOS */
+enum { APP_OK, APP_APPKIT, APP_ARM64, APP_MISSING, APP_NOEXEC };
+typedef struct {
+  char path[1024];      /* /System/Applications/Rechner.app */
+  char name[96];        /* CFBundleDisplayName, CFBundleName oder Ordnername */
+  char ident[128];      /* CFBundleIdentifier */
+  char exec_name[96];   /* CFBundleExecutable */
+  char exec[1200];      /* Contents/MacOS/<CFBundleExecutable> */
+  char classes[192];    /* CLWindowClasses: WM_CLASS der Fenster */
+  char internal[24];    /* CLInternal: zeichnet CloakServer selbst (launchpad, settings) */
+  char icon[1200];      /* Contents/Resources/…: .svg, .png oder .icns */
+  char missing[160];    /* kind != APP_OK: was fehlt */
+  int kind;             /* APP_*: lässt es sich starten? */
+  bool mac, hidden;     /* Mach-O wie bei macOS; LSUIElement */
+  long mtime;
+} Bundle;
+typedef struct {
+  const char *key, *s;  /* s = Text, sonst Zahl i, oder Liste arr */
+  long i;
+  const char *const *arr;
+  int narr;
+} PlistItem;
+unsigned char *read_bytes(const char *path, size_t *len);
+bool plist_get(const unsigned char *data, size_t len, const char *key, char *out, size_t n);
+int plist_get_array(const unsigned char *data, const char *key, char out[][128], int max);
+bool plist_write(const char *path, const PlistItem *items, int n);
+bool bundle_read(const char *path, Bundle *b);
+long bundle_mtime(const char *path);
+unsigned char *icns_png(const char *path, int min, size_t *len);
 
 /* comp.c: Compositor (Composite, Damage, XFixes) */
 extern bool comp_on;

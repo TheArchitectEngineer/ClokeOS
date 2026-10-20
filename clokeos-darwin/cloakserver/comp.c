@@ -470,8 +470,8 @@ void comp_repaint(void) {
       if (!w->mapped) continue;
       WinStyle st = cs_window_style(w->id);
       int m = st.kind == WK_GLASS ? GLASS_MARGIN : 0;
-      if (st.kind == WK_GLASS && overlaps(w->x - m, w->y + st.top - m, w->w + 2 * m, w->h - st.top + 2 * m))
-        dirty_rect(w->x - m, w->y + st.top - m, w->w + 2 * m, w->h - st.top + 2 * m);
+      int gx = w->x + st.il - m, gy = w->y + st.it - m, gw = w->w - st.il - st.ir + 2 * m, gh = w->h - st.it - st.ib + 2 * m;
+      if (st.kind == WK_GLASS && overlaps(gx, gy, gw, gh)) dirty_rect(gx, gy, gw, gh);
     }
   cairo_rectangle_int_t full = {0, 0, SW, SH};
   cairo_region_intersect_rectangle(dirty, &full);
@@ -519,10 +519,11 @@ void comp_repaint(void) {
     if (st.blur) {
       cairo_save(cr);
       cairo_transform(cr, &place);
-      shadow(cr, &st, 0, st.top, ww, wh - st.top);
+      shadow(cr, &st, st.il, st.it, ww - st.il - st.ir, wh - st.it - st.ib);
       cairo_restore(cr);
     }
-    if (st.kind == WK_GLASS && !moving) backdrop(cr, &st, w->x, w->y + st.top, ww, wh - st.top);
+    if (st.kind == WK_GLASS && !moving)
+      backdrop(cr, &st, w->x + st.il, w->y + st.it, ww - st.il - st.ir, wh - st.it - st.ib);
     cairo_save(cr);
     cairo_transform(cr, &place);
     if (st.kind == WK_FRAME && st.radius > 0) { /* 32-Bit-Fenster haben ihre Ecken selbst */

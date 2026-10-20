@@ -67,7 +67,7 @@ inc=(-I"$sysroot/include" -I"$sysroot/include/cairo" -I"$sysroot/include/pango-1
 clang -target x86_64-apple-macos11.0 -isysroot "$sysroot" -DPLATFORM_MacOSX=1 -std=gnu11 -O2 -Wall -Wextra -Wno-unused-parameter \
   -Wno-nullability-completeness -Wno-missing-field-initializers "${inc[@]}" \
   -nostdlib -L"$sysroot/libs" -Wl,-platform_version,macos,11.0,11.5 -Wl,-dead_strip \
-  -o "$out/CloakServer" "$src/cloakserver.c" "$src/comp.c" "$src/wall.c" \
+  -o "$out/CloakServer" "$src/cloakserver.c" "$src/comp.c" "$src/wall.c" "$src/apps.c" \
   -lSystem -lX11 -lXext -lXcursor -lXfixes -lXcomposite -lXdamage -lcairo -lpango-1.0 -lpangocairo-1.0 \
   -lgobject-2.0 -lglib-2.0 -lrsvg-2
 echo "Fertig: $out/CloakServer"

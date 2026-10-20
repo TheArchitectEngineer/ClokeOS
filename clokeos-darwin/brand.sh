@@ -13,7 +13,8 @@
 #   - x86_64: die EFI-Partition bekommt den Loader mit Bootlogo (loader/build.sh) und die
 #     Boot-Argumente aus config.sh, beides mit mtools
 #   - desktop: dazu overlay-desktop/ und CloakServer (cloakserver/build.sh), der beim Start
-#     Xorg mit dem ClokeOS-Desktop öffnet, und das Benutzerkonto aus config.sh (CLOKE_USER)
+#     Xorg mit dem ClokeOS-Desktop öffnet, die Programme als .app-Bundles wie bei macOS
+#     (cloakserver/bundles.py) und das Benutzerkonto aus config.sh (CLOKE_USER)
 set -euo pipefail
 source "$(dirname "$0")/config.sh"
 need "$DEBUGFS" "$E2FSCK" "$TUNE2FS" python3 mcopy mtype mdir
@@ -37,6 +38,8 @@ cp -R "$HERE/overlay/." "$tmp/stage/"
 if [ "$CLOKE_FLAVOR" = desktop ]; then
   cp -R "$HERE/overlay-desktop/." "$tmp/stage/"
   "$HERE/cloakserver/build.sh" "$tmp/stage"
+  python3 -I "$HERE/cloakserver/bundles.py" "$tmp/stage" "$WORK/out/CloakServer/Resources/icons" \
+    "$CLOKE_VERSION" "$CLOKE_BUILD"
 fi
 find "$tmp/stage" -name .DS_Store -delete
 
@@ -91,6 +94,11 @@ EOF
 # Ohne Passwort (leeres Feld, die Eingabetaste meldet an), Gruppe staff, Ordner wie in clokeos.html.
 # PureDarwin hat kein su und kein sudo; für Verwaltung gibt es auf der Anmeldung root.
 : > "$tmp/extra.cmds"
+if [ "$CLOKE_FLAVOR" = desktop ]; then
+  # /Applications wie bei macOS für Administratoren beschreibbar; hier die Gruppe staff, damit
+  # der Benutzer Programme durch Hineinziehen installieren kann
+  printf 'set_inode_field /Applications mode 040775\nset_inode_field /Applications gid 20\n' >> "$tmp/extra.cmds"
+fi
 if [ "$CLOKE_FLAVOR" = desktop ] && [ -n "$CLOKE_USER" ]; then
   home="/Users/$CLOKE_USER"
   for f in master.passwd:root passwd:root group:staff; do
@@ -134,7 +142,7 @@ EOF
       echo "set_inode_field $f gid 20"
     done
     echo "set_inode_field $home/.Trash mode 040700"
-  } > "$tmp/extra.cmds"
+  } >> "$tmp/extra.cmds"
 fi
 
 # --- in ein ext4-Dateisystem schreiben ----------------------------------------------------
