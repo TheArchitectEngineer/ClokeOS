@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Prüft auf dem Mac, ob ein Mac-Programm unter ClokeOS laden kann, ohne die VM zu starten.
 
-    macapps/machcheck.py PROGRAMM [--image IMG] [--overlay DIR ...] [--deep] [--alle]
+    macapps/machcheck.py PROGRAMM [--image IMG] [--overlay DIR ...] [--frameworks DIR ...] [--deep] [--alle]
 
 PROGRAMM ist ein Mach-O (Programm oder dylib) oder ein .app-Bundle. Das Werkzeug geht die
 Abhängigkeiten wie dyld durch (LC_LOAD_DYLIB, Re-Exporte) und meldet
@@ -9,7 +9,9 @@ Abhängigkeiten wie dyld durch (LC_LOAD_DYLIB, Re-Exporte) und meldet
   - importierte Symbole, die die genannte Bibliothek (samt Re-Exporten) nicht exportiert.
 Systembibliotheken kommen aus dem PureDarwin-Image (per debugfs, zwischengespeichert unter
 ~/ClokeOS-work/sysroot/…/root) oder zuerst aus --overlay-Ordnern, die wie das Gastsystem aufgebaut
-sind (z. B. die Foundation-Probe). Mit --deep werden auch die Importe der geladenen Bibliotheken
+sind (z. B. die Foundation-Probe). --frameworks DIR wirkt wie DYLD_FRAMEWORK_PATH im Gast: ein
+Framework wird zuerst als DIR/Name.framework/… gesucht, egal unter welchem Pfad es installiert
+ist (z. B. ~/ClokeOS-work/out/macapps/root/Library/ClokeOS/MacFrameworks). Mit --deep werden auch die Importe der geladenen Bibliotheken
 geprüft. Benutzt dyld_info und otool aus Xcode bzw. den Command Line Tools.
 """
 import argparse
@@ -145,6 +147,8 @@ def main():
     ap.add_argument("programm")
     ap.add_argument("--image", default=None, help="PureDarwin-/ClokeOS-Image (Standard: puredarwin.img des Desktop-Builds)")
     ap.add_argument("--overlay", action="append", default=[], help="Ordner, der wie das Gastsystem aufgebaut ist")
+    ap.add_argument("--frameworks", action="append", default=[],
+                    help="Ordner mit Frameworks, wie DYLD_FRAMEWORK_PATH im Gast")
     ap.add_argument("--deep", action="store_true", help="auch die Importe der geladenen Bibliotheken prüfen")
     ap.add_argument("--alle", action="store_true", help="alle fehlenden Symbole zeigen, nicht nur 25 je Bibliothek")
     a = ap.parse_args()
@@ -180,6 +184,11 @@ def main():
                 if os.path.isfile(p):
                     return p, "Bundle"
             return None, None
+        m = re.search(r"/([^/]+\.framework/.*)$", name)
+        for fw in a.frameworks if m else []:   # wie DYLD_FRAMEWORK_PATH
+            p = os.path.join(fw, m.group(1))
+            if os.path.isfile(p):
+                return p, "Frameworks"
         p = guest.resolve(name)
         return (p, "ClokeOS") if p else (None, None)
 

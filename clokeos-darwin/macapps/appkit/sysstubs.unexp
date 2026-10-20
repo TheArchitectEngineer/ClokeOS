@@ -1,0 +1,10 @@
+_gl*
+_CGL*
+_kIOMasterPortDefault
+_IOServiceMatching
+_IOServiceGetMatchingServices
+_IOIteratorNext
+_IOObjectRelease
+_IODisplayCreateInfoDictionary
+_LSFindApplicationForInfo
+_LSOpenFromURLSpec

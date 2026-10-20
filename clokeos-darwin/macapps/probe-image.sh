@@ -1,15 +1,20 @@
 #!/bin/bash
-# Legt eine Testkopie des ClokeOS-Desktop-Images an und schreibt die Foundation-Probe hinein.
+# Legt eine Testkopie des ClokeOS-Desktop-Images an und schreibt die Foundation- und die
+# AppKit-Probe hinein.
 #
 #   macapps/probe-image.sh            -> ~/ClokeOS-work/tmp/fprobe-desktop.img
 #   ./run.sh --headless --image ~/ClokeOS-work/tmp/fprobe-desktop.img
 #   ./vmctl.py send '/Library/ClokeOS/Probe/probe.sh' 300
+#   ./vmctl.py key ret                                  (Anmeldung am Desktop)
+#   ./vmctl.py send 'zsh /Library/ClokeOS/Probe/hallo.sh --klick 60 > /tmp/hallo.log 2>&1 &'
 #
 # Die Kopie ist ein APFS-Klon (cp -c) und kostet kaum Platz; das eigentliche Image bleibt
 # unverändert. Im Gast landen
-#   /Library/ClokeOS/MacFrameworks/{CoreFoundation,Foundation}.framework   (aus foundation.sh)
+#   /Library/ClokeOS/MacFrameworks/*.framework   (aus foundation.sh und, falls gebaut, appkit.sh)
 #   /Library/ClokeOS/Probe/fprobe     das Prüfprogramm (x86_64, Apples SDK)
 #   /Library/ClokeOS/Probe/probe.sh   startet es mit DYLD_FRAMEWORK_PATH
+#   /Library/ClokeOS/Probe/hallo      die Cocoa-Test-App (hallo.m), falls gebaut
+#   /Library/ClokeOS/Probe/hallo.sh   startet sie im laufenden Desktop (DISPLAY=:0)
 set -euo pipefail
 source "$(dirname "$0")/../config.sh"
 CLOKEOS_FLAVOR=desktop
@@ -31,6 +36,18 @@ cd /tmp
 echo "fprobe-Ende: $?"
 EOF
 chmod +x "$src/Probe/probe.sh"
+if [ -f "$src/Probe/hallo" ]; then
+  cat > "$src/Probe/hallo.sh" <<'EOF'
+#!/bin/zsh
+# AppKit-Probe: die Cocoa-Test-App mit Darlings AppKit im laufenden Desktop
+export DYLD_FRAMEWORK_PATH=/Library/ClokeOS/MacFrameworks
+export DISPLAY=${DISPLAY:-:0}
+cd /tmp
+/Library/ClokeOS/Probe/hallo "$@"
+echo "hallo-Ende: $?"
+EOF
+  chmod +x "$src/Probe/hallo.sh"
+fi
 
 mkdir -p "$(dirname "$img")"
 rm -f "$img"
