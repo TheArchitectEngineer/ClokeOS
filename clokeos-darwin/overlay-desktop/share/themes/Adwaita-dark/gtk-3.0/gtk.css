@@ -1,0 +1,2 @@
+/* ClokeOS: dunkle Variante von GTKs eingebautem Adwaita, für den Dunkelmodus über XSETTINGS */
+@import url("resource:///org/gtk/libgtk/theme/Adwaita/gtk-contained-dark.css");

@@ -39,6 +39,7 @@
 #include <math.h>
 #include <signal.h>
 #include <stdarg.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -521,10 +522,64 @@ static bool want_dark(void) {
 
 static void render_icons(void);
 
+/* XSETTINGS (freedesktop.org): CloakServer meldet GTK-Programmen das Thema über die Auswahl
+ * _XSETTINGS_S0. Anders als die Umgebungsvariable GTK_THEME wechseln so auch Programme, die
+ * schon laufen, zwischen Hell und Dunkel, wie bei macOS. "Adwaita-dark" liegt als kleines Thema
+ * in /share/themes und lädt GTKs eingebaute dunkle Variante. */
+static Window xsettings_win;
+static Atom XSETTINGS_SETTINGS;
+static uint32_t xsettings_serial;
+
+static void xsettings_update(void) {
+  if (!xsettings_win) return;
+  static const char *name = "Net/ThemeName";
+  const char *val = dark ? "Adwaita-dark" : "Adwaita";
+  uint32_t nl = (uint32_t)strlen(name), vl = (uint32_t)strlen(val), one = 1;
+  uint16_t nl16 = (uint16_t)nl;
+  unsigned char buf[128] = {0}, *p = buf;
+  p += 4;                                    /* Byte-Reihenfolge 0 = LSBFirst (x86), 3 frei */
+  memcpy(p, &xsettings_serial, 4), p += 4;
+  memcpy(p, &one, 4), p += 4;                /* eine Einstellung */
+  *p = 1, p += 2;                            /* Typ String, 1 frei */
+  memcpy(p, &nl16, 2), p += 2;
+  memcpy(p, name, nl), p += (nl + 3) & ~3u;
+  memcpy(p, &xsettings_serial, 4), p += 4;   /* zuletzt geändert */
+  memcpy(p, &vl, 4), p += 4;
+  memcpy(p, val, vl), p += (vl + 3) & ~3u;
+  XChangeProperty(dpy, xsettings_win, XSETTINGS_SETTINGS, XSETTINGS_SETTINGS, 8, PropModeReplace, buf, (int)(p - buf));
+  xsettings_serial++;
+}
+
+static void xsettings_init(void) {
+  char sel_name[32];
+  snprintf(sel_name, sizeof sel_name, "_XSETTINGS_S%d", scr);
+  Atom sel = XInternAtom(dpy, sel_name, False);
+  XSETTINGS_SETTINGS = XInternAtom(dpy, "_XSETTINGS_SETTINGS", False);
+  if (XGetSelectionOwner(dpy, sel) != None) {
+    warn("XSETTINGS: %s gehört schon einem anderen Programm", sel_name);
+    return;
+  }
+  xsettings_win = XCreateSimpleWindow(dpy, root, -1, -1, 1, 1, 0, 0, 0);
+  xsettings_update();
+  XSetSelectionOwner(dpy, sel, xsettings_win, CurrentTime);
+  if (XGetSelectionOwner(dpy, sel) != xsettings_win) {
+    XDestroyWindow(dpy, xsettings_win);
+    xsettings_win = None;
+    return;
+  }
+  XClientMessageEvent ev = {.type = ClientMessage, .window = root, .format = 32};
+  ev.message_type = XInternAtom(dpy, "MANAGER", False);
+  ev.data.l[0] = CurrentTime;
+  ev.data.l[1] = (long)sel;
+  ev.data.l[2] = (long)xsettings_win;
+  XSendEvent(dpy, root, False, StructureNotifyMask, (XEvent *)&ev);
+}
+
 static void apply_theme(void) {
   dark = want_dark();
   T = dark ? &DARK : &LIGHT;
-  setenv("GTK_THEME", dark ? "Adwaita:dark" : "Adwaita", 1);
+  unsetenv("GTK_THEME"); /* sonst hätte die Variable Vorrang vor XSETTINGS */
+  xsettings_update();
 
   if (wall_img) cairo_surface_destroy(wall_img);
   wall_img = cairo_image_surface_create(CAIRO_FORMAT_RGB24, SW, SH);
@@ -2859,6 +2914,8 @@ int main(int argc, char **argv) {
 
   read_release();
   splash();
+  dark = want_dark();
+  xsettings_init();
   apply_theme();
   if (use_comp && !comp_init(dpy, scr, root, SW, SH)) warn("ohne Compositor: keine Schatten, Glas zeigt nur das Hintergrundbild");
   setup_ewmh();
