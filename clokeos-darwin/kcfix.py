@@ -18,6 +18,12 @@ dort ist Platz):
 
 -0xa8(%rbp) ist bootDisplay.v_baseAddr. Der Fehlercode in -0xb4(%rbp) wird nur noch für eine
 Debug-Meldung (gop_debug=1) gelesen, die dann einen falschen Wert zeigt.
+
+PureDarwin hat den Fehler im Entwicklungszweig upstream-xnu-12377 schon behoben (Commit 867967e,
+fbBase = bootDisplay.v_baseAddr & ~3). Mit einem Image, das diese Korrektur enthält, findet das
+Skript den alten Code nicht mehr. Es warnt dann nur und ändert nichts, damit brand.sh weiterbaut.
+Zeigt Xorg danach trotzdem falsche Farben, ist es ein anderer Kernel mit dem alten Fehler, und das
+Muster hier muss angepasst werden.
 """
 import sys
 
@@ -34,9 +40,14 @@ def main(path):
     if data.count(CONTEXT + PATCHED) == 1:
         print('IOGOPFramebuffer: schon korrigiert')
         return 0
-    if data.count(CONTEXT + ORIGINAL) != 1:
-        print('IOGOPFramebuffer: Code nicht gefunden, anderer Kernel? Nichts geändert.', file=sys.stderr)
-        return 1
+    found = data.count(CONTEXT + ORIGINAL)
+    if found != 1:
+        print('WARNUNG: IOGOPFramebuffer: bekannter Code %s, nichts geändert.\n'
+              '  Vermutlich ein neueres Kernel Collection, in dem PureDarwin den Fehler schon behoben hat\n'
+              '  (Commit 867967e). Zeigt Xorg falsche Farben (Blau erscheint grün), muss kcfix.py an\n'
+              '  diesen Kernel angepasst werden.' % ('nicht gefunden' if not found else '%d-mal gefunden' % found),
+              file=sys.stderr)
+        return 0
     at = data.find(CONTEXT + ORIGINAL) + len(CONTEXT)
     data[at:at + len(ORIGINAL)] = PATCHED
     open(path, 'wb').write(data)
