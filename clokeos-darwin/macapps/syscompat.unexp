@@ -1,0 +1,12 @@
+_OSAtomicCompareAndSwap64Barrier
+_mach_make_memory_entry_64
+_NSStartSearchPathEnumeration
+_NSGetNextSearchPathEnumeration
+_bootstrap_register
+_malloc_get_zone_name
+_posix_spawn_file_actions_addchdir_np
+_xpc_connection_get_audit_token
+_dispatch_read
+_dispatch_io_create
+_dispatch_io_read
+_dispatch_io_set_low_water

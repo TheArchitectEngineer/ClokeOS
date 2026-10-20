@@ -1,0 +1,5 @@
+Ersatz für private Apple-Header, die Darlings CoreFoundation und Foundation brauchen, die aber
+weder Apples SDK noch PureDarwins Image mitbringen. Die Header deklarieren nur, was die
+Darling-Quellen benutzen. Funktionen, die PureDarwins libSystem, libobjc oder ICU exportieren,
+werden deklariert. Fehlt eine Funktion in PureDarwin, steht hier eine harmlose Inline-Fassung
+(vermerkt mit "fehlt in PureDarwin"). Geprüft gegen PureDarwin 20.5 (puredarwin.img, 23.08.2026).

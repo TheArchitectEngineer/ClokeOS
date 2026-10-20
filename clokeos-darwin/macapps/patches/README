@@ -1,0 +1,5 @@
+Kleine Korrekturen an Darlings Quellen, als sed-Skripte. foundation.sh kopiert die betroffene
+Datei nach ~/ClokeOS-work/out/macapps/obj/patched/, wendet das Skript an und übersetzt die Kopie;
+die heruntergeladenen Quellen bleiben unverändert. Dateiname = Pfad im Repo + ".sed".
+Jede Korrektur ist ein Fehler in Darling (Stand der Commits in foundation.sh), gefunden mit der
+Foundation-Probe (fprobe.m) im Vergleich mit Apples Foundation.
