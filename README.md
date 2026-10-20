@@ -88,7 +88,7 @@ Bei der PCI-Konfiguration verlegt PureDarwins `IOPCIFamily` die Konsole und schr
 
 ### Desktop: CloakServer
 
-![ClokeOS-Desktop in QEMU: Menüleiste, Dock und das Hintergrundbild „Goldenes Tor“ am Abend, davor Fundus (Thunar) und das Terminal mit clokefetch](clokeos-darwin/desktop.png)
+![ClokeOS-Desktop in QEMU am Tag: Das ClokeOS-Menü liegt als Glas über Fundus (Thunar), das Dock über dem Terminal mit clokefetch; die Fenster haben runde Ecken und weiche Schatten](clokeos-darwin/desktop.png)
 
 Die Desktop-Variante baut auf PureDarwins Vorschau-Image `puredarwin.img` auf (6,1 GiB, von puredarwin.org; Xorg mit PureDarwins eigenem Treiber `puredarwingop`, Wayland/sway, i3, Xfce, Wine, Compiler). Grafisch startet dort von selbst nichts: PureDarwin öffnet zsh auf der Konsole, Xorg, sway oder Xfce startet man von Hand. ClokeOS startet beim Hochfahren über den launchd-Dienst `com.clokeos.cloakserver` Xorg mit CloakServer (`/usr/libexec/cloakserver-start` und `cloakserver-session`, mit einem D-Bus für die Sitzung):
 
@@ -103,7 +103,7 @@ CloakServer (`clokeos-darwin/cloakserver/`) ist der Fensterserver von ClokeOS, z
 - Hintergrund „Goldenes Tor“: `drawBay()` aus `clokeos.html` Zeile für Zeile nach cairo übertragen (`wall.c`), mit demselben Zufallsgenerator, damit Sterne, Lichter und Nebel an denselben Stellen sitzen; hell am Tag, dunkel von 19 bis 7 Uhr
 - Menüleiste: ClokeOS-Menü (Über ClokeOS, Systemeinstellungen, Aktivitätsanzeige, Programme, Neustart … und Ausschalten … mit Rückfrage), Name des aktiven Programms mit Menü (ausblenden, beenden), Ablage (neues Fenster, Fenster schließen), Fenster (ins Dock, zoomen, Liste der Fenster), Netzwerk mit IP-Adresse, Suche (öffnet den App-Finder), Erscheinungsbild (automatisch, hell, dunkel) und Uhr mit Datum
 - Dock mit den Icons aus `clokeos.html`, Laufanzeigen, Namensschild beim Überfahren und Kontextmenü auf der rechten Maustaste; ein Klick startet das Programm oder holt seine Fenster zurück
-- Glas: Dock, Menüs und Namensschilder zeigen das unscharfe Hintergrundbild mit Tönung und Lichtkante wie der Liquid-Glass-Stil des Prototyps
+- Compositor (`comp.c`): CloakServer setzt das Bild selbst zusammen (X-Erweiterungen Composite, Damage, XFixes, Render). Fenster bekommen weiche Schatten und runde Ecken ohne Treppchen, das aktive einen größeren Schatten. Dock, Menüs und Namensschilder sind Glas: Sie zeigen unscharf, was dahinter liegt, auch Fenster, mit Tönung und Lichtkante wie im Liquid-Glass-Stil des Prototyps. Neu gezeichnet wird nur, was sich geändert hat; unter Emulation kostet ein ganzes Bild 100 bis 300 ms, ein Teilbild meist 50 bis 60 ms, ein blinkender Cursor 5 bis 15 ms. CloakServer meldet sich als Compositor (`_NET_WM_CM_S0`), GTK-Programme mit eigener Durchsicht bekommen dann 32-Bit-Rahmen. Fehlt Composite, oder mit `--compositor aus`, arbeitet CloakServer wie zuvor ohne Compositor; das Glas zeigt dann nur das Hintergrundbild, die Ecken schneidet XShape ab.
 - Fenster: Rahmen mit Titelleiste und Ampelknöpfen (schließen, ins Dock, zoomen), runde Ecken, ziehen, Größe an der Ecke unten rechts ändern, Doppelklick auf den Titel zoomt, Alt+Tab wechselt das Fenster, Alt+F4 schließt es
 - „Über ClokeOS“ wie im Prototyp, mit Version und Build aus `/etc/clokeos-release` und den Werten des Rechners (`sysctl`)
 
@@ -126,7 +126,7 @@ Gebaut wird CloakServer auf dem Mac, ohne Linux und ohne die VM: `cloakserver/bu
 
 Grenzen:
 
-- Kein Compositing: Fenster haben keine Schatten, und das Glas von Dock und Menüs zeigt das Hintergrundbild, nicht die Fenster dahinter.
+- Die Unschärfe ist eine Näherung: Der Compositor verkleinert den Hintergrund viermal auf die Hälfte und zieht ihn wieder auf. Titelleisten sind deckend, nicht aus Glas, und es gibt keine Animationen (Öffnen, Ins Dock).
 - Die Programme sind englisch, denn PureDarwins libc kennt keine deutsche Locale (`Locale not supported by C library`). Ihre Menüs stehen im Programmfenster, nicht in der Menüleiste.
 - Bei Emulation brauchen Programme 10 bis 25 Sekunden zum Start. Es gibt keine Anmeldung, die Sitzung läuft als root.
 - Nur x86_64. PureDarwins Desktop-Image für arm64 (3,1 GiB) ist nicht geladen; dort startet Xorg, GL ist laut PureDarwin aber kaputt.
@@ -177,7 +177,7 @@ Der Kernel ist das kleinere Problem, denn XNU ist Open Source (Apple Public Sour
 
 1. ~~**Darwin in einer VM booten.**~~ Erledigt mit PureDarwin 20.5 in QEMU (siehe oben).
 2. ~~**Branding.**~~ Erledigt: `SystemVersion.plist`, `sw_vers`, Hostname, Anmeldetext, Volume-Name und das Bootlogo, das PureDarwins xnu-loader jetzt vor dem Kernelstart über GOP zeichnet (siehe Bootlogo).
-3. **Fensterserver.** Begonnen: CloakServer läuft in der Desktop-Variante als X11-Fenstermanager auf Xorg und PureDarwins GOP-Treiber, mit Hintergrund, Menüleiste, Dock und Fenstern im ClokeOS-Stil (siehe [Desktop: CloakServer](#desktop-cloakserver)). Dafür übergibt der Loader dem Kernel den Framebuffer wieder, und eine 15-Byte-Korrektur in `IOGOPFramebuffer` behebt die falschen Farben. Als Nächstes: ein eigener Compositor für echtes Glas und Schatten (wlroots samt Headern ist im Desktop-Image, PureDarwin hat dafür ein eigenes Backend), eine Anmeldung wie im Prototyp, und arm64 (dort startet Xorg, GL ist laut PureDarwin aber noch kaputt).
+3. **Fensterserver.** Begonnen: CloakServer läuft in der Desktop-Variante als X11-Fenstermanager auf Xorg und PureDarwins GOP-Treiber, mit Hintergrund, Menüleiste, Dock und Fenstern im ClokeOS-Stil (siehe [Desktop: CloakServer](#desktop-cloakserver)). Dafür übergibt der Loader dem Kernel den Framebuffer wieder, und eine 15-Byte-Korrektur in `IOGOPFramebuffer` behebt die falschen Farben. CloakServer setzt das Bild inzwischen selbst zusammen (Schatten, runde Ecken, Glas über Fenstern). Als Nächstes: eine Anmeldung wie im Prototyp, Animationen, arm64 (dort startet Xorg, GL ist laut PureDarwin aber noch kaputt), und auf längere Sicht ein eigener Wayland-Compositor statt Xorg (wlroots samt Headern ist im Desktop-Image, PureDarwin hat dafür ein eigenes Backend).
 4. **Shell portieren.** Menüleiste und Dock gibt es jetzt nativ in CloakServer. Offen sind Fundus, Search und die übrigen Apps aus `clokeos.html` als native Programme; bis dahin stehen Thunar, NetSurf und andere Programme des PureDarwin-Images hinter den Dock-Symbolen. Alternativ eine Browser-Engine als Shell-Laufzeit: Mit WebKitGTK könnte `clokeos.html` fast unverändert laufen; PureDarwin arbeitet daran, laut Statusseite läuft es noch nicht.
 5. **Installer-Image.** Bootfähiges ISO mit Bootloader, Kernel, Userland und CloakServer.
 

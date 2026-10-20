@@ -7,7 +7,10 @@
  * ins Dock, zoomen). Er läuft auf Xorg mit PureDarwins GOP-Treiber; die Programme hinter den
  * Dock-Symbolen sind die des PureDarwin-Desktop-Images (Thunar, NetSurf, xfce4-terminal …).
  *
- *   CloakServer [--theme auto|hell|dunkel]
+ *   CloakServer [--theme auto|hell|dunkel] [--compositor an|aus]
+ *
+ * Mit Compositor (comp.c, Standard) bekommen Fenster Schatten und echte runde Ecken, und Dock,
+ * Menüs und Namensschilder zeigen als Glas unscharf, was dahinter liegt.
  *
  * Ressourcen (Icons, Logo) liegen in Resources/ neben dem Programm, erzeugt von resources.py
  * aus clokeos.html.
@@ -142,7 +145,7 @@ struct Client {
   char title[256];
   char cls[128];
   int app;             /* Index in APPS oder -1 */
-  bool minimized, zoomed, can_delete, can_focus, take_focus;
+  bool minimized, zoomed, can_delete, can_focus, take_focus, argb;
   int zx, zy, zw, zh;  /* Lage vor dem Zoomen */
   int hover, pressed;  /* Ampelknopf: 0 keiner, 1 schließen, 2 ins Dock, 3 zoomen */
   int ignore_unmaps;
@@ -177,6 +180,7 @@ static cairo_surface_t *icons[NAPPS], *icon_trash_full;
 static int cal_day = -1;
 static Cursor cur_arrow, cur_resize, cur_move;
 static int cascade;
+static bool debug;
 
 static Atom WM_PROTOCOLS, WM_WINDOW_ROLE, WM_DELETE_WINDOW, WM_TAKE_FOCUS, WM_STATE, WM_CHANGE_STATE, UTF8_STRING,
   NET_SUPPORTED, NET_WM_NAME, NET_ACTIVE_WINDOW, NET_CLIENT_LIST, NET_WORKAREA, NET_SUPPORTING_WM_CHECK,
@@ -211,6 +215,7 @@ static void draw_frame(Client *c);
 static void focus_client(Client *c);
 static void raise_client(Client *c);
 static void close_menu(void);
+static Window ui_window(int x, int y, int w, int h, long mask, bool argb, Atom type);
 
 static void warn(const char *fmt, ...) {
   va_list ap;
@@ -224,11 +229,13 @@ static void warn(const char *fmt, ...) {
 static int xerror(Display *d, XErrorEvent *e) {
   (void)d;
   /* Fenster verschwinden oft zwischen zwei Anfragen; das ist kein Fehler des Fenstermanagers. */
-  if (e->error_code == BadWindow || e->error_code == BadMatch || e->error_code == BadDrawable)
+  if ((e->error_code == BadWindow || e->error_code == BadMatch || e->error_code == BadDrawable ||
+       comp_quiet_error(e)) &&
+      !getenv("CLOAKSERVER_DEBUG"))
     return 0;
   char msg[128];
   XGetErrorText(dpy, e->error_code, msg, sizeof msg);
-  warn("X-Fehler %s (Anfrage %d)", msg, e->request_code);
+  warn("X-Fehler %s (Anfrage %d.%d, Ressource 0x%lx)", msg, e->request_code, e->minor_code, e->resourceid);
   return 0;
 }
 
@@ -245,7 +252,7 @@ static int xerror_start(Display *d, XErrorEvent *e) {
 static void set(cairo_t *cr, RGBA c) { cairo_set_source_rgba(cr, c.r, c.g, c.b, c.a); }
 static void seta(cairo_t *cr, RGBA c, double a) { cairo_set_source_rgba(cr, c.r, c.g, c.b, c.a * a); }
 
-static void rrect(cairo_t *cr, double x, double y, double w, double h, double r) {
+void rrect(cairo_t *cr, double x, double y, double w, double h, double r) {
   r = fmin(r, fmin(w, h) / 2);
   cairo_new_sub_path(cr);
   cairo_arc(cr, x + w - r, y + r, r, -M_PI / 2, 0);
@@ -351,7 +358,11 @@ static void rgba_hex(char *buf, RGBA c) {
 /* Doppelt gepuffert in ein Fenster zeichnen. */
 typedef void (*painter)(cairo_t *, int w, int h, void *);
 static void paint_window(Window w, int width, int height, painter fn, void *arg) {
-  cairo_surface_t *s = cairo_xlib_surface_create(dpy, w, vis, width, height);
+  /* Dock, Menüs und Namensschild sind mit Compositor 32-Bit-Fenster mit Durchsicht */
+  Visual *v = comp_on && w && (w == dock || w == menuwin || w == tipwin) ? comp_argb : vis;
+  for (Client *c = clients; c; c = c->next)
+    if (c->frame == w && c->argb) v = comp_argb;
+  cairo_surface_t *s = cairo_xlib_surface_create(dpy, w, v, width, height);
   cairo_t *cr = cairo_create(s);
   cairo_push_group(cr);
   fn(cr, width, height, arg);
@@ -380,8 +391,18 @@ static void shape_round(Window w, int width, int height, double r, bool top_only
   XFreePixmap(dpy, pm);
 }
 
-/* Hintergrund als Glas: unscharfer Ausschnitt des Hintergrundbilds plus Tönung. */
-static void glass(cairo_t *cr, int sx, int sy, double alpha) {
+/* Hintergrund als Glas: Tönung über dem, was dahinter liegt. Mit Compositor zeichnet der die
+ * unscharfe Umgebung darunter, und das Fenster färbt nur die Fläche mit den runden Ecken ein;
+ * ohne Compositor ist es ein unscharfer Ausschnitt des Hintergrundbilds, die Ecken schneidet
+ * XShape ab. */
+static void glass(cairo_t *cr, int sx, int sy, double alpha, int w, int h, double r) {
+  RGBA t = T->tint;
+  if (comp_on) {
+    rrect(cr, 0, 0, w, h, r);
+    cairo_set_source_rgba(cr, t.r, t.g, t.b, alpha);
+    cairo_fill(cr);
+    return;
+  }
   cairo_save(cr);
   cairo_translate(cr, -sx, -sy);
   cairo_scale(cr, 4, 4);
@@ -389,7 +410,6 @@ static void glass(cairo_t *cr, int sx, int sy, double alpha) {
   cairo_pattern_set_filter(cairo_get_source(cr), CAIRO_FILTER_BILINEAR);
   cairo_paint(cr);
   cairo_restore(cr);
-  RGBA t = T->tint;
   cairo_set_source_rgba(cr, t.r, t.g, t.b, alpha);
   cairo_paint(cr);
 }
@@ -482,6 +502,7 @@ static void apply_theme(void) {
   XChangeProperty(dpy, root, ESETROOT_PMAP_ID, XA_PIXMAP, 32, PropModeReplace, (unsigned char *)&wall_pm, 1);
   if (old) XFreePixmap(dpy, old);
   render_icons();
+  comp_dirty_all();
 }
 
 static void set_theme_mode(long mode) {
@@ -712,7 +733,9 @@ static bool wants_no_decoration(Window w) {
   return none;
 }
 
-static Client *manage(Window w, bool already_mapped) {
+/* own: ein Fenster von CloakServer selbst (Über ClokeOS, Rückfrage). Das darf nicht in die
+ * Save-Set, X antwortet darauf mit BadMatch. */
+static Client *manage(Window w, bool already_mapped, bool own) {
   XWindowAttributes wa;
   if (!XGetWindowAttributes(dpy, w, &wa) || wa.override_redirect) return NULL;
   bool splash;
@@ -780,10 +803,20 @@ static Client *manage(Window w, bool already_mapped) {
   sa.background_pixel = 0;
   sa.cursor = cur_arrow;
   int fw = c->w + 2 * c->bw, fh = c->h + c->th + 2 * c->bw;
-  c->frame = XCreateWindow(dpy, root, c->x - c->bw, c->y - c->th - c->bw, fw, fh, 0, CopyFromParent, InputOutput,
-                           CopyFromParent, CWEventMask | CWBackPixel | CWCursor, &sa);
+  unsigned long vm = CWEventMask | CWBackPixel | CWCursor;
+  int depth = CopyFromParent;
+  Visual *v = CopyFromParent;
+  if (comp_on && wa.depth == 32) { /* Programme mit Durchsicht (GTK zeichnet dann selbst Schatten) */
+    sa.colormap = comp_argb_cmap;
+    sa.border_pixel = 0;
+    vm |= CWColormap | CWBorderPixel;
+    depth = 32;
+    v = comp_argb;
+    c->argb = true;
+  }
+  c->frame = XCreateWindow(dpy, root, c->x - c->bw, c->y - c->th - c->bw, fw, fh, 0, depth, InputOutput, v, vm, &sa);
   XSetWindowBorderWidth(dpy, w, 0);
-  XAddToSaveSet(dpy, w);
+  if (!own) XAddToSaveSet(dpy, w);
   if (already_mapped) c->ignore_unmaps++;
   XReparentWindow(dpy, w, c->frame, c->bw, c->th + c->bw);
   XSelectInput(dpy, w, PropertyChangeMask);
@@ -816,7 +849,7 @@ static void unlink_client(Client *c) {
 static void unmanage(Client *c, bool destroyed) {
   if (drag == c) drag = NULL;
   if (last_title_client == c) last_title_client = NULL;
-  if (!destroyed) {
+  if (!destroyed && !c->draw) {
     XGrabServer(dpy);
     XUngrabButton(dpy, AnyButton, AnyModifier, c->win);
     XReparentWindow(dpy, c->win, root, c->x, c->y);
@@ -1023,7 +1056,7 @@ static void draw_frame(Client *c) {
 /* ---------------------------------------------------------------------------------------- */
 /* Eigene Fenster: Über ClokeOS, Rückfragen                                                   */
 
-static char sysinfo[8][2][96];
+static char sysinfo[10][2][96];
 static int nsysinfo;
 static char os_version[32] = "2.0", os_codename[32] = "Presidio", os_build[16] = "2A17";
 
@@ -1044,7 +1077,7 @@ static void read_release(void) {
 }
 
 static void add_info(const char *k, const char *v) {
-  if (nsysinfo >= 8) return;
+  if (nsysinfo >= 10) return;
   snprintf(sysinfo[nsysinfo][0], 96, "%s", k);
   snprintf(sysinfo[nsysinfo][1], 96, "%s", v);
   nsysinfo++;
@@ -1065,11 +1098,12 @@ static void collect_sysinfo(void) {
   size_t ni = sizeof ncpu;
   sysctlbyname("machdep.cpu.brand_string", cpu, &n, NULL, 0);
   sysctlbyname("hw.ncpu", &ncpu, &ni, NULL, 0);
-  if (cpu[0] || ncpu) {
-    char *p = cpu;
-    while (*p == ' ') p++;
-    snprintf(buf, sizeof buf, "%s%s%d %s", p, *p ? ", " : "", ncpu, ncpu == 1 ? "Kern" : "Kerne");
-    add_info("Prozessor", buf);
+  char *p = cpu;
+  while (*p == ' ') p++;
+  if (*p) add_info("Prozessor", p);
+  if (ncpu) {
+    snprintf(buf, sizeof buf, "%d", ncpu);
+    add_info("Kerne", buf);
   }
   uint64_t mem = 0;
   size_t nm = sizeof mem;
@@ -1189,7 +1223,7 @@ static Client *own_window(int w, int h, const char *title, void (*draw)(Client *
   XSetClassHint(dpy, win, &ch);
   XSizeHints sh = {.flags = PPosition | PMinSize | PMaxSize, .min_width = w, .max_width = w, .min_height = h, .max_height = h};
   XSetWMNormalHints(dpy, win, &sh);
-  Client *c = manage(win, false);
+  Client *c = manage(win, false, true);
   if (c) {
     c->draw = draw;
     c->click = click;
@@ -1200,6 +1234,7 @@ static Client *own_window(int w, int h, const char *title, void (*draw)(Client *
     update_client_list();
     draw_frame(c);
     draw_own(c);
+    draw_menubar(); /* jetzt mit c->draw: Name "ClokeOS" statt der Fensterklasse */
   }
   return c;
 }
@@ -1207,7 +1242,7 @@ static Client *own_window(int w, int h, const char *title, void (*draw)(Client *
 static void show_about(long unused) {
   (void)unused;
   collect_sysinfo();
-  own_window(420, 400, "Über ClokeOS", paint_about, click_about, 0);
+  own_window(420, 420, "Über ClokeOS", paint_about, click_about, 0);
 }
 
 static void confirm_power(long reboot) {
@@ -1249,7 +1284,7 @@ static void paint_menu(cairo_t *cr, int w, int h, void *arg) {
   int sx, sy;
   Window child;
   XTranslateCoordinates(dpy, menuwin, root, 0, 0, &sx, &sy, &child);
-  glass(cr, sx, sy, dark ? .86 : .8);
+  glass(cr, sx, sy, (dark ? .86 : .8) - (comp_on ? .08 : 0), w, h, 14);
   rim(cr, 0, 0, w, h, 14);
   for (int i = 0; i < nmenu; i++) {
     MenuItem *m = &menu[i];
@@ -1295,13 +1330,10 @@ static void open_menu(int x, int y, int owner, bool above) {
   menu_h = h;
   menu_owner = owner;
   menu_hover = -1;
-  XSetWindowAttributes sa = {0};
-  sa.override_redirect = True;
-  sa.event_mask = ExposureMask | ButtonPressMask | ButtonReleaseMask | PointerMotionMask | LeaveWindowMask | KeyPressMask;
-  sa.cursor = cur_arrow;
-  menuwin = XCreateWindow(dpy, root, x, y, w, h, 0, CopyFromParent, InputOutput, CopyFromParent,
-                          CWOverrideRedirect | CWEventMask | CWCursor, &sa);
-  shape_round(menuwin, w, h, 14, false);
+  menuwin = ui_window(x, y, w, h,
+                      ExposureMask | ButtonPressMask | ButtonReleaseMask | PointerMotionMask | LeaveWindowMask | KeyPressMask,
+                      true, NET_WM_WINDOW_TYPE_POPUP_MENU);
+  if (!comp_on) shape_round(menuwin, w, h, 14, false);
   XMapRaised(dpy, menuwin);
   XGrabPointer(dpy, menuwin, True, ButtonPressMask | ButtonReleaseMask | PointerMotionMask, GrabModeAsync, GrabModeAsync,
                None, cur_arrow, CurrentTime);
@@ -1597,7 +1629,7 @@ static void paint_dock(cairo_t *cr, int w, int h, void *arg) {
   double r = DS * .42 + 6;
   rrect(cr, 0, 0, w, h, r);
   cairo_clip(cr);
-  glass(cr, dock_x, dock_y, GLASS_O);
+  glass(cr, dock_x, dock_y, GLASS_O, w, h, r);
   /* Lichtkante innen oben und unten, Kante außen */
   cairo_reset_clip(cr);
   RGBA a = T->rim, b = T->rim_low;
@@ -1660,7 +1692,7 @@ static void paint_tip(cairo_t *cr, int w, int h, void *arg) {
   int sx, sy;
   Window child;
   XTranslateCoordinates(dpy, tipwin, root, 0, 0, &sx, &sy, &child);
-  glass(cr, sx, sy, dark ? .86 : .8);
+  glass(cr, sx, sy, (dark ? .86 : .8) - (comp_on ? .08 : 0), w, h, h / 2.0);
   rim(cr, 0, 0, w, h, h / 2.0);
   text(cr, w / 2.0, h / 2.0, tip_text, 12, false, T->fg, 0, 1);
 }
@@ -1674,13 +1706,9 @@ static void show_tip(int i) {
   tip_w = text_width(tip_text, 12, false) + 24;
   int th = 24;
   int x = dock_x + dock_item_x[i] + DS / 2 - tip_w / 2, y = dock_y - th - 10;
-  if (!tipwin) {
-    XSetWindowAttributes sa = {.override_redirect = True};
-    tipwin = XCreateWindow(dpy, root, x, y, tip_w, th, 0, CopyFromParent, InputOutput, CopyFromParent, CWOverrideRedirect, &sa);
-    XSelectInput(dpy, tipwin, ExposureMask);
-  }
+  if (!tipwin) tipwin = ui_window(x, y, tip_w, th, ExposureMask, true, NET_WM_WINDOW_TYPE_TOOLTIP);
   XMoveResizeWindow(dpy, tipwin, x, y, tip_w, th);
-  shape_round(tipwin, tip_w, th, th / 2.0, false);
+  if (!comp_on) shape_round(tipwin, tip_w, th, th / 2.0, false);
   XMapRaised(dpy, tipwin);
   paint_window(tipwin, tip_w, th, paint_tip, NULL);
 }
@@ -1739,6 +1767,22 @@ static void redraw_all(void) {
 /* Ereignisse                                                                                 */
 
 static void on_button_press(XButtonEvent *e) {
+  /* Klicks in ein Programmfenster kommen über den synchronen Griff aus grab_buttons(): Bis
+   * XAllowEvents steht der Zeiger still. Deshalb immer zuerst freigeben, auch bei offenem Menü. */
+  Client *gc = find_client(e->window);
+  if (gc && e->window == gc->win) {
+    if (menuwin) {
+      close_menu();
+      XAllowEvents(dpy, AsyncPointer, CurrentTime); /* der Klick schließt nur das Menü */
+      return;
+    }
+    raise_client(gc);
+    focus_client(gc);
+    XAllowEvents(dpy, ReplayPointer, CurrentTime);
+    if (debug) warn("Klick in Programmfenster 0x%lx weitergegeben", gc->win);
+    if (gc->draw && e->button == Button1) gc->click(gc, e->x, e->y);
+    return;
+  }
   if (menuwin) {
     if (e->window == menuwin && e->x >= 0 && e->y >= 0 && e->x < menu_w && e->y < menu_h) return;
     if (e->window == menubar) {
@@ -1769,14 +1813,6 @@ static void on_button_press(XButtonEvent *e) {
   }
   Client *c = find_client(e->window);
   if (!c) return;
-  if (e->window == c->win) {
-    /* Klick in ein Fenster im Hintergrund: nach vorn holen und den Klick weitergeben */
-    raise_client(c);
-    focus_client(c);
-    XAllowEvents(dpy, ReplayPointer, CurrentTime);
-    if (c->draw && e->button == Button1) c->click(c, e->x, e->y);
-    return;
-  }
   if (c != focused || clients != c) {
     raise_client(c);
     focus_client(c);
@@ -2050,16 +2086,43 @@ static void setup_ewmh(void) {
   XChangeProperty(dpy, root, NET_WORKAREA, XA_CARDINAL, 32, PropModeReplace, (unsigned char *)wa, 4);
 }
 
-static Window ui_window(int x, int y, int w, int h, long mask) {
+/* Eigene Fenster der Oberfläche; argb: mit Compositor ein 32-Bit-Fenster mit Durchsicht */
+static Window ui_window(int x, int y, int w, int h, long mask, bool argb, Atom type) {
   XSetWindowAttributes sa = {0};
   sa.override_redirect = True;
   sa.event_mask = mask;
   sa.cursor = cur_arrow;
-  Window win = XCreateWindow(dpy, root, x, y, w, h, 0, CopyFromParent, InputOutput, CopyFromParent,
-                             CWOverrideRedirect | CWEventMask | CWCursor, &sa);
-  XChangeProperty(dpy, win, NET_WM_WINDOW_TYPE, XA_ATOM, 32, PropModeReplace, (unsigned char *)&NET_WM_WINDOW_TYPE_DOCK, 1);
+  unsigned long vm = CWOverrideRedirect | CWEventMask | CWCursor;
+  int depth = CopyFromParent;
+  Visual *v = CopyFromParent;
+  if (argb && comp_on) {
+    sa.colormap = comp_argb_cmap;
+    sa.border_pixel = sa.background_pixel = 0;
+    vm |= CWColormap | CWBorderPixel | CWBackPixel;
+    depth = 32;
+    v = comp_argb;
+  }
+  Window win = XCreateWindow(dpy, root, x, y, w, h, 0, depth, InputOutput, v, vm, &sa);
+  XChangeProperty(dpy, win, NET_WM_WINDOW_TYPE, XA_ATOM, 32, PropModeReplace, (unsigned char *)&type, 1);
   return win;
 }
+
+/* Für den Compositor: Schatten, runde Ecken, Glas (Schatten wie --shadow, --pop-shadow und der
+ * Dock-Schatten in clokeos.html, verkleinert, weil Unschärfe unter Emulation teuer ist) */
+WinStyle cs_window_style(Window w) {
+  WinStyle st = {WK_PLAIN, 0, 0, 0, 0};
+  if (w == dock) return (WinStyle){WK_GLASS, DS * .42 + 6, 22, 10, .28};
+  if (w && w == menuwin) return (WinStyle){WK_GLASS, 14, 16, 8, .26};
+  if (w && w == tipwin) return (WinStyle){WK_GLASS, 12, 10, 4, .2};
+  for (Client *c = clients; c; c = c->next)
+    if (c->frame == w && c->th) {
+      bool a = c == focused;
+      return (WinStyle){WK_FRAME, RADIUS, a ? 30 : 18, a ? 16 : 8, a ? (dark ? .55 : .36) : (dark ? .4 : .22)};
+    }
+  return st;
+}
+
+Pixmap cs_wallpaper(void) { return wall_pm; }
 
 /* Bis das Hintergrundbild fertig ist, steht der Umhang da, wo ihn der Loader gezeichnet hat
  * (weiß auf Schwarz, 12 % der kürzeren Bildschirmseite, mittig); Xorg hat ihn gerade gelöscht. */
@@ -2089,18 +2152,22 @@ static void scan_existing(void) {
     XWindowAttributes wa;
     if (kids[i] == menubar || kids[i] == dock || kids[i] == checkwin) continue;
     if (XGetWindowAttributes(dpy, kids[i], &wa) && !wa.override_redirect && wa.map_state == IsViewable)
-      manage(kids[i], true);
+      manage(kids[i], true, false);
   }
   if (kids) XFree(kids);
 }
 
 int main(int argc, char **argv) {
+  bool use_comp = true;
+  debug = getenv("CLOAKSERVER_DEBUG") != NULL;
   for (int i = 1; i < argc; i++) {
     if (!strcmp(argv[i], "--theme") && i + 1 < argc) {
       i++;
       theme_mode = !strcmp(argv[i], "hell") ? 1 : !strcmp(argv[i], "dunkel") ? 2 : 0;
+    } else if (!strcmp(argv[i], "--compositor") && i + 1 < argc) {
+      use_comp = strcmp(argv[++i], "aus") != 0;
     } else {
-      fprintf(stderr, "Aufruf: %s [--theme auto|hell|dunkel]\n", argv[0]);
+      fprintf(stderr, "Aufruf: %s [--theme auto|hell|dunkel] [--compositor an|aus]\n", argv[0]);
       return 2;
     }
   }
@@ -2141,12 +2208,14 @@ int main(int argc, char **argv) {
   read_release();
   splash();
   apply_theme();
+  if (use_comp && !comp_init(dpy, scr, root, SW, SH)) warn("ohne Compositor: keine Schatten, Glas zeigt nur das Hintergrundbild");
   setup_ewmh();
   layout_dock();
-  menubar = ui_window(0, 0, SW, MENUBAR_H, ExposureMask | ButtonPressMask | PointerMotionMask);
-  dock = ui_window(dock_x, dock_y, dock_w, DOCK_H,
-                   ExposureMask | ButtonPressMask | PointerMotionMask | LeaveWindowMask);
-  shape_round(dock, dock_w, DOCK_H, DS * .42 + 6, false);
+  menubar = ui_window(0, 0, SW, MENUBAR_H, ExposureMask | ButtonPressMask | PointerMotionMask, false,
+                      NET_WM_WINDOW_TYPE_DOCK);
+  dock = ui_window(dock_x, dock_y, dock_w, DOCK_H, ExposureMask | ButtonPressMask | PointerMotionMask | LeaveWindowMask,
+                   true, NET_WM_WINDOW_TYPE_DOCK);
+  if (!comp_on) shape_round(dock, dock_w, DOCK_H, DS * .42 + 6, false);
   XMapRaised(dpy, menubar);
   XMapRaised(dpy, dock);
   XGrabKey(dpy, XKeysymToKeycode(dpy, XK_Tab), Mod1Mask, root, True, GrabModeAsync, GrabModeAsync);
@@ -2159,49 +2228,67 @@ int main(int argc, char **argv) {
 
   int fd = ConnectionNumber(dpy);
   for (;;) {
-    while (XPending(dpy)) {
-      XEvent ev;
-      XNextEvent(dpy, &ev);
-      switch (ev.type) {
-      case MapRequest: {
-        Client *c = find_client(ev.xmaprequest.window);
-        if (c) restore_client(c);
-        else manage(ev.xmaprequest.window, false);
-        draw_dock();
-        break;
-      }
-      case UnmapNotify: {
-        Client *c = find_client(ev.xunmap.window);
-        if (c && ev.xunmap.window == c->win) {
-          if (c->ignore_unmaps) c->ignore_unmaps--;
-          else unmanage(c, false);
+    for (;;) {
+      /* Manche Bibliotheken setzen zwischendurch eigene Fehlerhandler; der Standardhandler von
+       * Xlib beendet das Programm schon bei harmlosen Fehlern. */
+      XSetErrorHandler(xerror);
+      while (XPending(dpy)) {
+        XEvent ev;
+        XNextEvent(dpy, &ev);
+        if (debug && (ev.type == ButtonPress || ev.type == ButtonRelease))
+          warn("%s Taste %u an 0x%lx (%d,%d) Zeit %lu", ev.type == ButtonPress ? "drückt" : "lässt los",
+               ev.xbutton.button, ev.xbutton.window, ev.xbutton.x_root, ev.xbutton.y_root, ev.xbutton.time);
+        comp_handle(&ev);
+        switch (ev.type) {
+        case MapRequest: {
+          Client *c = find_client(ev.xmaprequest.window);
+          if (c) restore_client(c);
+          else manage(ev.xmaprequest.window, false, false);
+          draw_dock();
+          break;
         }
-        break;
-      }
-      case DestroyNotify: {
-        Client *c = find_client(ev.xdestroywindow.window);
-        if (c && ev.xdestroywindow.window == c->win) unmanage(c, true);
-        break;
-      }
-      case ConfigureRequest: on_configure_request(&ev.xconfigurerequest); break;
-      case PropertyNotify: {
-        Client *c = find_client(ev.xproperty.window);
-        if (c && (ev.xproperty.atom == XA_WM_NAME || ev.xproperty.atom == NET_WM_NAME)) {
-          update_title(c);
-          draw_frame(c);
+        case UnmapNotify: {
+          Client *c = find_client(ev.xunmap.window);
+          if (c && ev.xunmap.window == c->win) {
+            if (c->ignore_unmaps) c->ignore_unmaps--;
+            else unmanage(c, false);
+          }
+          break;
         }
-        break;
+        case DestroyNotify: {
+          Client *c = find_client(ev.xdestroywindow.window);
+          if (c && ev.xdestroywindow.window == c->win) unmanage(c, true);
+          break;
+        }
+        case ConfigureRequest: on_configure_request(&ev.xconfigurerequest); break;
+        case PropertyNotify: {
+          Client *c = find_client(ev.xproperty.window);
+          if (c && (ev.xproperty.atom == XA_WM_NAME || ev.xproperty.atom == NET_WM_NAME)) {
+            update_title(c);
+            draw_frame(c);
+          }
+          break;
+        }
+        case ButtonPress: on_button_press(&ev.xbutton); break;
+        case ButtonRelease: on_button_release(&ev.xbutton); break;
+        case MotionNotify: on_motion(&ev.xmotion); break;
+        case LeaveNotify: on_leave(&ev.xcrossing); break;
+        case Expose: on_expose(&ev.xexpose); break;
+        case ClientMessage: on_client_message(&ev.xclient); break;
+        case KeyPress: on_key(&ev.xkey); break;
+        }
       }
-      case ButtonPress: on_button_press(&ev.xbutton); break;
-      case ButtonRelease: on_button_release(&ev.xbutton); break;
-      case MotionNotify: on_motion(&ev.xmotion); break;
-      case LeaveNotify: on_leave(&ev.xcrossing); break;
-      case Expose: on_expose(&ev.xexpose); break;
-      case ClientMessage: on_client_message(&ev.xclient); break;
-      case KeyPress: on_key(&ev.xkey); break;
-      }
+      /* Mit Compositor: erst zeichnen, wenn auch die Ereignisse zu den eigenen Anfragen (Menü zu,
+       * Namensschild weg) da sind, sonst zeigt das Bild Fenster, die es nicht mehr gibt. */
+      if (!comp_on) break;
+      XSync(dpy, False);
+      if (!XPending(dpy)) break;
     }
     tick();
+    /* Ein Klick in ein inaktives Programmfenster friert den Zeiger ein, bis XAllowEvents kommt
+     * (grab_buttons). Geht das einmal schief, steht der Zeiger für immer: hier noch einmal lösen. */
+    if (!menuwin && !drag) XAllowEvents(dpy, AsyncPointer, CurrentTime);
+    comp_repaint();
     XFlush(dpy);
     fd_set fds;
     FD_ZERO(&fds);
