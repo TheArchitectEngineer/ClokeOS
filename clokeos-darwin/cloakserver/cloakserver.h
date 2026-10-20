@@ -19,6 +19,10 @@ typedef struct {
   double radius;
   int blur, offset; /* Schatten: Unschärfe und Versatz nach unten in Pixeln, 0 = keiner */
   double alpha;
+  int top;          /* Glas und Schatten erst ab dieser Höhe (Dock: Platz zum Hüpfen darüber) */
+  /* Animation, 0 = unverändert: verkleinern um shrink (0..1) zur Mitte, ausblenden um fade
+   * (0..1), verschieben um dx, dy */
+  double shrink, fade, dx, dy;
 } WinStyle;
 WinStyle cs_window_style(Window w);
 Pixmap cs_wallpaper(void);

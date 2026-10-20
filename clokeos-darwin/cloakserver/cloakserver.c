@@ -83,13 +83,13 @@ void freeifaddrs(struct ifaddrs *);
 typedef struct { double r, g, b, a; } RGBA;
 
 typedef struct {
-  RGBA fg, fg2, fg3, menubar_fg, tint, win, line, line_strong, hover, rim, rim_low, edge, pill, light_off;
+  RGBA fg, fg2, fg3, menubar_fg, tint, dock, win, line, line_strong, hover, rim, rim_low, edge, pill, light_off;
 } Theme;
 
 static const Theme LIGHT = {
   .fg = {0x1e / 255., 0x1a / 255., 0x27 / 255., 1}, .fg2 = {0x6d / 255., 0x67 / 255., 0x79 / 255., 1},
   .fg3 = {0x9a / 255., 0x94 / 255., 0xa6 / 255., 1}, .menubar_fg = {0x16 / 255., 0x13 / 255., 0x1e / 255., 1},
-  .tint = {248 / 255., 247 / 255., 252 / 255., GLASS_O}, .win = {0xf6 / 255., 0xf5 / 255., 0xf9 / 255., 1},
+  .tint = {248 / 255., 247 / 255., 252 / 255., GLASS_O}, .dock = {248 / 255., 247 / 255., 252 / 255., GLASS_O}, .win = {0xf6 / 255., 0xf5 / 255., 0xf9 / 255., 1},
   .line = {40 / 255., 25 / 255., 70 / 255., .12}, .line_strong = {40 / 255., 25 / 255., 70 / 255., .22},
   .hover = {40 / 255., 25 / 255., 70 / 255., .12}, .rim = {1, 1, 1, .9}, .rim_low = {1, 1, 1, .35},
   .edge = {30 / 255., 20 / 255., 60 / 255., .14}, .pill = {1, 1, 1, GLASS_O + .18},
@@ -98,7 +98,9 @@ static const Theme LIGHT = {
 static const Theme DARK = {
   .fg = {0xf1 / 255., 0xee / 255., 0xf6 / 255., 1}, .fg2 = {0xaa / 255., 0xa4 / 255., 0xb6 / 255., 1},
   .fg3 = {0x77 / 255., 0x71 / 255., 0x84 / 255., 1}, .menubar_fg = {0xf6 / 255., 0xf3 / 255., 0xfa / 255., 1},
-  .tint = {30 / 255., 28 / 255., 40 / 255., GLASS_O}, .win = {0x23 / 255., 0x21 / 255., 0x2b / 255., 1},
+  .tint = {30 / 255., 28 / 255., 40 / 255., GLASS_O},
+  /* Mit der dunklen Tönung verschwand das Dock vor dem Abendhimmel; heller wie ein dunkles Glas */
+  .dock = {78 / 255., 74 / 255., 96 / 255., .46}, .win = {0x23 / 255., 0x21 / 255., 0x2b / 255., 1},
   .line = {1, 1, 1, .1}, .line_strong = {1, 1, 1, .2}, .hover = {1, 1, 1, .13}, .rim = {1, 1, 1, .34},
   .rim_low = {1, 1, 1, .1}, .edge = {0, 0, 0, .5}, .pill = {1, 1, 1, GLASS_O * .2 + .07},
   .light_off = {0x4a / 255., 0x46 / 255., 0x53 / 255., 1},
@@ -151,11 +153,17 @@ struct Client {
   int zx, zy, zw, zh;  /* Lage vor dem Zoomen */
   int hover, pressed;  /* Ampelknopf: 0 keiner, 1 schließen, 2 ins Dock, 3 zoomen */
   int ignore_unmaps;
+  int anim;            /* ANIM_*: läuft gerade eine Animation (nur mit Compositor) */
+  double anim_t0, anim_p; /* Start und Fortschritt 0..1 */
   void (*draw)(Client *, cairo_t *); /* eigene Fenster (Über ClokeOS, Rückfragen) */
   void (*click)(Client *, int x, int y);
   long data;
   Client *next;        /* zuletzt nach vorn geholt zuerst */
 };
+
+/* Animationen wie in clokeos.html: .opening (winIn .2s), .mini (.34s) und zurück */
+enum { ANIM_NONE, ANIM_OPEN, ANIM_MIN, ANIM_RESTORE };
+static const double ANIM_S[] = {0, .22, .34, .3};
 
 typedef struct {
   char label[160];
@@ -202,8 +210,10 @@ static int nmenu, menu_hover = -1, menu_w, menu_h, menu_owner = -1; /* Menüleis
 enum { MB_LOGO, MB_APP, MB_FILE, MB_WINDOW, MB_WIFI, MB_SPOT, MB_CC, MB_CLOCK, MB_N };
 static int mb_x[MB_N], mb_w[MB_N];
 
-/* Dock */
-static int dock_x, dock_y, dock_w, dock_hover = -1, dock_item_x[NAPPS];
+/* Dock: dock_y ist die Oberkante des Glases. Mit Compositor reicht das Fenster dock_top Pixel
+ * höher (durchsichtig), damit ein Symbol beim Starten darüber hüpfen kann. */
+static int dock_x, dock_y, dock_w, dock_top, dock_hover = -1, dock_item_x[NAPPS];
+static double bounce_t0[NAPPS];
 
 /* Bewegen und Größe ändern */
 static Client *drag;
@@ -221,6 +231,7 @@ static void raise_client(Client *c);
 static void close_menu(void);
 static Window ui_window(int x, int y, int w, int h, long mask, bool argb, Atom type);
 static void show_tip(int i);
+static void dock_target(Client *c, double *x, double *y);
 
 static void warn(const char *fmt, ...) {
   va_list ap;
@@ -229,6 +240,12 @@ static void warn(const char *fmt, ...) {
   vfprintf(stderr, fmt, ap);
   fputc('\n', stderr);
   va_end(ap);
+}
+
+static double now_s(void) {
+  struct timespec t;
+  clock_gettime(CLOCK_MONOTONIC, &t);
+  return t.tv_sec + t.tv_nsec / 1e9;
 }
 
 static int xerror(Display *d, XErrorEvent *e) {
@@ -317,7 +334,10 @@ static char *read_file(const char *path) {
 }
 
 /* SVG aus Resources/ laden, Platzhalter @KEY@ ersetzen und in size x size Pixel zeichnen. */
-static cairo_surface_t *svg_render(const char *name, int w, int h, const char *const *subst) {
+/* Lage eines Symbols in seinem Feld: zoomen um k, dann verschieben */
+typedef struct { double k, tx, ty; } Fit;
+
+static cairo_surface_t *svg_render_fit(const char *name, int w, int h, const char *const *subst, const Fit *fit) {
   char path[PATH_MAX];
   snprintf(path, sizeof path, "%s/%s", resdir, name);
   char *src = read_file(path);
@@ -349,11 +369,45 @@ static cairo_surface_t *svg_render(const char *name, int w, int h, const char *c
   rsvg_handle_get_dimensions(hd, &dim);
   cairo_surface_t *s = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, w, h);
   cairo_t *cr = cairo_create(s);
+  if (fit) {
+    cairo_translate(cr, fit->tx, fit->ty);
+    cairo_scale(cr, fit->k, fit->k);
+  }
   cairo_scale(cr, (double)w / dim.width, (double)h / dim.height);
   rsvg_handle_render_cairo(hd, cr);
   cairo_destroy(cr);
   g_object_unref(hd);
   return s;
+}
+
+static cairo_surface_t *svg_render(const char *name, int w, int h, const char *const *subst) {
+  return svg_render_fit(name, w, h, subst, NULL);
+}
+
+/* Symbole ohne eigene Fläche (der Papierkorb ist nur ein Eimer mit viel Luft darüber) wirken
+ * neben den Quadraten der anderen klein und sitzen zu tief. Auf den Inhalt zuschneiden und so
+ * hoch wie die Quadrate (58 von 64) mittig ins Feld setzen. */
+static Fit icon_fit(cairo_surface_t *s) {
+  Fit f = {1, 0, 0};
+  int w = cairo_image_surface_get_width(s), h = cairo_image_surface_get_height(s);
+  int stride = cairo_image_surface_get_stride(s), x0 = w, y0 = h, x1 = -1, y1 = -1;
+  cairo_surface_flush(s);
+  unsigned char *p = cairo_image_surface_get_data(s);
+  for (int y = 0; y < h; y++)
+    for (int x = 0; x < w; x++)
+      if (p[y * stride + x * 4 + 3] > 24) { /* Alpha in ARGB32 (little endian) */
+        if (x < x0) x0 = x;
+        if (x > x1) x1 = x;
+        if (y < y0) y0 = y;
+        if (y > y1) y1 = y;
+      }
+  if (x1 < 0) return f;
+  double bw = x1 - x0 + 1, bh = y1 - y0 + 1, target = w * 58.0 / 64;
+  if (bw >= .85 * w || bh >= .85 * h) return f;
+  f.k = target / fmax(bw, bh);
+  f.tx = w / 2.0 - f.k * (x0 + bw / 2);
+  f.ty = h / 2.0 - f.k * (y0 + bh / 2);
+  return f;
 }
 
 static void rgba_hex(char *buf, RGBA c) {
@@ -400,8 +454,8 @@ static void shape_round(Window w, int width, int height, double r, bool top_only
  * unscharfe Umgebung darunter, und das Fenster färbt nur die Fläche mit den runden Ecken ein;
  * ohne Compositor ist es ein unscharfer Ausschnitt des Hintergrundbilds, die Ecken schneidet
  * XShape ab. */
-static void glass(cairo_t *cr, int sx, int sy, double alpha, int w, int h, double r) {
-  RGBA t = T->tint;
+static void glass(cairo_t *cr, int sx, int sy, RGBA t, int w, int h, double r) {
+  double alpha = t.a;
   if (comp_on) {
     rrect(cr, 0, 0, w, h, r);
     cairo_set_source_rgba(cr, t.r, t.g, t.b, alpha);
@@ -537,9 +591,17 @@ static void render_icons(void) {
     char name[64];
     snprintf(name, sizeof name, "icons/%s.svg", APPS[i].id);
     icons[i] = svg_render(name, DS, DS, strcmp(APPS[i].id, "kalender") ? NULL : cal);
+    Fit f = icons[i] ? icon_fit(icons[i]) : (Fit){1, 0, 0};
+    if (f.k != 1) {
+      cairo_surface_destroy(icons[i]);
+      icons[i] = svg_render_fit(name, DS, DS, NULL, &f);
+    }
+    if (!strcmp(APPS[i].id, "papierkorb")) {
+      /* der volle Papierkorb an derselben Stelle, sonst springt der Eimer */
+      if (icon_trash_full) cairo_surface_destroy(icon_trash_full);
+      icon_trash_full = svg_render_fit("icons/papierkorb-voll.svg", DS, DS, NULL, &f);
+    }
   }
-  if (icon_trash_full) cairo_surface_destroy(icon_trash_full);
-  icon_trash_full = svg_render("icons/papierkorb-voll.svg", DS, DS, NULL);
 }
 
 static void spawn(const char *cmd) {
@@ -839,6 +901,11 @@ static Client *manage(Window w, bool already_mapped, bool own) {
   XMapWindow(dpy, c->frame);
   set_wm_state(c, NormalState);
   update_client_list();
+  if (comp_on) {
+    c->anim = ANIM_OPEN;
+    c->anim_t0 = now_s();
+    c->anim_p = 0;
+  }
   raise_client(c);
   focus_client(c);
   return c;
@@ -947,7 +1014,13 @@ static void close_client(Client *c) {
 static void minimize_client(Client *c) {
   if (!c || c->minimized) return;
   c->minimized = true;
-  XUnmapWindow(dpy, c->frame);
+  if (comp_on) { /* erst ins Dock fliegen lassen, ausgeblendet wird am Ende von animate() */
+    c->anim = ANIM_MIN;
+    c->anim_t0 = now_s();
+    c->anim_p = 0;
+  } else {
+    XUnmapWindow(dpy, c->frame);
+  }
   set_wm_state(c, IconicState);
   if (focused == c) {
     Client *n = clients;
@@ -963,6 +1036,11 @@ static void restore_client(Client *c) {
     c->minimized = false;
     XMapWindow(dpy, c->frame);
     set_wm_state(c, NormalState);
+    if (comp_on) {
+      c->anim = ANIM_RESTORE;
+      c->anim_t0 = now_s();
+    c->anim_p = 0;
+    }
   }
   raise_client(c);
   focus_client(c);
@@ -1271,12 +1349,6 @@ static const char *const POWER_KIND[3] = {"sleep", "restart", "off"};
 static const char *const POWER_LABEL[3] = {"Ruhezustand", "Neustart", "Ausschalten"};
 static cairo_surface_t *power_icon[3];
 
-static double now_s(void) {
-  struct timespec t;
-  clock_gettime(CLOCK_MONOTONIC, &t);
-  return t.tv_sec + t.tv_nsec / 1e9;
-}
-
 static struct passwd *account(void) { return getpwuid(0); }
 
 static const char *account_name(void) {
@@ -1575,7 +1647,7 @@ static void paint_menu(cairo_t *cr, int w, int h, void *arg) {
   int sx, sy;
   Window child;
   XTranslateCoordinates(dpy, menuwin, root, 0, 0, &sx, &sy, &child);
-  glass(cr, sx, sy, (dark ? .86 : .8) - (comp_on ? .08 : 0), w, h, 14);
+  glass(cr, sx, sy, (RGBA){T->tint.r, T->tint.g, T->tint.b, (dark ? .86 : .8) - (comp_on ? .08 : 0)}, w, h, 14);
   rim(cr, 0, 0, w, h, 14);
   for (int i = 0; i < nmenu; i++) {
     MenuItem *m = &menu[i];
@@ -1919,12 +1991,23 @@ static bool app_running(int i) {
   return false;
 }
 
+/* Hüpfen beim Starten wie .dk.bounce in clokeos.html: zweimal 18 Pixel hoch in je 0,55 s */
+#define BOUNCE_S 1.1
+static double bounce_offset(int i) {
+  if (!dock_top || bounce_t0[i] <= 0) return 0;
+  double t = now_s() - bounce_t0[i];
+  if (t >= BOUNCE_S) return 0;
+  return 18 * sin(M_PI * fmod(t, BOUNCE_S / 2) / (BOUNCE_S / 2));
+}
+
 static void paint_dock(cairo_t *cr, int w, int h, void *arg) {
   (void)arg;
+  cairo_translate(cr, 0, dock_top);
+  h -= dock_top;
   double r = DS * .42 + 6;
   rrect(cr, 0, 0, w, h, r);
   cairo_clip(cr);
-  glass(cr, dock_x, dock_y, GLASS_O, w, h, r);
+  glass(cr, dock_x, dock_y, T->dock, w, h, r);
   /* Lichtkante innen oben und unten, Kante außen */
   cairo_reset_clip(cr);
   RGBA a = T->rim, b = T->rim_low;
@@ -1955,7 +2038,7 @@ static void paint_dock(cairo_t *cr, int w, int h, void *arg) {
     }
     cairo_surface_t *ic = !strcmp(APPS[i].id, "papierkorb") && full ? icon_trash_full : icons[i];
     if (ic) {
-      cairo_set_source_surface(cr, ic, x, DOCK_PAD_Y - (i == dock_hover ? 2 : 0));
+      cairo_set_source_surface(cr, ic, x, DOCK_PAD_Y - (i == dock_hover ? 2 : 0) - bounce_offset(i));
       cairo_paint(cr);
     }
     if (app_running(i)) {
@@ -1969,10 +2052,11 @@ static void paint_dock(cairo_t *cr, int w, int h, void *arg) {
 
 static void draw_dock(void) {
   layout_dock();
-  paint_window(dock, dock_w, DOCK_H, paint_dock, NULL);
+  paint_window(dock, dock_w, DOCK_H + dock_top, paint_dock, NULL);
 }
 
 static int dock_item_at(int x, int y) {
+  y -= dock_top;
   if (y < 0 || y > DOCK_H) return -1;
   for (int i = 0; i < NAPPS; i++)
     if (APPS[i].id && x >= dock_item_x[i] && x < dock_item_x[i] + DS) return i;
@@ -1987,7 +2071,7 @@ static void paint_tip(cairo_t *cr, int w, int h, void *arg) {
   int sx, sy;
   Window child;
   XTranslateCoordinates(dpy, tipwin, root, 0, 0, &sx, &sy, &child);
-  glass(cr, sx, sy, (dark ? .86 : .8) - (comp_on ? .08 : 0), w, h, h / 2.0);
+  glass(cr, sx, sy, (RGBA){T->tint.r, T->tint.g, T->tint.b, (dark ? .86 : .8) - (comp_on ? .08 : 0)}, w, h, h / 2.0);
   rim(cr, 0, 0, w, h, h / 2.0);
   text(cr, w / 2.0, h / 2.0, tip_text, 12, false, T->fg, 0, 1);
 }
@@ -2023,6 +2107,7 @@ static void dock_click(int i) {
     }
   if (!top) {
     spawn(APPS[i].cmd);
+    bounce_t0[i] = now_s();
     return;
   }
   if (any_min)
@@ -2316,6 +2401,44 @@ static void on_key(XKeyEvent *e) {
   }
 }
 
+/* Ein Bild aller laufenden Animationen; true, solange noch eine läuft */
+static bool animate(void) {
+  bool any = false;
+  double t = now_s();
+  if (debug)
+    for (Client *c = clients; c; c = c->next)
+      if (c->anim && c->anim_p == 0) warn("Animation %d beginnt um %.3f s", c->anim, fmod(c->anim_t0, 1000));
+  for (Client *c = clients; c; c = c->next) {
+    if (!c->anim) continue;
+    int fx = c->x - c->bw, fy = c->y - c->th - c->bw, fw = c->w + 2 * c->bw, fh = c->h + c->th + 2 * c->bw;
+    int x0 = fx, y0 = fy, x1 = fx + fw, y1 = fy + fh;
+    if (c->anim != ANIM_OPEN) { /* der Weg bis zum Dock */
+      double tx, ty;
+      dock_target(c, &tx, &ty);
+      x0 = fmin(x0, tx - DS);
+      x1 = fmax(x1, tx + DS);
+      y1 = fmax(y1, ty + DS);
+    }
+    comp_dirty(x0 - 56, y0 - 56, x1 - x0 + 112, y1 - y0 + 112);
+    /* nach der Zeit wie im Prototyp, aber höchstens ein Viertel pro Bild: Auch wenn ein Bild
+     * lange dauert (Emulation), sind es mindestens vier Zwischenbilder */
+    c->anim_p = fmin((t - c->anim_t0) / ANIM_S[c->anim], c->anim_p + .25);
+    if (c->anim_p < 1) {
+      any = true;
+      continue;
+    }
+    if (c->anim == ANIM_MIN) XUnmapWindow(dpy, c->frame);
+    c->anim = ANIM_NONE;
+  }
+  for (int i = 0; i < NAPPS; i++) {
+    if (bounce_t0[i] <= 0) continue;
+    if (t - bounce_t0[i] >= BOUNCE_S) bounce_t0[i] = 0;
+    else any = true;
+    draw_dock();
+  }
+  return any;
+}
+
 static void tick(void) {
   static int last_min = -1;
   time_t t = time(NULL);
@@ -2416,17 +2539,46 @@ static Window ui_window(int x, int y, int w, int h, long mask, bool argb, Atom t
   return win;
 }
 
+/* Wohin ein Fenster ins Dock fliegt: zu seinem Symbol, sonst zur Mitte des Docks */
+static void dock_target(Client *c, double *x, double *y) {
+  layout_dock();
+  *x = dock_x + (c->app >= 0 ? dock_item_x[c->app] + DS / 2.0 : dock_w / 2.0);
+  *y = dock_y + DOCK_PAD_Y + DS / 2.0;
+}
+
+static void anim_style(Client *c, WinStyle *st) {
+  double p = c->anim_p;
+  if (c->anim == ANIM_OPEN) { /* aus 94 % Größe einblenden, ease-out */
+    double e = 1 - pow(1 - p, 3);
+    st->shrink = .06 * (1 - e);
+    st->fade = 1 - e;
+    return;
+  }
+  double e = c->anim == ANIM_MIN ? p * p : pow(1 - p, 3); /* hin: beschleunigen, zurück: abbremsen */
+  double fw = c->w + 2 * c->bw, fh = c->h + c->th + 2 * c->bw;
+  double cx = c->x - c->bw + fw / 2, cy = c->y - c->th - c->bw + fh / 2, tx, ty;
+  dock_target(c, &tx, &ty);
+  st->shrink = (1 - DS / fmax(fw, fh)) * e;
+  st->dx = (tx - cx) * e;
+  st->dy = (ty - cy) * e;
+  st->fade = e;
+}
+
 /* Für den Compositor: Schatten, runde Ecken, Glas (Schatten wie --shadow, --pop-shadow und der
  * Dock-Schatten in clokeos.html, verkleinert, weil Unschärfe unter Emulation teuer ist) */
 WinStyle cs_window_style(Window w) {
   WinStyle st = {WK_PLAIN, 0, 0, 0, 0};
-  if (w == dock) return (WinStyle){WK_GLASS, DS * .42 + 6, 22, 10, .28};
+  if (w == dock) return (WinStyle){WK_GLASS, DS * .42 + 6, 22, 10, .28, .top = dock_top};
   if (w && w == menuwin) return (WinStyle){WK_GLASS, 14, 16, 8, .26};
   if (w && w == tipwin) return (WinStyle){WK_GLASS, 12, 10, 4, .2};
   for (Client *c = clients; c; c = c->next)
-    if (c->frame == w && c->th) {
-      bool a = c == focused;
-      return (WinStyle){WK_FRAME, RADIUS, a ? 30 : 18, a ? 16 : 8, a ? (dark ? .55 : .36) : (dark ? .4 : .22)};
+    if (c->frame == w) {
+      if (c->th) {
+        bool a = c == focused;
+        st = (WinStyle){WK_FRAME, RADIUS, a ? 30 : 18, a ? 16 : 8, a ? (dark ? .55 : .36) : (dark ? .4 : .22)};
+      }
+      if (c->anim) anim_style(c, &st);
+      return st;
     }
   return st;
 }
@@ -2522,7 +2674,9 @@ int main(int argc, char **argv) {
   layout_dock();
   menubar = ui_window(0, 0, SW, MENUBAR_H, ExposureMask | ButtonPressMask | PointerMotionMask, false,
                       NET_WM_WINDOW_TYPE_DOCK);
-  dock = ui_window(dock_x, dock_y, dock_w, DOCK_H, ExposureMask | ButtonPressMask | PointerMotionMask | LeaveWindowMask,
+  dock_top = comp_on ? 20 : 0;
+  dock = ui_window(dock_x, dock_y - dock_top, dock_w, DOCK_H + dock_top,
+                   ExposureMask | ButtonPressMask | PointerMotionMask | LeaveWindowMask,
                    true, NET_WM_WINDOW_TYPE_DOCK);
   if (!comp_on) shape_round(dock, dock_w, DOCK_H, DS * .42 + 6, false);
   XMapRaised(dpy, menubar);
@@ -2595,6 +2749,7 @@ int main(int argc, char **argv) {
       if (!XPending(dpy)) break;
     }
     tick();
+    bool anim = animate();
     /* Ein Klick in ein inaktives Programmfenster friert den Zeiger ein, bis XAllowEvents kommt
      * (grab_buttons). Geht das einmal schief, steht der Zeiger für immer: hier noch einmal lösen. */
     if (!menuwin && !drag) XAllowEvents(dpy, AsyncPointer, CurrentTime);
@@ -2604,7 +2759,7 @@ int main(int argc, char **argv) {
     FD_ZERO(&fds);
     FD_SET(fd, &fds);
     struct timeval tv = {1, 0};
-    if (shake_t0 >= 0) tv = (struct timeval){0, 30000}; /* Animation: etwa 30 Bilder pro Sekunde */
+    if (shake_t0 >= 0 || anim) tv = (struct timeval){0, 16000}; /* Animation: so oft wie möglich */
     select(fd + 1, &fds, NULL, NULL, &tv);
   }
 }

@@ -470,8 +470,8 @@ void comp_repaint(void) {
       if (!w->mapped) continue;
       WinStyle st = cs_window_style(w->id);
       int m = st.kind == WK_GLASS ? GLASS_MARGIN : 0;
-      if (st.kind == WK_GLASS && overlaps(w->x - m, w->y - m, w->w + 2 * m, w->h + 2 * m))
-        dirty_rect(w->x - m, w->y - m, w->w + 2 * m, w->h + 2 * m);
+      if (st.kind == WK_GLASS && overlaps(w->x - m, w->y + st.top - m, w->w + 2 * m, w->h - st.top + 2 * m))
+        dirty_rect(w->x - m, w->y + st.top - m, w->w + 2 * m, w->h - st.top + 2 * m);
     }
   cairo_rectangle_int_t full = {0, 0, SW, SH};
   cairo_region_intersect_rectangle(dirty, &full);
@@ -500,19 +500,37 @@ void comp_repaint(void) {
     if (!w->mapped || w->input_only) continue;
     int ww = w->w + 2 * w->bw, wh = w->h + 2 * w->bw;
     WinStyle st = cs_window_style(w->id);
+    bool moving = st.shrink != 0 || st.fade != 0 || st.dx != 0 || st.dy != 0;
     int m = st.blur ? st.blur + st.offset + 2 : 0;
-    if (!overlaps(w->x - m, w->y - m, ww + 2 * m, wh + 2 * m)) continue;
+    if (!moving && !overlaps(w->x - m, w->y - m, ww + 2 * m, wh + 2 * m)) continue;
     cairo_surface_t *s = win_surface(w);
     if (!s) continue;
-    if (st.blur) shadow(cr, &st, w->x, w->y, ww, wh);
-    if (st.kind == WK_GLASS) backdrop(cr, &st, w->x, w->y, ww, wh);
+    double a = 1 - st.fade;
+    cairo_matrix_t place; /* Fensterkoordinaten -> Bildschirm, bei Animation verkleinert und verschoben */
+    if (moving) {
+      double k = 1 - st.shrink;
+      cairo_matrix_init_translate(&place, w->x + ww / 2.0 + st.dx, w->y + wh / 2.0 + st.dy);
+      cairo_matrix_scale(&place, k, k);
+      cairo_matrix_translate(&place, -ww / 2.0, -wh / 2.0);
+      st.alpha *= a;
+    } else {
+      cairo_matrix_init_translate(&place, w->x, w->y);
+    }
+    if (st.blur) {
+      cairo_save(cr);
+      cairo_transform(cr, &place);
+      shadow(cr, &st, 0, st.top, ww, wh - st.top);
+      cairo_restore(cr);
+    }
+    if (st.kind == WK_GLASS && !moving) backdrop(cr, &st, w->x, w->y + st.top, ww, wh - st.top);
     cairo_save(cr);
-    if (st.radius > 0) {
-      rrect(cr, w->x, w->y, ww, wh, st.radius);
+    cairo_transform(cr, &place);
+    if (st.kind == WK_FRAME && st.radius > 0) { /* 32-Bit-Fenster haben ihre Ecken selbst */
+      rrect(cr, 0, 0, ww, wh, st.radius);
       cairo_clip(cr);
     }
-    cairo_set_source_surface(cr, s, w->x, w->y);
-    cairo_paint(cr);
+    cairo_set_source_surface(cr, s, 0, 0);
+    cairo_paint_with_alpha(cr, a);
     cairo_restore(cr);
   }
   cairo_destroy(cr);
@@ -537,8 +555,8 @@ void comp_repaint(void) {
     clock_gettime(CLOCK_MONOTONIC, &t1);
     cairo_rectangle_int_t ext;
     cairo_region_get_extents(dirty, &ext);
-    fprintf(stderr, "CloakServer: Bild %dx%d in %.0f ms\n", ext.width, ext.height,
-            (t1.tv_sec - t0.tv_sec) * 1e3 + (t1.tv_nsec - t0.tv_nsec) / 1e6);
+    fprintf(stderr, "CloakServer: Bild %dx%d in %.0f ms (um %.3f s)\n", ext.width, ext.height,
+            (t1.tv_sec - t0.tv_sec) * 1e3 + (t1.tv_nsec - t0.tv_nsec) / 1e6, t1.tv_sec % 1000 + t1.tv_nsec / 1e9);
   }
   cairo_region_destroy(dirty);
   dirty = cairo_region_create();
