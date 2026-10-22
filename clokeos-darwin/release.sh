@@ -55,6 +55,10 @@ mkdir -p "$dist"
 
 files=()
 rows=""
+bases=""
+start=""
+works=""
+limits=""
 for arch in "${arches[@]}"; do
   CLOKEOS_ARCH="$arch" "$here/brand.sh"
   img="$WORK/out/clokeos-$CLOKE_VERSION-$arch.img"
@@ -64,13 +68,27 @@ for arch in "${arches[@]}"; do
   files+=("$out")
   raw_sum="$(shasum -a 256 "$img" | cut -d' ' -f1)"
   rows+="| \`$(basename "$out")\` | $arch | $(( $(stat -f %z "$out") / 1048576 )) MB | \`$raw_sum\` |"$'\n'
+  # Basisimage dieser Architektur (config.sh wählt es nach CLOKEOS_ARCH)
+  base="$(CLOKEOS_ARCH="$arch" bash -c 'source "$1/config.sh"; printf "[%s](%s), SHA-256 \`%s\`" "$PD_FILE" "$PD_URL" "$PD_SHA256"' _ "$here")"
+  bases+="- Basis für $arch: $base"$'\n'
+  case "$arch" in
+    x86_64)
+      start+="x86_64: \`./run.sh --image /pfad/zu/clokeos-$CLOKE_VERSION-x86_64.img\`. Der Bildschirm zeigt das Bootlogo, die Shell läuft auf der seriellen Konsole im Terminal; wer beim Start die Taste V gedrückt hält, sieht Kernel-Log und Shell auf dem Bildschirm. Auf einem Mac mit Apple-Chip wird x86_64 emuliert, bis zur Eingabeaufforderung dauert es etwa 70 Sekunden."$'\n\n'
+      works+="- x86_64: Netzwerk über virtio mit DHCP, DNS und Internet; \`poweroff\` fährt sauber herunter"$'\n'
+      ;;
+    arm64)
+      start+="arm64: \`CLOKEOS_ARCH=arm64 ./run.sh --image /pfad/zu/clokeos-$CLOKE_VERSION-arm64.img\`. Auf einem Mac mit Apple-Chip läuft es mit Apples Hypervisor, die Eingabeaufforderung steht nach etwa 7 Sekunden (\`--tcg\` emuliert, etwa 16 Sekunden). Die Shell läuft auf der seriellen Konsole im Terminal."$'\n\n'
+      works+="- arm64: feste Adresse in QEMUs Benutzernetz (10.0.2.15, eigener Dienst \`com.clokeos.network\`), DNS und Internet; die Uhr stellt sich beim Start über HTTP"$'\n'
+      limits+="- arm64: PureDarwins Kernel kann die VM nicht ausschalten; \`poweroff\` schreibt vorher alles auf die Platte, \`run.sh\` beendet QEMU danach. Kein Bootlogo, kein DHCP"$'\n'
+      ;;
+  esac
 done
 (cd "$dist" && shasum -a 256 -- *.img.xz > SHA256SUMS)
 files+=("$dist/SHA256SUMS")
 
 notes="$dist/RELEASE-NOTES.md"
 cat > "$notes" <<EOF
-ClokeOS $CLOKE_VERSION „$CLOKE_CODENAME“ (Build $CLOKE_BUILD): ein macOS-ähnliches System auf dem Darwin-Kernel (XNU), aufgebaut auf PureDarwin $PD_VERSION. Es bootet bis zur zsh; eine grafische Oberfläche gibt es im Image noch nicht (die liegt als Prototyp in \`clokeos.html\`).
+ClokeOS $CLOKE_VERSION „$CLOKE_CODENAME“ (Build $CLOKE_BUILD): ein macOS-ähnliches System auf dem Darwin-Kernel (XNU), aufgebaut auf PureDarwin $PD_VERSION. Die Images booten bis zur zsh. Die Desktop-Variante mit dem Fensterserver CloakServer ist mit 6 GiB zu groß für ein Release; sie entsteht mit \`CLOKEOS_FLAVOR=desktop ./brand.sh\` aus diesem Repo.
 
 ## Downloads
 
@@ -81,30 +99,22 @@ $rows
 
 ## Starten
 
-Entpacken (\`xz -dk clokeos-$CLOKE_VERSION-x86_64.img.xz\`, unter macOS \`xz\` aus Homebrew) und mit QEMU starten. Am einfachsten mit den Skripten aus diesem Repo:
+Entpacken (\`xz -dk <datei>.img.xz\`, unter macOS \`xz\` aus Homebrew) und mit QEMU starten, am einfachsten mit \`run.sh\` aus dem Ordner \`clokeos-darwin\` dieses Repos:
 
-\`\`\`bash
-cd clokeos-darwin && ./run.sh --image /pfad/zu/clokeos-$CLOKE_VERSION-x86_64.img
-\`\`\`
-
-Der Bildschirm zeigt das Bootlogo, die Shell läuft auf der seriellen Konsole im Terminal. Wer beim Start die Taste V gedrückt hält, sieht Kernel-Log und Shell auf dem Bildschirm. Auf einem Mac mit Apple-Chip wird x86_64 emuliert; bis zur Eingabeaufforderung dauert es etwa 75 bis 90 Sekunden.
-
+$start
 ## Was geht
 
 - XNU (Darwin 20.5.0), launchd, zsh, \`sw_vers\` meldet ClokeOS $CLOKE_VERSION, Rechnername \`$CLOKE_HOST\`, \`clokefetch\`
-- Netzwerk in QEMU mit \`-nic user,model=e1000-82545em\`: DHCP, DNS, ping ins Internet
-- \`poweroff\` fährt sauber herunter
-
+$works
 ## Was nicht geht
 
-- Nur ein Prozessorkern (\`hw.ncpu\` = 1)
-- Keine grafische Oberfläche im Image, ohne Taste V keine Shell auf dem Bildschirm
+- Nur ein Prozessorkern (\`hw.ncpu\` = 1): PureDarwin startet die übrigen nicht
+- Keine grafische Oberfläche im Image (die Desktop-Variante mit CloakServer ist zu groß für ein Release)
 - Nur in QEMU getestet, nicht auf echter Hardware
-- arm64: die Skripte kennen es (\`CLOKEOS_ARCH=arm64\`), gebaut oder gebootet wurde es noch nicht
-
+$limits
 ## Quellen und Lizenzen
 
-- Basis: [PureDarwin $PD_VERSION]($PD_URL), SHA-256 \`$PD_SHA256\`. Quellcode: https://github.com/PureDarwin/PureDarwin/tree/$PD_VERSION
+${bases}- PureDarwin-Quellcode: https://github.com/PureDarwin/PureDarwin/tree/$PD_VERSION
 - Darwin und XNU: Apple Public Source License 2.0. PureDarwin enthält auch GPL-Teile (corecrypto) und weitere freie Lizenzen; der Quellcode steht unter dem Link oben.
 - Bootloader (x86_64): [xnu-loader](https://github.com/PureDarwin/xnu-loader/tree/$XNU_LOADER_REV) (BSD-3-Clause) mit dem ClokeOS-Patch aus \`clokeos-darwin/loader/\`, gebaut gegen gnu-efi $GNU_EFI_VERSION
 - ClokeOS-Änderungen: dieses Repo, Commit \`$commit\`

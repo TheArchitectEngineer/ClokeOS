@@ -38,9 +38,9 @@ case "$CLOKE_ARCH" in
     EFI_BINARY="BOOTX64.EFI"
     ;;
   arm64)
-    # Noch nie gebaut oder gebootet: PureDarwin hat für arm64 kein Release, nur ein
-    # Vorschau-Image auf puredarwin.org (Stand 23.08.2026, wie das x86_64-Image von 20.5).
-    # Die Wurzel ist dort eine RAM-Disk (EFI/ramdisk.img, Boot-Argument rd=md0).
+    # PureDarwin hat für arm64 kein Release, nur ein Vorschau-Image auf puredarwin.org (Stand
+    # 23.08.2026, wie das x86_64-Image von 20.5). Trotz des Namens ist es die Variante
+    # "arm64-virt-minimal-release": Release-Kernel, ext4-Wurzel auf der Partition, keine RAM-Disk.
     PD_FILE="puredarwin-arm64-virt-minimal.img"
     PD_URL="https://internal.lab004.dev/private/images/$PD_FILE"
     PD_SHA256="351de0f7611f34912653f5fc9e685eba7d5b1724fb502993a59b8f4eebbcc218"

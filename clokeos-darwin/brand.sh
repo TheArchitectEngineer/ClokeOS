@@ -43,6 +43,25 @@ if [ "$CLOKE_FLAVOR" = desktop ]; then
     "$CLOKE_VERSION" "$CLOKE_BUILD"
   "$HERE/macapps/install.sh" "$tmp/stage"
 fi
+# Netzwerk ohne configd (arm64-Image): Netzwerkkarten selbst benennen und eine feste Adresse für
+# QEMUs Benutzernetz setzen (tools/). Mit configd (x86_64) holt PureDarwin sie per DHCP.
+if ! "$DEBUGFS" -R 'stat /usr/libexec/configd' "$root" 2>/dev/null | grep -q '^Inode'; then
+  mkdir -p "$tmp/stage/usr/libexec" "$tmp/stage/System/Library/LaunchDaemons"
+  "$HERE/tools/build.sh" "$tmp/stage/usr/libexec"
+  cp "$HERE/tools/clokeos-network" "$tmp/stage/usr/libexec/"
+  cp "$HERE/tools/com.clokeos.network.plist" "$tmp/stage/System/Library/LaunchDaemons/"
+fi
+# PureDarwins diskarbitrationd ignoriert SIGTERM: Beim Herunterfahren wartet launchd sonst
+# 20 Sekunden (ExitTimeOut), bevor es ihn hart beendet. Er hält nichts, was gesichert werden müsste.
+da=/System/Library/LaunchDaemons/com.apple.diskarbitrationd.plist
+if "$DEBUGFS" -R "cat $da" "$root" 2>/dev/null | grep -q '</dict>'; then
+  mkdir -p "$tmp/stage$(dirname "$da")"
+  "$DEBUGFS" -R "cat $da" "$root" 2>/dev/null |
+    sed 's|^</dict>|	<key>ExitTimeOut</key>\
+	<integer>2</integer>\
+</dict>|' > "$tmp/stage$da"
+  chmod 644 "$tmp/stage$da"
+fi
 find "$tmp/stage" -name .DS_Store -delete
 
 mkdir -p "$tmp/stage/System/Library/CoreServices"
@@ -86,6 +105,13 @@ export PS1='%n@%m %1~ %# '
 # Die Konsole startet oft, bevor com.clokeos.hostname den Namen gesetzt hat.
 _clokeos_host() { [[ $HOST == localhost* ]] && HOST=$(/bin/hostname) }
 precmd_functions+=(_clokeos_host)
+# Eine interaktive zsh ignoriert SIGTERM; beim Herunterfahren wartet launchd dann 20 Sekunden,
+# bevor es die Konsole hart beendet. So beendet sie sich sofort.
+TRAPTERM() { exit 143 }
+# Vor dem Ausschalten alles auf die Platte schreiben: auf arm64 hängt PureDarwins Kernel am Ende
+# des Herunterfahrens (Halt/Restart Timed Out), run.sh schaltet die VM dann aus.
+poweroff() { sync; command poweroff "$@" }
+reboot() { sync; command reboot "$@" }
 if [[ -z $CLOKEOS_GREETED && -r /etc/motd ]]; then
   export CLOKEOS_GREETED=1
   cat /etc/motd

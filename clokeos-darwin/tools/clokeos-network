@@ -1,0 +1,31 @@
+#!/bin/sh
+# Netzwerk für Images ohne configd (arm64): erst bekommen die Netzwerkkarten ihre Namen
+# (clokeos-netup), dann setzt PureDarwins netsetup eine feste Adresse. Die Vorgaben passen zu
+# QEMUs Benutzernetz (-nic user); andere Werte gehören nach /etc/clokeos-network.
+#
+# Danach die Uhr: PureDarwin liest auf arm64 die Echtzeituhr der Maschine nicht, die Zeit beginnt
+# bei 1970. Steht sie noch vor 2020, holt das Skript sie aus dem Date-Kopf einer HTTP-Antwort von
+# TIME_HOST (sekundengenau genug für Zertifikate und Dateizeiten). TIME_HOST= schaltet das ab.
+IFACE=en0
+ADDR=10.0.2.15
+MASK=255.255.255.0
+ROUTER=10.0.2.2
+DNS=10.0.2.3
+TIME_HOST=example.com
+test -r /etc/clokeos-network && . /etc/clokeos-network
+
+/usr/libexec/clokeos-netup || exit 1
+/bin/netsetup --wait 20 "$IFACE" "$ADDR" "$MASK" "$ROUTER" "$DNS" || exit 1
+
+if [ -n "$TIME_HOST" ] && [ "$(date -u +%Y)" -lt 2020 ]; then
+  # "Date: Thu, 22 Oct 2026 09:03:08 GMT" -> MMDDhhmmCCYY.ss für date -u
+  t=$( (printf 'HEAD / HTTP/1.0\r\nHost: %s\r\n\r\n' "$TIME_HOST"; sleep 5) | netcat "$TIME_HOST" 80 |
+    tr -d '\r' | awk 'tolower($1) == "date:" {
+      m = index("JanFebMarAprMayJunJulAugSepOctNovDec", $4); split($6, c, ":")
+      printf "%02d%02d%s%s%s.%s", (m + 2) / 3, $3, c[1], c[2], $5, c[3]; exit }')
+  if [ -n "$t" ] && date -u "$t" >/dev/null; then
+    echo "ClokeOS: Uhr gestellt nach $TIME_HOST: $(date)"
+  else
+    echo "ClokeOS: Uhrzeit von $TIME_HOST nicht bekommen"
+  fi
+fi

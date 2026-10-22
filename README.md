@@ -60,7 +60,7 @@ Image bauen und starten:
 cd clokeos-darwin && ./brand.sh && ./run.sh
 ```
 
-`brand.sh` lädt das PureDarwin-Image (275 MB) und die Quellen des Bootloaders (zusammen 300 KB, alle Prüfsummen werden geprüft), baut den Loader mit Bootlogo, schreibt die Dateien aus `overlay/` mit `debugfs` ins ext4-Dateisystem (ohne Linux und ohne Root-Rechte), legt Loader und Boot-Argumente mit `mtools` in die EFI-Partition und erzeugt `~/ClokeOS-work/out/clokeos-2.0-x86_64.img`. `run.sh` öffnet ein QEMU-Fenster mit dem Bildschirm und die serielle Konsole im Terminal. Im Fenster steht ab etwa der vierten Sekunde das Logo, später zeichnet der Kernel einen Fortschrittsbalken darunter; Kernel-Log, Anmeldetext und zsh laufen im Terminal. Auf einem Mac mit Apple-Chip wird x86_64 emuliert; bis zur Eingabeaufforderung dauert es etwa 75 Sekunden. Beenden mit `poweroff` in der VM.
+`brand.sh` lädt das PureDarwin-Image (275 MB) und die Quellen des Bootloaders (zusammen 300 KB, alle Prüfsummen werden geprüft), baut den Loader mit Bootlogo, schreibt die Dateien aus `overlay/` mit `debugfs` ins ext4-Dateisystem (ohne Linux und ohne Root-Rechte), legt Loader und Boot-Argumente mit `mtools` in die EFI-Partition und erzeugt `~/ClokeOS-work/out/clokeos-2.0-x86_64.img`. `run.sh` öffnet ein QEMU-Fenster mit dem Bildschirm und die serielle Konsole im Terminal. Im Fenster steht ab etwa der vierten Sekunde das Logo, später zeichnet der Kernel einen Fortschrittsbalken darunter; Kernel-Log, Anmeldetext und zsh laufen im Terminal. Auf einem Mac mit Apple-Chip wird x86_64 emuliert; bis zur Eingabeaufforderung dauert es etwa 70 Sekunden (arm64 mit Apples Hypervisor: etwa 7, siehe [Architekturen](#architekturen)). Beenden mit `poweroff` in der VM.
 
 Für Tests ohne Fenster: `./run.sh --headless`, dann `./vmctl.py wait 'Willkommen'`, `./vmctl.py send 'clokefetch'`, `./vmctl.py shot bild.png`, `./vmctl.py quit`. Downloads, Images und VM-Zustand liegen in `~/ClokeOS-work`, nicht im Projektordner. Versionsnummern und Namen stehen in `clokeos-darwin/config.sh`.
 
@@ -78,9 +78,9 @@ Für einen einzelnen ausführlichen Start reicht die Taste V, wie es der Startbi
 
 Gebaut wird der Loader von `clokeos-darwin/loader/build.sh`, das `brand.sh` aufruft. Es entpackt xnu-loader im Stand `8295cd89` (derselbe wie in PureDarwin 20.5) und gnu-efi 4.0.2, wendet `loader/xnu-loader.patch` an, fügt `splash.c` hinzu und erzeugt mit `logo.py` aus `LOGO_D` die Umrisse des Logos als C-Header. Der Loader rastert das Logo erst beim Start in der vorhandenen Auflösung, deshalb ist es auf jedem Bildschirm scharf, und eine Änderung am Logo in `clokeos.html` landet beim nächsten `./brand.sh` von selbst im Bootlogo. Kompiliert wird mit mingw-w64, das direkt EFI-Programme erzeugt; eine Linux-VM ist nicht nötig. Der Build ist reproduzierbar, das Ergebnis liegt in `~/ClokeOS-work/out/BOOTX64.EFI`.
 
-Netzwerk: `run.sh` gibt der x86-VM eine Intel-Karte vom Typ 82545EM (`-nic user,model=e1000-82545em`), denn PureDarwins Treiber `PDE1000` erkennt nur diese; mit QEMUs Standardkarten bekommt die VM keine Adresse. Damit holt sie sich per DHCP `10.0.2.15`, löst Namen auf und erreicht das Internet (`ping github.com`). Als Maus hängt eine USB-Maus (`usb-mouse`) an der VM, denn PureDarwins HID-Treiber kennt nur Mäuse mit Boot-Protokoll, kein `usb-tablet`. Im QEMU-Fenster fängt ein Klick die Maus ein, Strg+Alt+G gibt sie wieder frei.
+Netzwerk und Platte: `run.sh` gibt der x86-VM virtio-Geräte (`virtio-blk-pci`, `-nic user,model=virtio-net-pci`), für die PureDarwin Treiber hat. Sie kosten unter Emulation weniger als eine nachgebildete AHCI-Platte und Intel-Karte. Die VM holt sich per DHCP `10.0.2.15`, löst Namen auf und erreicht das Internet (`ping github.com`); Minimal- und Desktop-Image sind so getestet. `CLOKEOS_VM_DEVICES=classic` nimmt stattdessen AHCI und eine Intel-Karte vom Typ 82545EM (`e1000-82545em`), die einzige, die PureDarwins Treiber `PDE1000` erkennt; mit QEMUs Standardkarten e1000/e1000e bekommt die VM keine Adresse. Als Maus hängt eine USB-Maus (`usb-mouse`) an der VM, denn PureDarwins HID-Treiber kennt nur Mäuse mit Boot-Protokoll, kein `usb-tablet`. Im QEMU-Fenster fängt ein Klick die Maus ein, Strg+Alt+G gibt sie wieder frei.
 
-Grenzen: Die VM sieht nur einen Prozessorkern (`hw.ncpu` = 1). Im Minimal-Image zeigt der Bildschirm ohne `-v` (oder V beim Start) nach dem Start weiter Logo und Fortschrittsbalken (siehe oben). Kernel und Treiber übernimmt ClokeOS von PureDarwin; geändert sind nur 15 Byte in `IOGOPFramebuffer` (siehe unten). Die Kernelzeile von `uname` bleibt PureDarwins Build. Weil PureDarwin keine Zeitzonen-Datenbank hat, setzt ClokeOS die Zeitzone als POSIX-Regel (`CLOKE_TZ` in `config.sh`, Mitteleuropa mit Sommerzeit); Shell und Menüleiste zeigen damit deutsche Zeit.
+Grenzen: Die VM sieht nur einen Prozessorkern (`hw.ncpu` = 1), siehe [Treiber und Leistung](#treiber-und-leistung). Im Minimal-Image zeigt der Bildschirm ohne `-v` (oder V beim Start) nach dem Start weiter Logo und Fortschrittsbalken (siehe oben). Kernel und Treiber übernimmt ClokeOS von PureDarwin; geändert sind nur 15 Byte in `IOGOPFramebuffer` (siehe unten). Die Kernelzeile von `uname` bleibt PureDarwins Build. Weil PureDarwin keine Zeitzonen-Datenbank hat, setzt ClokeOS die Zeitzone als POSIX-Regel (`CLOKE_TZ` in `config.sh`, Mitteleuropa mit Sommerzeit); Shell und Menüleiste zeigen damit deutsche Zeit.
 
 #### Falsche Farben in PureDarwins Grafiktreiber
 
@@ -165,7 +165,7 @@ Grenzen:
 - Mac-Programme mit Fenstern laufen nur, soweit Darlings AppKit reicht (siehe oben): Das Menü steht im Fenster statt in der Menüleiste, Views mit Layern bleiben leer, Schriften wie „San Francisco“ fehlen. Programme nur für Apple-Chips starten nicht. Die Mac-Frameworks kommen nur ins Image, wenn ihre Quellen geladen sind (`macapps/README.md`). Fundus (Thunar) zeigt `.app`-Pakete als Ordner, ein Doppelklick öffnet den Ordner statt das Programm; gestartet wird aus Launchpad oder Dock. Icons aus Asset-Katalogen (`Assets.car`) kann CloakServer nicht lesen, nur `.icns`, PNG und SVG.
 - Bei Emulation brauchen Programme 10 bis 25 Sekunden zum Start.
 - Konten legt nur `brand.sh` an. Eine Benutzerverwaltung in den Systemeinstellungen fehlt ebenso wie su und sudo; als Gast gibt es keine Verwaltungsrechte, dafür meldet man sich als System Administrator an.
-- Nur x86_64. PureDarwins Desktop-Image für arm64 (3,1 GiB) ist nicht geladen; dort startet Xorg, GL ist laut PureDarwin aber kaputt.
+- Nur x86_64. PureDarwins Desktop-Image für arm64 (3,1 GiB) ist nicht geladen; dort startet Xorg, GL ist laut PureDarwin aber kaputt. Mit HVF wäre ein arm64-Desktop auf dem Mac rund zehnmal schneller (siehe [Treiber und Leistung](#treiber-und-leistung)).
 - Das Desktop-Image gehört nicht zu den Releases (6 GiB), `release.sh` baut nur das Minimal-Image.
 
 ### Architekturen
@@ -174,7 +174,7 @@ Grenzen:
 |---|---|---|
 | x86_64 (QEMU q35, UEFI) | gebaut, gebootet, als Release | PureDarwin 20.5, `puredarwin-minimal.img` |
 | x86_64 mit Desktop | gebaut, gebootet bis CloakServer, kein Release | PureDarwins Vorschau-Image `puredarwin.img` (6,1 GiB, von puredarwin.org) |
-| arm64 (QEMU virt) | Skripte vorbereitet, nie gebaut oder gebootet | PureDarwins Vorschau-Image `puredarwin-arm64-virt-minimal.img` (578 MiB, von puredarwin.org) |
+| arm64 (QEMU virt) | gebaut, gebootet mit Apples Hypervisor und emuliert, Netzwerk, noch kein Release | PureDarwins Vorschau-Image `puredarwin-arm64-virt-minimal.img` (578 MiB, von puredarwin.org) |
 | Raspberry Pi 3 | offen | PureDarwin bootet dort bis zur Shell, bietet aber kein fertiges Image an |
 
 Die Architektur wählt `CLOKEOS_ARCH`, für alle Skripte gleich:
@@ -183,9 +183,37 @@ Die Architektur wählt `CLOKEOS_ARCH`, für alle Skripte gleich:
 CLOKEOS_ARCH=arm64 ./brand.sh && CLOKEOS_ARCH=arm64 ./run.sh
 ```
 
-Für arm64 lädt `fetch.sh` PureDarwins Vorschau-Image. Dort ist die Wurzel eine RAM-Disk in der EFI-Partition (`ramdisk.img`, Boot-Argument `rd=md0`), deshalb schreibt `brand.sh` das Overlay auch dort hinein, wenn es eine findet. `run.sh` startet dann `qemu-system-aarch64` wie PureDarwins eigener Runner (virt, GICv3, virtio-Disk und -Netz, ramfb). Auf einem Mac mit Apple-Chip kann `--hvf` Apples Hypervisor statt Emulation nutzen, ausprobiert ist das noch nicht. Ein Bootlogo gibt es auf arm64 noch nicht: Dafür muss der Loader-Patch für `BOOTAA64.EFI` gebaut werden, und mingw-w64 aus Homebrew kann kein arm64.
+Für arm64 lädt `fetch.sh` PureDarwins Vorschau-Image. Trotz des Namens ist es die Variante `arm64-virt-minimal-release` (Release-Kernel, ext4-Wurzel auf der Partition, keine RAM-Disk); `brand.sh` würde eine RAM-Disk in der EFI-Partition aber auch bearbeiten. `run.sh` startet `qemu-system-aarch64` wie PureDarwins eigener Runner (virt, GICv3, virtio-Platte und -Netz, ramfb), auf einem Mac mit Apple-Chip mit Apples Hypervisor (HVF, `-cpu host`). Bis zur Eingabeaufforderung vergehen dann etwa 7 Sekunden ab dem Start von QEMU. `--tcg` emuliert stattdessen (`-cpu neoverse-n2`, etwa 16 Sekunden; mit `-cpu max` stürzt laut PureDarwin die Firmware ab).
+
+Was ClokeOS auf arm64 zusätzlich erledigt, weil dem Image Teile von PureDarwins x86-System fehlen:
+
+- **Netzwerk.** Der virtio-Treiber hängt an der Karte, aber ohne configd bekommt sie keinen BSD-Namen (`en0`). `tools/netup.c` (`/usr/libexec/clokeos-netup`) bittet `IONetworkStack`, alle Karten zu registrieren, wie es configd tut. Danach setzt PureDarwins `netsetup` eine feste Adresse für QEMUs Benutzernetz (10.0.2.15, Router 10.0.2.2, DNS 10.0.2.3; andere Werte in `/etc/clokeos-network`). Das erledigt der launchd-Dienst `com.clokeos.network`; `brand.sh` legt ihn in jedes Image ohne configd. `tools/build.sh` übersetzt das Programm auf dem Mac gegen libSystem, IOKit und CoreFoundation aus dem Image.
+- **Uhr.** PureDarwin liest auf arm64 die Echtzeituhr der Maschine nicht, die Zeit beginnt bei 1970. Steht sie nach dem Netzwerkstart noch vor 2020, stellt `com.clokeos.network` sie nach dem `Date`-Kopf einer HTTP-Antwort von `example.com` (`TIME_HOST=` in `/etc/clokeos-network` schaltet das ab).
+- **Ausschalten.** PureDarwins arm64-Kernel kann die VM nicht ausschalten. Nach `reboot(RB_HALT)` hängt er beim Abmelden der Treiber, noch bevor er die Platten synchronisiert, bis sein Wachhund nach 30 Sekunden mit „Halt/Restart Timed Out“ in Panik geht. `poweroff` in der ClokeOS-zsh ruft deshalb vorher `sync` auf, und `run.sh` beendet QEMU 5 Sekunden nach `reboot(RB_HALT)`. Eine vorher geschriebene Datei ist danach noch da, ext4 meldet beim nächsten Start nichts zu reparieren.
+
+Noch nicht auf arm64: Bootlogo (der Loader-Patch müsste für `BOOTAA64.EFI` gebaut werden, und mingw-w64 aus Homebrew kann kein arm64), Desktop (PureDarwins arm64-Desktop-Image mit 3,1 GiB ist nicht geladen), DHCP (statt der festen Adresse), Release.
 
 Ein Raspberry-Pi-Image müsste ClokeOS selbst bauen (PureDarwins Nix-Ziel `image-arm64-bcm2837`, siehe unten). Das `.img.xz`-Format der Releases ist so gewählt, dass Raspberry Pi Imager und balenaEtcher es direkt schreiben können.
+
+### Treiber und Leistung
+
+Gemessen auf dem Mac mit Apple-Chip (Minimal-Image, Zeit ab dem Start von QEMU; die Schleife ist `while (( i < 2000000 )); do (( i++ )); done` in der zsh der VM):
+
+| | bis zur Eingabeaufforderung | 2 Mio. Schleifendurchläufe |
+|---|---|---|
+| arm64 mit HVF | etwa 7 s | 2–3 s |
+| arm64 emuliert (TCG) | etwa 16 s | 18 s |
+| x86_64 emuliert (TCG) | etwa 66–71 s | 23 s |
+
+Auf einem Mac mit Apple-Chip ist arm64 mit HVF also rund zehnmal schneller als x86_64. Auf einem Intel-PC wäre es umgekehrt: Dort läuft x86_64 mit KVM (PureDarwins Runner `nix run .#kvm`) nativ, `run.sh` nutzt das noch nicht.
+
+Herunterfahren: Eine interaktive zsh ignoriert SIGTERM, ebenso PureDarwins `diskarbitrationd`. launchd wartete deshalb bei jedem `poweroff` 20 Sekunden, bevor es beide hart beendete. Die ClokeOS-zsh beendet sich jetzt auf SIGTERM (`TRAPTERM` in `/etc/zshrc`), `diskarbitrationd` hat eine `ExitTimeOut` von 2 Sekunden; x86_64 ist danach nach wenigen Sekunden aus.
+
+Treiber, die ClokeOS in QEMU nutzt: virtio-Platte und virtio-Netz (`IOVirtIOBlock`, `IOVirtIONet`), xHCI mit USB-Tastatur und -Maus (`RavynXHCIPort`, `IOUSBHIDDriver`), Bild über GOP (x86_64, `IOGOPFramebuffer`) oder ramfb (arm64). Was fehlt:
+
+- **Mehrere Prozessorkerne.** PureDarwin startet nur den ersten Kern: auf arm64 steht in `PDArmCPU.cpp` „No secondary CPUs are started on the virt target“, auf x86_64 läuft die einfache Plattform `AppleI386PlatformExpert`, die experimentelle ACPI-Plattform von PureDarwin ist nicht im Image. `run.sh` gibt der VM deshalb einen Kern (`CLOKEOS_VM_SMP` ändert das). Mehr Kerne brauchen Arbeit an PureDarwins Kernel-Erweiterungen und damit dessen Nix-Build (siehe unten).
+- **Grafikbeschleunigung.** Gezeichnet wird in Software (Mesa llvmpipe im Desktop-Image). Einen virtio-GPU-Treiber hat PureDarwin (`IOVirtIOGPU`, mit virgl), auf arm64 ist GL laut PureDarwin aber noch kaputt.
+- **NVIDIA.** Seit dem 7. Oktober 2026 gibt es von NullMoth einen inoffiziellen Treiber für GeForce-Karten ab Turing unter macOS 15 auf Intel-Macs und OpenCore-PCs ([github.com/nullmoth/nvidia-macos-driver](https://github.com/nullmoth/nvidia-macos-driver)). Aufgebaut ist er aus NVIDIAs offenen Kernel-Modulen als vier Kernel-Erweiterungen, Mesas Vulkan-Treiber NVK und einem Übersetzer von Metal-Shadern nach SPIR-V. Für ClokeOS ist das eine Spur, aber kein Treiber zum Einbauen: Die Erweiterungen sind für den Kernel von macOS 15 gebaut (ClokeOS hat Darwin 20.5) und brauchen Lilu und abgeschaltete Signaturprüfung; der Metal-Teil braucht Apples WindowServer und Metal, die es in ClokeOS nicht gibt. Wiederverwendbar wären die Kernel-Erweiterungen als Vorlage für PureDarwins Kernel und NVK, das wie das übrige Mesa von PureDarwin auch ohne Metal liefe. Testen ginge nur auf einem PC mit NVIDIA-Karte, nicht in QEMU und nicht auf einem Mac mit Apple-Chip. Die Lizenz (PolyForm Noncommercial) erlaubt keine kommerzielle Nutzung.
 
 ### Releases
 
