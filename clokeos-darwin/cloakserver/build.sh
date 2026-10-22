@@ -93,6 +93,10 @@ clang -target "$target" -isysroot "$sysroot" -DPLATFORM_MacOSX=1 -fno-stack-chec
   -o "$out/CloakServer" "$src/cloakserver.c" "$src/comp.c" "$src/wall.c" "$src/apps.c" \
   -lSystem "${xlibs[@]}" -lcairo -lpango-1.0 -lpangocairo-1.0 -lgobject-2.0 -lglib-2.0 -lrsvg-2
 echo "Fertig: $out/CloakServer"
+# Testwerkzeug: echte Maus- und Tastenereignisse über XTest (vmctl.py click/key/type), siehe xtest.c
+clang -target "$target" -isysroot "$sysroot" -DPLATFORM_MacOSX=1 -fno-stack-check -std=gnu11 -O2 -Wall -Wextra \
+  -Wno-nullability-completeness -I"$sysroot/include" -nostdlib -L"$sysroot/libs" -Wl,-platform_version,macos,11.0,11.5 \
+  -Wl,-no_fixup_chains -Wl,-dead_strip -o "$out/clokeos-xtest" "$src/xtest.c" -lSystem "${xlibs[@]}"
 
 # arm64: PureDarwins libgdk hat Xlib und alle Erweiterungen statisch eingebaut, nur die 13
 # Xcursor-Funktionen sucht es zur Laufzeit im flachen Namensraum. Die einzige libXcursor.1.dylib

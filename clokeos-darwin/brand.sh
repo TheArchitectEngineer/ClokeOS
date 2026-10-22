@@ -15,7 +15,8 @@
 #   - desktop: dazu overlay-desktop/ und CloakServer (cloakserver/build.sh), der beim Start
 #     Xorg mit dem ClokeOS-Desktop öffnet, die Programme als .app-Bundles wie bei macOS
 #     (cloakserver/bundles.py) und das Benutzerkonto aus config.sh (CLOKE_USER); sind die
-#     Darling-Quellen geladen, auch die Mac-Frameworks samt Hallo.app (macapps/install.sh)
+#     Darling-Quellen geladen, auch die Mac-Frameworks samt Hallo.app (macapps/install.sh);
+#     dazu die globale Menüleiste (menubar/build.sh: GTK-Modul, cloakmenu, GSettings-Schema)
 set -euo pipefail
 source "$(dirname "$0")/config.sh"
 need "$DEBUGFS" "$E2FSCK" "$TUNE2FS" python3 mcopy mtype mdir
@@ -40,6 +41,7 @@ cp -R "$HERE/overlay/." "$tmp/stage/"
 if [ "$CLOKE_FLAVOR" = desktop ]; then
   cp -R "$HERE/overlay-desktop/." "$tmp/stage/"
   "$HERE/cloakserver/build.sh" "$tmp/stage"
+  "$HERE/menubar/build.sh" "$tmp/stage"
   python3 -I "$HERE/cloakserver/bundles.py" "$tmp/stage" "$tmp/stage/System/Library/CoreServices/CloakServer/Resources/icons" \
     "$CLOKE_VERSION" "$CLOKE_BUILD"
   "$HERE/macapps/install.sh" "$tmp/stage"

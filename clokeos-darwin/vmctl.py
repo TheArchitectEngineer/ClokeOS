@@ -6,13 +6,21 @@
   ./vmctl.py shot <datei.png>            Bildschirmfoto des VM-Bildschirms
   ./vmctl.py key <taste> [...]           Tasten im VM-Fenster drücken (QEMU-Namen: ret, a, spc, ...),
                                          z. B. ret für die Anmeldung des Desktops
+  ./vmctl.py click <x> <y> [taste]       Desktop: Mausklick an einer Stelle (1 links, 3 rechts)
+  ./vmctl.py move <x> <y>                Desktop: Mauszeiger an eine Stelle
+  ./vmctl.py xkey <name> [...]           Desktop: Tasten über X (Return, Escape, Down, a, ...)
+  ./vmctl.py type '<text>'               Desktop: Text tippen
   ./vmctl.py quit                        VM ausschalten
+
+click, move, xkey und type laufen über die serielle Konsole (als root) mit clokeos-xtest aus
+CloakServer: Die VM hat nur eine relative USB-Maus, die sich von außen nicht genau setzen lässt.
 
 Für eine arm64-VM mit CLOKEOS_ARCH=arm64 aufrufen, wie run.sh.
 """
 import json
 import os
 import re
+import shlex
 import socket
 import sys
 import time
@@ -101,6 +109,13 @@ def key(names):
     return 0
 
 
+XTEST = '/System/Library/CoreServices/CloakServer/clokeos-xtest'
+
+
+def xtest(args):
+    return send('DISPLAY=:0 %s %s' % (XTEST, ' '.join(shlex.quote(a) for a in args)), 30)
+
+
 def main(argv):
     if len(argv) < 2:
         print(__doc__)
@@ -114,6 +129,12 @@ def main(argv):
         return shot(rest[0])
     if cmd == 'key' and rest:
         return key(rest)
+    if cmd in ('click', 'move') and len(rest) >= 2:
+        return xtest([cmd] + rest)
+    if cmd == 'xkey' and rest:
+        return xtest(['key'] + rest)
+    if cmd == 'type' and rest:
+        return xtest(['type', rest[0]])
     if cmd == 'quit':
         qmp({'execute': 'quit'})
         return 0

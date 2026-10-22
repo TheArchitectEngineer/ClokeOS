@@ -18,6 +18,12 @@ for i in {1..10}; do
   (( $(date +%Y) >= 2020 )) && break
   sleep 0.5
 done
+# Globale Menüleiste: appmenu-gtk-module gibt die Menüs der GTK-Programme an CloakServer, das sie
+# oben in der Leiste zeigt (menubar/). Ohne das Modul bleiben sie wie bisher im Fenster.
+# GTK_PATH: PureDarwins GTK sucht Module sonst unter seinem Pfad aus dem Nix-Build, nicht in /lib.
+if [[ -r /lib/gtk-3.0/modules/libappmenu-gtk-module.so ]]; then
+  export GTK_PATH=/lib/gtk-3.0 GTK_MODULES=appmenu-gtk-module
+fi
 cd $HOME
 cs=/System/Library/CoreServices/CloakServer/CloakServer
 # dbus-run-session statt dbus-launch: PureDarwins dbus-launch startet auf arm64 nicht.

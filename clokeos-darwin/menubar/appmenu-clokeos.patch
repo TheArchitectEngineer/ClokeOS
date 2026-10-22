@@ -1,0 +1,204 @@
+--- a/src/platform.c	2026-10-22 16:56:11
++++ b/src/platform.c	2026-10-22 16:56:24
+@@ -28,113 +28,55 @@
+ #include "datastructs.h"
+ 
+ #ifdef GDK_WINDOWING_X11
++#include <string.h>
++
++/* ClokeOS: über GDK statt Xlib. PureDarwins arm64-GTK hat Xlib nur statisch eingebaut, ein
++ * Modul mit eigenem Xlib-Aufruf fände dort keine libX11. */
+ G_GNUC_INTERNAL char *gtk_widget_get_x11_property_string(GtkWidget *widget, const char *name)
+ {
+-	GdkWindow *window;
+-	GdkDisplay *display;
+-	Display *xdisplay;
+-	Window xwindow;
+-	Atom property;
+-	Atom actual_type;
+-	int actual_format;
+-	unsigned long nitems;
+-	unsigned long bytes_after;
+-	unsigned char *prop;
++	GdkAtom type;
++	gint format, length;
++	guchar *data = NULL;
++	char *string = NULL;
+ 
+ 	g_return_val_if_fail(GTK_IS_WIDGET(widget), NULL);
+ 
+-	window   = gtk_widget_get_window(widget);
+-	display  = gdk_window_get_display(window);
+-	xdisplay = GDK_DISPLAY_XDISPLAY(display);
+-	xwindow  = GDK_WINDOW_XID(window);
+-
+-	property = None;
+-
+-	if (display != NULL)
+-		property = gdk_x11_get_xatom_by_name_for_display(display, name);
+-
+-	if (property == None)
+-		property = gdk_x11_get_xatom_by_name(name);
+-
+-	g_return_val_if_fail(property != None, NULL);
+-
+-	if (XGetWindowProperty(xdisplay,
+-	                       xwindow,
+-	                       property,
+-	                       0,
+-	                       G_MAXLONG,
+-	                       False,
+-	                       AnyPropertyType,
+-	                       &actual_type,
+-	                       &actual_format,
+-	                       &nitems,
+-	                       &bytes_after,
+-	                       &prop) == Success)
+-	{
+-		if (actual_format)
+-		{
+-			char *string = g_strdup((const char *)prop);
+-
+-			if (prop != NULL)
+-				XFree(prop);
+-
+-			return string;
+-		}
+-		else
+-			return NULL;
+-	}
++	if (gdk_property_get(gtk_widget_get_window(widget),
++	                     gdk_atom_intern(name, FALSE),
++	                     GDK_NONE,
++	                     0,
++	                     G_MAXLONG,
++	                     FALSE,
++	                     &type,
++	                     &format,
++	                     &length,
++	                     &data) &&
++	    data != NULL && format == 8)
++		string = g_strndup((const char *)data, length);
+ 
+-	return NULL;
++	g_free(data);
++	return string;
+ }
+ 
+ G_GNUC_INTERNAL void gtk_widget_set_x11_property_string(GtkWidget *widget, const char *name,
+                                                         const char *value)
+ {
+ 	GdkWindow *window;
+-	GdkDisplay *display;
+-	Display *xdisplay;
+-	Window xwindow;
+-	Atom property;
+-	Atom type;
+ 
+ 	g_return_if_fail(GTK_IS_WIDGET(widget));
+ 
+-	window   = gtk_widget_get_window(widget);
+-	display  = gdk_window_get_display(window);
+-	xdisplay = GDK_DISPLAY_XDISPLAY(display);
+-	xwindow  = GDK_WINDOW_XID(window);
+-
+-	property = None;
+-
+-	if (display != NULL)
+-		property = gdk_x11_get_xatom_by_name_for_display(display, name);
+-
+-	if (property == None)
+-		property = gdk_x11_get_xatom_by_name(name);
+-
+-	g_return_if_fail(property != None);
++	window = gtk_widget_get_window(widget);
+ 
+-	type = None;
+-
+-	if (display != NULL)
+-		type = gdk_x11_get_xatom_by_name_for_display(display, "UTF8_STRING");
+-
+-	if (type == None)
+-		type = gdk_x11_get_xatom_by_name("UTF8_STRING");
+-
+-	g_return_if_fail(type != None);
+-
+ 	if (value != NULL)
+-		XChangeProperty(xdisplay,
+-		                xwindow,
+-		                property,
+-		                type,
+-		                8,
+-		                PropModeReplace,
+-		                (unsigned char *)value,
+-		                g_utf8_strlen(value, -1));
++		gdk_property_change(window,
++		                    gdk_atom_intern(name, FALSE),
++		                    gdk_atom_intern("UTF8_STRING", FALSE),
++		                    8,
++		                    GDK_PROP_MODE_REPLACE,
++		                    (const guchar *)value,
++		                    (gint)strlen(value));
+ 	else
+-		XDeleteProperty(xdisplay, xwindow, property);
++		gdk_property_delete(window, gdk_atom_intern(name, FALSE));
+ }
+ 
+ G_GNUC_INTERNAL WindowData *gtk_x11_window_get_window_data(GtkWindow *window)
+--- a/lib/unity-gtk-menu-section.c	2026-10-22 17:16:45
++++ b/lib/unity-gtk-menu-section.c	2026-10-22 17:16:45
+@@ -38,6 +38,27 @@
+ 	return GPOINTER_TO_INT(a) - GPOINTER_TO_INT(b);
+ }
+ 
++/* ClokeOS: erstes GtkAccelLabel im Menüeintrag (auch in einer Box mit Symbol) */
++static GtkAccelLabel *find_accel_label(GtkWidget *widget)
++{
++	if (GTK_IS_ACCEL_LABEL(widget))
++		return GTK_ACCEL_LABEL(widget);
++
++	if (GTK_IS_CONTAINER(widget))
++	{
++		GList *children = gtk_container_get_children(GTK_CONTAINER(widget));
++		GtkAccelLabel *found = NULL;
++
++		for (GList *iter = children; iter != NULL && found == NULL; iter = g_list_next(iter))
++			found = find_accel_label(iter->data);
++
++		g_list_free(children);
++		return found;
++	}
++
++	return NULL;
++}
++
+ static gboolean g_closure_equal(GtkAccelKey *key, GClosure *closure, gpointer data)
+ {
+ 	return closure == data;
+@@ -219,6 +240,26 @@
+ 			g_list_free(closures);
+ 		}
+ 
++#if GTK_MAJOR_VERSION == 3
++		/* ClokeOS: Xfce-Programme wie Thunar zeigen ihr Kürzel nur mit
++		 * gtk_accel_label_set_accel an, ohne Accel-Pfad und ohne Closure am Eintrag. */
++		if (accel_name == NULL)
++		{
++			GtkAccelLabel *accel_label = find_accel_label(GTK_WIDGET(item->menu_item));
++
++			if (accel_label != NULL)
++			{
++				guint accel_key            = 0;
++				GdkModifierType accel_mods = 0;
++
++				gtk_accel_label_get_accel(accel_label, &accel_key, &accel_mods);
++
++				if (accel_key != 0)
++					accel_name = gtk_accelerator_name(accel_key, accel_mods);
++			}
++		}
++#endif
++
+ 		if (accel_name != NULL)
+ 			g_hash_table_insert(*attributes,
+ 			                    G_MENU_ATTRIBUTE_ACCEL,

@@ -70,6 +70,12 @@ GNU_EFI_VERSION="4.0.2"
 GNU_EFI_URL="https://codeload.github.com/ncroxon/gnu-efi/tar.gz/refs/tags/$GNU_EFI_VERSION"
 GNU_EFI_SHA256="f31488c3fc7d64257ec8fcad470ec75a936a4db77350fabaf043c52a7acbae72"
 GNU_EFI_TGZ="$WORK/download/gnu-efi/gnu-efi-$GNU_EFI_VERSION.tar.gz"
+# Globale Menüleiste (Desktop): appmenu-gtk-module aus vala-panel-appmenu (LGPL-3) gibt die Menüs
+# von GTK-Programmen an CloakServer. Siehe menubar/.
+APPMENU_VERSION="25.04"
+APPMENU_URL="https://gitlab.com/vala-panel-project/vala-panel-appmenu/-/archive/$APPMENU_VERSION/vala-panel-appmenu-$APPMENU_VERSION.tar.gz"
+APPMENU_SHA256="48d0be87b260056a65a9056a9be7e190b67a508540ebcb1fc18a67349cca0177"
+APPMENU_TGZ="$WORK/download/appmenu/vala-panel-appmenu-$APPMENU_VERSION.tar.gz"
 # Den eigenen Loader gibt es bisher nur für x86_64; arm64 behält PureDarwins Loader ohne Logo.
 LOADER_EFI=""
 [ "$CLOKE_ARCH" = x86_64 ] && LOADER_EFI="$WORK/out/BOOTX64.EFI"

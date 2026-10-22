@@ -43,6 +43,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/select.h>
 #include <sys/stat.h>
 #include <sys/sysctl.h>
@@ -70,6 +71,9 @@ void freeifaddrs(struct ifaddrs *);
 /* Maße wie in clokeos.html                                                                   */
 
 #define MENUBAR_H 28
+/* holt die Menüs von GTK-Programmen für die Menüleiste (menubar/cloakmenu.c) */
+#define CLOAKMENU "/System/Library/CoreServices/CloakServer/cloakmenu"
+#define GM_TOP_MAX 16 /* höchstens so viele Programm-Menüs in der Leiste */
 #define TITLE_H   36   /* Prototyp: 38; auf 800 Pixel Höhe etwas knapper */
 #define BORDER    1
 #define RADIUS    10
@@ -170,7 +174,9 @@ typedef struct {
   bool disabled, checked;
   void (*fn)(long);
   long arg;
+  int sub;             /* Programm-Menüs: 1 + Index in gm des Untermenüs, 0 = keins */
 } MenuItem;
+#define MENU_MAX 64
 
 static Display *dpy;
 static int scr, SW, SH;
@@ -198,15 +204,25 @@ static Atom WM_PROTOCOLS, WM_WINDOW_ROLE, WM_DELETE_WINDOW, WM_TAKE_FOCUS, WM_ST
   NET_WM_WINDOW_TYPE_NOTIFICATION, NET_WM_WINDOW_TYPE_TOOLTIP, NET_WM_WINDOW_TYPE_MENU,
   NET_WM_WINDOW_TYPE_POPUP_MENU, NET_WM_WINDOW_TYPE_DROPDOWN_MENU, NET_WM_WINDOW_TYPE_COMBO,
   NET_WM_WINDOW_TYPE_DND, NET_CLOSE_WINDOW, NET_FRAME_EXTENTS, NET_NUMBER_OF_DESKTOPS, NET_WM_PID,
-  NET_CURRENT_DESKTOP, MOTIF_WM_HINTS, XROOTPMAP_ID, ESETROOT_PMAP_ID;
+  NET_CURRENT_DESKTOP, MOTIF_WM_HINTS, XROOTPMAP_ID, ESETROOT_PMAP_ID, GTK_UNIQUE_BUS_NAME,
+  GTK_MENUBAR_OBJECT_PATH, UNITY_OBJECT_PATH, GTK_APPLICATION_OBJECT_PATH, GTK_WINDOW_OBJECT_PATH, CLOKE_MENU,
+  CLOKE_MENU_ACTIVATE;
 
 /* Menü, das gerade offen ist */
-static MenuItem menu[48];
-static int nmenu, menu_hover = -1, menu_w, menu_h, menu_owner = -1; /* Menüleisten-Eintrag oder -1 */
+static MenuItem menu[MENU_MAX];
+static int nmenu, menu_hover = -1, menu_x, menu_y, menu_w, menu_h, menu_owner = -1; /* Menüleisten-Eintrag oder -1 */
+/* Untermenü eines Eintrags (Programm-Menüs in der Menüleiste), neben dem Menü */
+static Window subwin;
+static MenuItem submenu[MENU_MAX];
+static int nsub, sub_hover = -1, sub_w, sub_h, sub_of = -1;
+/* add_item & Co. füllen menu, beim Aufbau eines Untermenüs submenu */
+static MenuItem *mbuild = menu;
+static int *mbuild_n = &nmenu;
 
 /* Menüleiste: Einträge mit ihrer Lage */
 enum { MB_LOGO, MB_APP, MB_FILE, MB_WINDOW, MB_WIFI, MB_SPOT, MB_CC, MB_CLOCK, MB_N };
-static int mb_x[MB_N], mb_w[MB_N];
+#define MB_DYN MB_N /* MB_DYN + k: das k-te Menü des aktiven Programms (globale Menüleiste) */
+static int mb_x[MB_N + GM_TOP_MAX], mb_w[MB_N + GM_TOP_MAX];
 
 /* Dock: dock_x, dock_y, dock_w, dock_h ist das Glas. Mit Compositor ist das Fenster dock_lift
  * Pixel zur Bildschirmmitte hin größer (durchsichtig), damit ein Symbol beim Starten hüpfen kann. */
@@ -226,6 +242,11 @@ static void draw_frame(Client *c);
 static void focus_client(Client *c);
 static void raise_client(Client *c);
 static void close_menu(void);
+static void gm_focus(Client *c);
+static void gm_start(void);
+static void gm_stop(void);
+static void gm_forget(Window w);
+static void gm_property(Client *c, Atom a);
 static Window ui_window(int x, int y, int w, int h, long mask, bool argb, Atom type);
 static void show_tip(int i);
 static void dock_target(Client *c, double *x, double *y);
@@ -423,7 +444,7 @@ static void rgba_hex(char *buf, RGBA c) {
 typedef void (*painter)(cairo_t *, int w, int h, void *);
 static void paint_window(Window w, int width, int height, painter fn, void *arg) {
   /* Dock, Menüs und Namensschild sind mit Compositor 32-Bit-Fenster mit Durchsicht */
-  Visual *v = comp_on && w && (w == dock || w == menuwin || w == tipwin) ? comp_argb : vis;
+  Visual *v = comp_on && w && (w == dock || w == menuwin || w == subwin || w == tipwin) ? comp_argb : vis;
   for (Client *c = clients; c; c = c->next)
     if (c->frame == w && c->argb) v = comp_argb;
   cairo_surface_t *s = cairo_xlib_surface_create(dpy, w, v, width, height);
@@ -537,18 +558,31 @@ static void xsettings_update(void) {
   if (!xsettings_win) return;
   static const char *name = "Net/ThemeName";
   const char *val = dark ? "Adwaita-dark" : "Adwaita";
-  uint32_t nl = (uint32_t)strlen(name), vl = (uint32_t)strlen(val), one = 1;
+  /* Gtk/ShellShowsMenubar: GTK-Programme zeigen ihre Menüleiste nicht im Fenster, die Menüs
+   * stehen oben in der Leiste (globale Menüleiste, siehe dort). Nur wenn cloakmenu da ist. */
+  bool menus = access(CLOAKMENU, X_OK) == 0;
+  uint32_t nl = (uint32_t)strlen(name), vl = (uint32_t)strlen(val), count = menus ? 2 : 1;
   uint16_t nl16 = (uint16_t)nl;
-  unsigned char buf[128] = {0}, *p = buf;
+  unsigned char buf[256] = {0}, *p = buf;
   p += 4;                                    /* Byte-Reihenfolge 0 = LSBFirst (x86), 3 frei */
   memcpy(p, &xsettings_serial, 4), p += 4;
-  memcpy(p, &one, 4), p += 4;                /* eine Einstellung */
+  memcpy(p, &count, 4), p += 4;              /* Anzahl der Einstellungen */
   *p = 1, p += 2;                            /* Typ String, 1 frei */
   memcpy(p, &nl16, 2), p += 2;
   memcpy(p, name, nl), p += (nl + 3) & ~3u;
   memcpy(p, &xsettings_serial, 4), p += 4;   /* zuletzt geändert */
   memcpy(p, &vl, 4), p += 4;
   memcpy(p, val, vl), p += (vl + 3) & ~3u;
+  if (menus) {
+    static const char *mname = "Gtk/ShellShowsMenubar";
+    uint16_t ml = (uint16_t)strlen(mname);
+    int32_t on = 1;
+    *p = 0, p += 2;                          /* Typ Ganzzahl, 1 frei */
+    memcpy(p, &ml, 2), p += 2;
+    memcpy(p, mname, ml), p += (ml + 3) & ~3u;
+    memcpy(p, &xsettings_serial, 4), p += 4;
+    memcpy(p, &on, 4), p += 4;
+  }
   XChangeProperty(dpy, xsettings_win, XSETTINGS_SETTINGS, XSETTINGS_SETTINGS, 8, PropModeReplace, buf, (int)(p - buf));
   xsettings_serial++;
 }
@@ -1244,6 +1278,7 @@ static void unmanage(Client *c, bool destroyed) {
     XUngrabServer(dpy);
   }
   XDestroyWindow(dpy, c->frame);
+  gm_forget(c->win);
   unlink_client(c);
   if (focused == c) {
     focused = NULL;
@@ -1307,6 +1342,7 @@ static void focus_client(Client *c) {
   for (Client *x = clients; x; x = x->next) grab_buttons(x, x == c);
   if (old && old != c) draw_frame(old);
   if (c) draw_frame(c);
+  gm_focus(c);
   draw_menubar();
 }
 
@@ -1788,6 +1824,7 @@ static void start_session(const Account *a) {
   render_icons();
   if (want_dark() != dark) apply_theme();
   update_workarea();
+  gm_start(); /* als der Benutzer, auf dessen Sitzungsbus */
 }
 
 static void user_env(const Account *a) {
@@ -1809,6 +1846,7 @@ static void user_env(const Account *a) {
 
 static void end_session(void) {
   if (!session) return;
+  gm_stop();
   if (session->uid != 0) {
     if (fork() == 0) { /* als der Benutzer alle seine Prozesse beenden, auch D-Bus und xfconfd */
       if (!become(session)) _exit(1);
@@ -2126,42 +2164,50 @@ static void cmd_logout(long unused) {
 /* Menüs                                                                                      */
 
 static void add_item(const char *label, void (*fn)(long), long arg, bool disabled) {
-  if (nmenu >= 48) return;
-  MenuItem *m = &menu[nmenu++];
+  if (*mbuild_n >= MENU_MAX) return;
+  MenuItem *m = &mbuild[(*mbuild_n)++];
   memset(m, 0, sizeof *m);
   snprintf(m->label, sizeof m->label, "%s", label);
   m->fn = fn;
   m->arg = arg;
   m->disabled = disabled || !fn;
 }
-static void add_sep(void) { if (nmenu < 48) { memset(&menu[nmenu], 0, sizeof menu[0]); menu[nmenu++].kind = 1; } }
+static void add_sep(void) {
+  /* keine Trennlinie am Anfang und keine zwei hintereinander */
+  if (*mbuild_n == 0 || *mbuild_n >= MENU_MAX || mbuild[*mbuild_n - 1].kind == 1) return;
+  memset(&mbuild[*mbuild_n], 0, sizeof mbuild[0]);
+  mbuild[(*mbuild_n)++].kind = 1;
+}
 static void add_head(const char *label) {
-  if (nmenu >= 48) return;
-  memset(&menu[nmenu], 0, sizeof menu[0]);
-  snprintf(menu[nmenu].label, sizeof menu[0].label, "%s", label);
-  menu[nmenu++].kind = 2;
+  if (*mbuild_n >= MENU_MAX) return;
+  memset(&mbuild[*mbuild_n], 0, sizeof mbuild[0]);
+  snprintf(mbuild[*mbuild_n].label, sizeof mbuild[0].label, "%s", label);
+  mbuild[(*mbuild_n)++].kind = 2;
+}
+static void end_items(void) { /* Trennlinie am Ende weglassen */
+  if (*mbuild_n > 0 && mbuild[*mbuild_n - 1].kind == 1) (*mbuild_n)--;
 }
 
 #define ITEM_H 24
 #define SEP_H 11
 #define HEAD_H 22
 
-static int item_y(int i) {
+static int items_y(const MenuItem *it, int i) {
   int y = 6;
-  for (int k = 0; k < i; k++) y += menu[k].kind == 1 ? SEP_H : menu[k].kind == 2 ? HEAD_H : ITEM_H;
+  for (int k = 0; k < i; k++) y += it[k].kind == 1 ? SEP_H : it[k].kind == 2 ? HEAD_H : ITEM_H;
   return y;
 }
+static int item_y(int i) { return items_y(menu, i); }
 
-static void paint_menu(cairo_t *cr, int w, int h, void *arg) {
-  (void)arg;
+static void paint_items(cairo_t *cr, int w, int h, Window win, const MenuItem *items, int n, int hover) {
   int sx, sy;
   Window child;
-  XTranslateCoordinates(dpy, menuwin, root, 0, 0, &sx, &sy, &child);
+  XTranslateCoordinates(dpy, win, root, 0, 0, &sx, &sy, &child);
   glass(cr, sx, sy, (RGBA){T->tint.r, T->tint.g, T->tint.b, (dark ? .86 : .8) - (comp_on ? .08 : 0)}, w, h, 14);
   rim(cr, 0, 0, w, h, 14);
-  for (int i = 0; i < nmenu; i++) {
-    MenuItem *m = &menu[i];
-    int y = item_y(i);
+  for (int i = 0; i < n; i++) {
+    const MenuItem *m = &items[i];
+    int y = items_y(items, i);
     if (m->kind == 1) {
       set(cr, T->line);
       cairo_rectangle(cr, 15, y + 5, w - 30, 1);
@@ -2172,7 +2218,7 @@ static void paint_menu(cairo_t *cr, int w, int h, void *arg) {
       text(cr, 18, y + HEAD_H / 2.0, m->label, 11, true, T->fg3, w - 30, 0);
       continue;
     }
-    bool hl = i == menu_hover && !m->disabled;
+    bool hl = i == hover && !m->disabled;
     if (hl) {
       rrect(cr, 6, y, w - 12, ITEM_H, 8);
       set(cr, ACCENT);
@@ -2180,22 +2226,41 @@ static void paint_menu(cairo_t *cr, int w, int h, void *arg) {
     }
     RGBA col = m->disabled ? T->fg3 : hl ? (RGBA){1, 1, 1, 1} : T->fg;
     if (m->checked) text(cr, 15, y + ITEM_H / 2.0, "✓", 12, false, col, 0, 0);
-    text(cr, 32, y + ITEM_H / 2.0, m->label, 12.5, false, col, w - 50, 0);
+    int kw = 0;
+    if (m->sub) kw = text(cr, w - 16, y + ITEM_H / 2.0, "›", 15, false, col, 0, 2) + 10;
+    else if (m->key[0]) kw = text(cr, w - 16, y + ITEM_H / 2.0, m->key, 12.5, false,
+                                  hl ? (RGBA){1, 1, 1, .85} : T->fg3, 0, 2) + 14;
+    text(cr, 32, y + ITEM_H / 2.0, m->label, 12.5, false, col, w - 50 - kw, 0);
   }
+}
+
+static void paint_menu(cairo_t *cr, int w, int h, void *arg) {
+  (void)arg;
+  paint_items(cr, w, h, menuwin, menu, nmenu, menu_hover);
+}
+static void paint_sub(cairo_t *cr, int w, int h, void *arg) {
+  (void)arg;
+  paint_items(cr, w, h, subwin, submenu, nsub, sub_hover);
 }
 
 static void draw_menu(void) {
   if (menuwin) paint_window(menuwin, menu_w, menu_h, paint_menu, NULL);
 }
+static void draw_sub(void) {
+  if (subwin) paint_window(subwin, sub_w, sub_h, paint_sub, NULL);
+}
 
-static int menu_width(void) {
+static int items_width(const MenuItem *it, int n) {
   int w = 200;
-  for (int i = 0; i < nmenu; i++) {
-    int tw = text_width(menu[i].label, menu[i].kind == 2 ? 11 : 12.5, menu[i].kind == 2) + 64;
+  for (int i = 0; i < n; i++) {
+    int tw = text_width(it[i].label, it[i].kind == 2 ? 11 : 12.5, it[i].kind == 2) + 64;
+    if (it[i].key[0]) tw += text_width(it[i].key, 12.5, false) + 24;
+    if (it[i].sub) tw += 24;
     if (tw > w) w = tw;
   }
-  return w;
+  return w > 420 ? 420 : w;
 }
+static int menu_width(void) { return items_width(menu, nmenu); }
 
 static void open_menu(int x, int y, int owner, bool above) {
   close_menu();
@@ -2206,6 +2271,8 @@ static void open_menu(int x, int y, int owner, bool above) {
   if (x < 4) x = 4;
   if (y + h > SH - 4) y = SH - 4 - h; /* Dock links oder rechts: nicht unten aus dem Bild */
   if (y < MENUBAR_H) y = MENUBAR_H;
+  menu_x = x;
+  menu_y = y;
   menu_w = w;
   menu_h = h;
   menu_owner = owner;
@@ -2222,8 +2289,58 @@ static void open_menu(int x, int y, int owner, bool above) {
   if (owner >= 0) draw_menubar();
 }
 
+static void close_sub(void) {
+  if (!subwin) return;
+  XDestroyWindow(dpy, subwin);
+  subwin = None;
+  nsub = 0;
+  sub_hover = -1;
+  sub_of = -1;
+}
+
+static void build_gm_sub(int parent); /* Inhalt eines Untermenüs aus der globalen Menüleiste */
+
+/* Untermenü des Eintrags i rechts neben dem Menü, ohne Platz dort links davon */
+static void open_sub(int i) {
+  if (i == sub_of && subwin) return;
+  close_sub();
+  if (i < 0 || i >= nmenu || !menu[i].sub) return;
+  mbuild = submenu;
+  mbuild_n = &nsub;
+  nsub = 0;
+  build_gm_sub(menu[i].sub - 1);
+  end_items();
+  mbuild = menu;
+  mbuild_n = &nmenu;
+  if (!nsub) return;
+  int w = items_width(submenu, nsub), h = items_y(submenu, nsub) + 6;
+  int x = menu_x + menu_w - 6, y = menu_y + item_y(i) - 6;
+  if (x + w > SW - 4) x = menu_x - w + 6;
+  if (x < 4) x = 4;
+  if (y + h > SH - 4) y = SH - 4 - h;
+  if (y < MENUBAR_H) y = MENUBAR_H;
+  sub_w = w;
+  sub_h = h;
+  sub_of = i;
+  sub_hover = -1;
+  subwin = ui_window(x, y, w, h, ExposureMask | ButtonPressMask | ButtonReleaseMask | PointerMotionMask | LeaveWindowMask,
+                     true, NET_WM_WINDOW_TYPE_POPUP_MENU);
+  if (!comp_on) shape_round(subwin, w, h, 14, false);
+  XMapRaised(dpy, subwin);
+  draw_sub();
+}
+
+static int sub_item_at(int x, int y) {
+  if (x < 0 || x >= sub_w) return -1;
+  for (int i = 0; i < nsub; i++)
+    if (y >= items_y(submenu, i) && y < items_y(submenu, i + 1))
+      return submenu[i].kind == 0 && !submenu[i].disabled ? i : -1;
+  return -1;
+}
+
 static void close_menu(void) {
   if (!menuwin) return;
+  close_sub();
   XUngrabPointer(dpy, CurrentTime);
   XUngrabKeyboard(dpy, CurrentTime);
   XDestroyWindow(dpy, menuwin);
@@ -2239,20 +2356,32 @@ static int menu_item_at(int x, int y) {
   if (x < 0 || x >= menu_w) return -1;
   for (int i = 0; i < nmenu; i++) {
     int y0 = item_y(i), y1 = item_y(i + 1);
-    if (y >= y0 && y < y1) return menu[i].kind == 0 && !menu[i].disabled ? i : -1;
+    if (y >= y0 && y < y1) return menu[i].kind == 0 && (!menu[i].disabled || menu[i].sub) ? i : -1;
   }
   return -1;
 }
 
-static void activate_item(int i) {
-  if (i < 0 || i >= nmenu || menu[i].disabled || !menu[i].fn) {
+static void run_item(const MenuItem *m) {
+  if (m->disabled || !m->fn) {
     close_menu();
     return;
   }
-  void (*fn)(long) = menu[i].fn;
-  long arg = menu[i].arg;
+  void (*fn)(long) = m->fn;
+  long arg = m->arg;
   close_menu();
   fn(arg);
+}
+static void activate_item(int i) {
+  if (i >= 0 && i < nmenu && menu[i].sub) { /* Untermenü: nur öffnen */
+    open_sub(i);
+    return;
+  }
+  if (i < 0 || i >= nmenu) close_menu();
+  else run_item(&menu[i]);
+}
+static void activate_sub(int i) {
+  if (i < 0 || i >= nsub) close_menu();
+  else run_item(&submenu[i]);
 }
 
 static void cmd_minimize(long unused) { (void)unused; minimize_client(focused); }
@@ -2282,6 +2411,328 @@ static const char *current_app_name(void) {
   if (focused->app >= 0) return apps[focused->app].b.name;
   if (focused->draw) return "ClokeOS";
   return focused->cls[0] ? focused->cls : "Programm";
+}
+
+/* ---------------------------------------------------------------------------------------- */
+/* Globale Menüleiste: die Menüs des aktiven Programms stehen wie bei macOS oben in der Leiste,  */
+/* nicht im Fenster. GTK-Programme: appmenu-gtk-module blendet ihre Menüleiste aus und gibt sie */
+/* über D-Bus heraus (_GTK_UNIQUE_BUS_NAME und die Pfade am Fenster); cloakmenu holt sie als der */
+/* angemeldete Benutzer von dessen Sitzungsbus und schickt sie über einen Socket hierher.       */
+/* Mac-Programme (Darlings AppKit) legen dasselbe Zeilenformat als _CLOKE_MENU ans Fenster und   */
+/* bekommen die Wahl als ClientMessage _CLOKE_MENU_ACTIVATE (data.l[0] = Nummer) zurück.        */
+/* Eine Zeile: "<tiefe>\t<art>\t<nummer>\t<merkmale>\t<text>\t<kürzel>", art m Untermenü,       */
+/* i Eintrag, s Trennlinie, merkmale aus d (gesperrt), c (Haken), r (Auswahl).                  */
+
+#define GM_MAX 512
+typedef struct {
+  int depth;
+  char kind;
+  unsigned id;
+  bool disabled, checked;
+  char label[128], key[40];
+} GmItem;
+static GmItem gm[GM_MAX], gm_next[GM_MAX];
+static int ngm, ngm_next, gm_top[GM_TOP_MAX], ngm_top;
+static Window gm_win;            /* Fenster, dessen Menüs in der Leiste stehen; None = keine */
+static int gm_src;               /* 1 cloakmenu (D-Bus), 2 _CLOKE_MENU */
+static bool gm_reading;          /* zwischen MENU und END */
+static unsigned long gm_reading_xid;
+static int gm_fd = -1;           /* Socket zu cloakmenu */
+static pid_t gm_pid;
+static char gm_buf[1 << 16];
+static size_t gm_len;
+static char gm_watch[640];       /* zuletzt an cloakmenu geschickter Auftrag */
+
+static bool gm_parse(char *line, GmItem *it) {
+  char *f[6];
+  int n = 0;
+  char *p = line;
+  f[n++] = p;
+  while (n < 6 && (p = strchr(p, '\t'))) {
+    *p++ = 0;
+    f[n++] = p;
+  }
+  if (n < 5) return false;
+  memset(it, 0, sizeof *it);
+  it->depth = atoi(f[0]);
+  it->kind = f[1][0];
+  it->id = (unsigned)strtoul(f[2], NULL, 10);
+  it->disabled = strchr(f[3], 'd') != NULL;
+  it->checked = strchr(f[3], 'c') != NULL;
+  snprintf(it->label, sizeof it->label, "%s", f[4]);
+  if (n > 5) snprintf(it->key, sizeof it->key, "%s", f[5]);
+  return it->depth >= 0 && (it->kind == 'm' || it->kind == 'i' || it->kind == 's');
+}
+
+static void gm_set(const GmItem *items, int n, Window w, int src) {
+  bool other = w != gm_win;
+  memcpy(gm, items, (size_t)n * sizeof *items);
+  ngm = n;
+  gm_win = w;
+  gm_src = src;
+  ngm_top = 0;
+  for (int i = 0; i < ngm && ngm_top < GM_TOP_MAX; i++)
+    if (gm[i].depth == 0 && gm[i].kind == 'm') gm_top[ngm_top++] = i;
+  /* Ein offenes Programm-Menü bleibt bei Änderungen offen, nur nicht für ein anderes Fenster */
+  if (other && menu_owner >= MB_DYN) close_menu();
+  draw_menubar();
+}
+
+static void gm_clear(void) {
+  if (!ngm && !gm_win) return;
+  if (menu_owner >= MB_DYN) close_menu();
+  ngm = ngm_top = 0;
+  gm_win = None;
+  gm_src = 0;
+  draw_menubar();
+}
+
+static void gm_send(const char *line) {
+  if (gm_fd < 0) return;
+  size_t n = strlen(line);
+  if (write(gm_fd, line, n) != (ssize_t)n) warn("cloakmenu: Auftrag nicht geschickt");
+}
+
+static void gm_start(void) {
+  if (gm_fd >= 0 || access(CLOAKMENU, X_OK)) return;
+  int sv[2];
+  if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv)) return;
+  pid_t pid = fork();
+  if (pid == 0) {
+    setsid();
+    signal(SIGCHLD, SIG_DFL);
+    close(sv[0]);
+    dup2(sv[1], 0);
+    dup2(sv[1], 1);
+    if (sv[1] > 1) close(sv[1]);
+    if (!become(session)) _exit(126);
+    execl(CLOAKMENU, "cloakmenu", (char *)NULL);
+    _exit(127);
+  }
+  close(sv[1]);
+  if (pid < 0) {
+    close(sv[0]);
+    return;
+  }
+  int one = 1; /* stirbt cloakmenu, soll ein Schreibversuch CloakServer nicht mitnehmen */
+  setsockopt(sv[0], SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof one);
+  fcntl(sv[0], F_SETFL, O_NONBLOCK);
+  fcntl(sv[0], F_SETFD, FD_CLOEXEC);
+  gm_fd = sv[0];
+  gm_pid = pid;
+  gm_len = 0;
+  gm_watch[0] = 0;
+  gm_reading = false;
+  if (focused) gm_focus(focused);
+}
+
+static void gm_stop(void) {
+  if (gm_fd >= 0) close(gm_fd);
+  gm_fd = -1;
+  if (gm_pid > 0) kill(gm_pid, SIGTERM);
+  gm_pid = 0;
+  gm_watch[0] = 0;
+  gm_clear();
+}
+
+static void gm_line(char *line) {
+  if (!strncmp(line, "MENU ", 5)) {
+    gm_reading = true;
+    gm_reading_xid = strtoul(line + 5, NULL, 10);
+    ngm_next = 0;
+  } else if (!strcmp(line, "END")) {
+    if (!gm_reading) return;
+    gm_reading = false;
+    /* Nur die Antwort zum zuletzt beobachteten Fenster zählt; MENU 0 heißt: keine Menüs */
+    if (gm_reading_xid && gm_src == 1 && gm_reading_xid == gm_win) gm_set(gm_next, ngm_next, gm_win, 1);
+    else if (!gm_reading_xid && gm_src == 1) gm_clear();
+  } else if (gm_reading && ngm_next < GM_MAX && gm_parse(line, &gm_next[ngm_next])) {
+    ngm_next++;
+  }
+}
+
+static void gm_read(void) {
+  if (gm_fd < 0) return;
+  for (;;) {
+    ssize_t k = read(gm_fd, gm_buf + gm_len, sizeof gm_buf - 1 - gm_len);
+    if (k == 0) {
+      warn("cloakmenu hat sich beendet");
+      gm_stop();
+      return;
+    }
+    if (k < 0) return; /* EAGAIN: alles gelesen */
+    gm_len += (size_t)k;
+    char *start = gm_buf, *nl;
+    while ((nl = memchr(start, '\n', (size_t)(gm_buf + gm_len - start)))) {
+      *nl = 0;
+      gm_line(start);
+      start = nl + 1;
+    }
+    gm_len -= (size_t)(start - gm_buf);
+    memmove(gm_buf, start, gm_len);
+    if (gm_len >= sizeof gm_buf - 1) gm_len = 0; /* eine Zeile länger als der Puffer: verwerfen */
+  }
+}
+
+/* Textwert einer Fenster-Eigenschaft (UTF8_STRING oder STRING) */
+static bool prop_text(Window w, Atom a, char *out, size_t n) {
+  Atom type;
+  int fmt;
+  unsigned long cnt, after;
+  unsigned char *data = NULL;
+  out[0] = 0;
+  if (XGetWindowProperty(dpy, w, a, 0, (long)(n / 4), False, AnyPropertyType, &type, &fmt, &cnt, &after, &data) !=
+          Success || !data)
+    return false;
+  if (fmt == 8 && cnt) snprintf(out, n, "%.*s", (int)cnt, (char *)data);
+  XFree(data);
+  return out[0] != 0;
+}
+
+static unsigned long win_pid(Window w) {
+  Atom type;
+  int fmt;
+  unsigned long cnt, after, pid = 0;
+  unsigned char *data = NULL;
+  if (XGetWindowProperty(dpy, w, NET_WM_PID, 0, 1, False, XA_CARDINAL, &type, &fmt, &cnt, &after, &data) == Success &&
+      data) {
+    if (cnt) pid = *(unsigned long *)data;
+    XFree(data);
+  }
+  return pid;
+}
+
+/* Mac-Programm: Menüs aus _CLOKE_MENU */
+static bool gm_load_cloke(Window w) {
+  Atom type;
+  int fmt;
+  unsigned long cnt, after;
+  unsigned char *data = NULL;
+  if (XGetWindowProperty(dpy, w, CLOKE_MENU, 0, 1 << 16, False, AnyPropertyType, &type, &fmt, &cnt, &after, &data) !=
+          Success || !data)
+    return false;
+  if (fmt != 8 || !cnt) {
+    XFree(data);
+    return false;
+  }
+  char *txt = strndup((char *)data, cnt);
+  XFree(data);
+  if (!txt) return false;
+  ngm_next = 0;
+  char *save = NULL;
+  for (char *line = strtok_r(txt, "\n", &save); line; line = strtok_r(NULL, "\n", &save))
+    if (ngm_next < GM_MAX && gm_parse(line, &gm_next[ngm_next])) ngm_next++;
+  free(txt);
+  gm_set(gm_next, ngm_next, w, 2);
+  return true;
+}
+
+static void gm_focus(Client *c) {
+  Window w = c && !c->draw ? c->win : None;
+  if (w && gm_load_cloke(w)) {
+    if (gm_watch[0]) gm_send("CLEAR\n");
+    gm_watch[0] = 0;
+    return;
+  }
+  char bus[160], mb[160], un[160], app[160], win[160];
+  if (w && gm_fd >= 0 && prop_text(w, GTK_UNIQUE_BUS_NAME, bus, sizeof bus) &&
+      prop_text(w, GTK_MENUBAR_OBJECT_PATH, mb, sizeof mb) && !strpbrk(bus, " \t\n") && !strpbrk(mb, " \t\n")) {
+    if (!prop_text(w, UNITY_OBJECT_PATH, un, sizeof un) || strpbrk(un, " \t\n")) strcpy(un, "-");
+    if (!prop_text(w, GTK_APPLICATION_OBJECT_PATH, app, sizeof app) || strpbrk(app, " \t\n")) strcpy(app, "-");
+    if (!prop_text(w, GTK_WINDOW_OBJECT_PATH, win, sizeof win) || strpbrk(win, " \t\n")) strcpy(win, "-");
+    char cmd[sizeof gm_watch];
+    snprintf(cmd, sizeof cmd, "WATCH %lu %s %s %s %s %s\n", w, bus, mb, un, app, win);
+    if (gm_win != w) { /* bis cloakmenu antwortet: noch keine Programm-Menüs */
+      if (menu_owner >= MB_DYN) close_menu();
+      ngm = ngm_top = 0;
+      gm_win = w;
+      gm_src = 1;
+    }
+    if (strcmp(cmd, gm_watch)) {
+      snprintf(gm_watch, sizeof gm_watch, "%s", cmd);
+      gm_send(cmd);
+    }
+    return;
+  }
+  /* Ein Fenster ohne Menüs desselben Programms (Dialog) behält dessen Menüleiste */
+  if (w && gm_win && gm_win != w && win_pid(w) && win_pid(w) == win_pid(gm_win)) return;
+  if (gm_watch[0]) gm_send("CLEAR\n");
+  gm_watch[0] = 0;
+  gm_clear();
+}
+
+static void gm_forget(Window w) {
+  if (!w || w != gm_win) return;
+  if (gm_watch[0]) gm_send("CLEAR\n");
+  gm_watch[0] = 0;
+  gm_clear();
+}
+
+static void gm_property(Client *c, Atom a) {
+  if (c != focused) return;
+  if (a == CLOKE_MENU || a == GTK_UNIQUE_BUS_NAME || a == GTK_MENUBAR_OBJECT_PATH || a == UNITY_OBJECT_PATH ||
+      a == GTK_APPLICATION_OBJECT_PATH || a == GTK_WINDOW_OBJECT_PATH)
+    gm_focus(c);
+}
+
+static void gm_activate(long id) {
+  if (gm_src == 1) {
+    char b[48];
+    snprintf(b, sizeof b, "ACTIVATE %ld\n", id);
+    gm_send(b);
+  } else if (gm_src == 2 && gm_win) {
+    XClientMessageEvent ev = {.type = ClientMessage, .window = gm_win, .message_type = CLOKE_MENU_ACTIVATE, .format = 32};
+    ev.data.l[0] = id;
+    ev.data.l[1] = CurrentTime;
+    XSendEvent(dpy, gm_win, False, NoEventMask, (XEvent *)&ev);
+  }
+}
+
+/* gm[i] in das Menü, das gerade entsteht */
+static void gm_add(int i) {
+  const GmItem *g = &gm[i];
+  if (g->kind == 's') {
+    add_sep();
+    return;
+  }
+  int before = *mbuild_n;
+  add_item(g->label, g->kind == 'i' ? gm_activate : NULL, g->id, g->disabled);
+  if (*mbuild_n == before) return;
+  MenuItem *m = &mbuild[*mbuild_n - 1];
+  m->checked = g->checked;
+  snprintf(m->key, sizeof m->key, "%s", g->key);
+  if (g->kind == 'm') {
+    m->sub = i + 1;
+    m->disabled = false;
+  }
+}
+
+/* Einträge eine Ebene unter gm[parent]; flatten: die nächste Ebene als Überschrift mit Einträgen
+ * statt als weiteres Untermenü (CloakServer zeigt Menü und eine Ebene Untermenü) */
+static void gm_children(int parent, bool flatten) {
+  int d = gm[parent].depth + 1;
+  for (int i = parent + 1; i < ngm && gm[i].depth >= d; i++) {
+    if (gm[i].depth != d) continue;
+    if (flatten && gm[i].kind == 'm') {
+      add_sep();
+      add_head(gm[i].label);
+      for (int k = i + 1; k < ngm && gm[k].depth > d; k++)
+        if (gm[k].depth == d + 1 && gm[k].kind != 'm') gm_add(k);
+      add_sep();
+      continue;
+    }
+    gm_add(i);
+  }
+}
+
+static void build_gm_menu(int t) {
+  if (t < 0 || t >= ngm_top) return;
+  gm_children(gm_top[t], false);
+  end_items();
+}
+
+static void build_gm_sub(int parent) {
+  if (parent >= 0 && parent < ngm) gm_children(parent, true);
 }
 
 static void build_menu(int which) {
@@ -2389,6 +2840,7 @@ static void clock_text(char *buf, size_t n) {
 }
 
 static const char *mb_label(int i) {
+  if (i >= MB_DYN) return i - MB_DYN < ngm_top ? gm[gm_top[i - MB_DYN]].label : "";
   switch (i) {
   case MB_APP: return current_app_name();
   case MB_FILE: return "Ablage";
@@ -2397,13 +2849,10 @@ static const char *mb_label(int i) {
   return "";
 }
 
+/* Links: Logo, Programmname, dann die Menüs des Programms (globale Menüleiste) oder "Ablage",
+ * und "Fenster" (vor einem "Hilfe" am Ende, wie bei macOS). Rechts: Netzwerk bis Uhr. */
 static void layout_menubar(void) {
-  int x = 8;
-  for (int i = MB_LOGO; i <= MB_WINDOW; i++) {
-    mb_w[i] = i == MB_LOGO ? 35 : text_width(mb_label(i), 12.5, i == MB_APP) + 20;
-    mb_x[i] = x;
-    x += mb_w[i] + 1;
-  }
+  memset(mb_w, 0, sizeof mb_w);
   char clk[64];
   clock_text(clk, sizeof clk);
   int r = SW - 8;
@@ -2413,6 +2862,30 @@ static void layout_menubar(void) {
     r -= mb_w[i];
     mb_x[i] = r;
     r -= 1;
+  }
+  int order[MB_N + GM_TOP_MAX], n = 0;
+  order[n++] = MB_LOGO;
+  order[n++] = MB_APP;
+  if (ngm_top) {
+    const char *last = gm[gm_top[ngm_top - 1]].label;
+    bool help = !strcasecmp(last, "Help") || !strcasecmp(last, "Hilfe");
+    for (int k = 0; k < ngm_top; k++) {
+      if (help && k == ngm_top - 1) order[n++] = MB_WINDOW;
+      order[n++] = MB_DYN + k;
+    }
+    if (!help) order[n++] = MB_WINDOW;
+  } else {
+    order[n++] = MB_FILE;
+    order[n++] = MB_WINDOW;
+  }
+  int x = 8;
+  for (int k = 0; k < n; k++) {
+    int i = order[k];
+    int w = i == MB_LOGO ? 35 : text_width(mb_label(i), 12.5, i == MB_APP) + 20;
+    if (x + w > mb_x[MB_WIFI] - 12) break; /* kein Platz mehr: die übrigen Menüs fallen weg */
+    mb_w[i] = w;
+    mb_x[i] = x;
+    x += w + 1;
   }
 }
 
@@ -2444,7 +2917,8 @@ static void paint_menubar(cairo_t *cr, int w, int h, void *arg) {
   cairo_pattern_destroy(g);
 
   layout_menubar();
-  for (int i = 0; i < MB_N; i++) {
+  for (int i = 0; i < MB_N + ngm_top; i++) {
+    if (!mb_w[i]) continue;
     if (menu_owner == i) {
       rrect(cr, mb_x[i], 3, mb_w[i], 22, 11);
       set(cr, T->pill);
@@ -2471,8 +2945,8 @@ static void paint_menubar(cairo_t *cr, int w, int h, void *arg) {
 static void draw_menubar(void) { paint_window(menubar, SW, MENUBAR_H, paint_menubar, NULL); }
 
 static int menubar_item_at(int x) {
-  for (int i = 0; i < MB_N; i++)
-    if (x >= mb_x[i] && x < mb_x[i] + mb_w[i]) return i;
+  for (int i = 0; i < MB_N + ngm_top; i++)
+    if (mb_w[i] && x >= mb_x[i] && x < mb_x[i] + mb_w[i]) return i;
   return -1;
 }
 
@@ -2482,7 +2956,8 @@ static void menubar_open(int i) {
     cmd_spot(0);
     return;
   }
-  build_menu(i);
+  if (i >= MB_DYN) build_gm_menu(i - MB_DYN);
+  else build_menu(i);
   open_menu(mb_x[i], MENUBAR_H - 1, i, false);
 }
 
@@ -3329,6 +3804,7 @@ static void on_button_press(XButtonEvent *e) {
   }
   if (menuwin) {
     if (e->window == menuwin && e->x >= 0 && e->y >= 0 && e->x < menu_w && e->y < menu_h) return;
+    if (subwin && e->window == subwin && e->x >= 0 && e->y >= 0 && e->x < sub_w && e->y < sub_h) return;
     if (e->window == menubar) {
       int i = menubar_item_at(e->x);
       if (i == menu_owner || i < 0) close_menu();
@@ -3397,6 +3873,9 @@ static void on_button_release(XButtonEvent *e) {
     if (e->window == menuwin) {
       int i = menu_item_at(e->x, e->y);
       if (i >= 0) activate_item(i);
+    } else if (subwin && e->window == subwin) {
+      int i = sub_item_at(e->x, e->y);
+      if (i >= 0) activate_sub(i);
     }
     return;
   }
@@ -3430,6 +3909,18 @@ static void on_motion(XMotionEvent *e) {
       int i = menu_item_at(e->x, e->y);
       if (i != menu_hover) {
         menu_hover = i;
+        draw_menu();
+        if (i >= 0 && menu[i].sub) open_sub(i);
+        else if (i >= 0) close_sub();
+      }
+    } else if (subwin && e->window == subwin) {
+      int i = sub_item_at(e->x, e->y);
+      if (i != sub_hover) {
+        sub_hover = i;
+        draw_sub();
+      }
+      if (menu_hover != sub_of) { /* Eintrag des Untermenüs hervorgehoben lassen */
+        menu_hover = sub_of;
         draw_menu();
       }
     } else if (e->window == menubar && menu_owner >= 0) {
@@ -3479,9 +3970,13 @@ static void on_leave(XCrossingEvent *e) {
     show_tip(-1);
     draw_dock();
   }
-  if (e->window == menuwin && menu_hover >= 0) {
+  if (e->window == menuwin && menu_hover >= 0 && !subwin) {
     menu_hover = -1;
     draw_menu();
+  }
+  if (subwin && e->window == subwin && sub_hover >= 0) {
+    sub_hover = -1;
+    draw_sub();
   }
   Client *c = find_client(e->window);
   if (c && e->window == c->frame && c->hover) {
@@ -3495,6 +3990,7 @@ static void on_expose(XExposeEvent *e) {
   if (e->window == menubar) draw_menubar();
   else if (e->window == dock) draw_dock();
   else if (e->window == menuwin) draw_menu();
+  else if (subwin && e->window == subwin) draw_sub();
   else if (e->window == tipwin) paint_window(tipwin, tip_w, 24, paint_tip, NULL);
   else if (e->window == lpwin) draw_launchpad();
   else {
@@ -3541,8 +4037,29 @@ static void on_key(XKeyEvent *e) {
   }
   KeySym ks = XLookupKeysym(e, 0);
   if (menuwin) {
-    if (ks == XK_Escape) close_menu();
-    else if (ks == XK_Down || ks == XK_Up) {
+    if (subwin && sub_hover >= 0 && (ks == XK_Down || ks == XK_Up)) { /* im Untermenü */
+      int d = ks == XK_Down ? 1 : -1, i = sub_hover;
+      for (int k = 0; k < nsub; k++) {
+        i = (i + d + nsub) % nsub;
+        if (submenu[i].kind == 0 && !submenu[i].disabled) break;
+      }
+      sub_hover = i;
+      draw_sub();
+    } else if (subwin && sub_hover >= 0 && ks == XK_Return) {
+      activate_sub(sub_hover);
+    } else if (subwin && sub_hover >= 0 && (ks == XK_Left || ks == XK_Escape)) {
+      sub_hover = -1;
+      draw_sub();
+    } else if (ks == XK_Escape) close_menu();
+    else if (ks == XK_Right && menu_hover >= 0 && menu[menu_hover].sub) {
+      open_sub(menu_hover);
+      for (int i = 0; i < nsub; i++)
+        if (submenu[i].kind == 0 && !submenu[i].disabled) {
+          sub_hover = i;
+          break;
+        }
+      draw_sub();
+    } else if (ks == XK_Down || ks == XK_Up) {
       int d = ks == XK_Down ? 1 : -1, i = menu_hover;
       for (int k = 0; k < nmenu; k++) {
         i = (i + d + nmenu) % nmenu;
@@ -3550,6 +4067,8 @@ static void on_key(XKeyEvent *e) {
       }
       menu_hover = i;
       draw_menu();
+      if (menu[i].sub) open_sub(i);
+      else close_sub();
     } else if (ks == XK_Return && menu_hover >= 0) {
       activate_item(menu_hover);
     }
@@ -3674,6 +4193,13 @@ static void setup_atoms(void) {
   MOTIF_WM_HINTS = atom("_MOTIF_WM_HINTS");
   XROOTPMAP_ID = atom("_XROOTPMAP_ID");
   ESETROOT_PMAP_ID = atom("ESETROOT_PMAP_ID");
+  GTK_UNIQUE_BUS_NAME = atom("_GTK_UNIQUE_BUS_NAME");
+  GTK_MENUBAR_OBJECT_PATH = atom("_GTK_MENUBAR_OBJECT_PATH");
+  UNITY_OBJECT_PATH = atom("_UNITY_OBJECT_PATH");
+  GTK_APPLICATION_OBJECT_PATH = atom("_GTK_APPLICATION_OBJECT_PATH");
+  GTK_WINDOW_OBJECT_PATH = atom("_GTK_WINDOW_OBJECT_PATH");
+  CLOKE_MENU = atom("_CLOKE_MENU");
+  CLOKE_MENU_ACTIVATE = atom("_CLOKE_MENU_ACTIVATE");
 }
 
 static void setup_ewmh(void) {
@@ -3754,7 +4280,7 @@ WinStyle cs_window_style(Window w) {
   if (w == dock)
     return (WinStyle){WK_GLASS, ds * .42 + 6, 22, 10, .28, .it = dock_pos == POS_BOTTOM ? dock_lift : 0,
                       .ir = dock_pos == POS_LEFT ? dock_lift : 0, .il = dock_pos == POS_RIGHT ? dock_lift : 0};
-  if (w && w == menuwin) return (WinStyle){WK_GLASS, 14, 16, 8, .26};
+  if (w && (w == menuwin || w == subwin)) return (WinStyle){WK_GLASS, 14, 16, 8, .26};
   if (w && w == tipwin) return (WinStyle){WK_GLASS, 12, 10, 4, .2};
   for (Client *c = clients; c; c = c->next)
     if (c->frame == w) {
@@ -3930,6 +4456,7 @@ int main(int argc, char **argv) {
             update_title(c);
             draw_frame(c);
           }
+          if (c && ev.xproperty.window == c->win) gm_property(c, ev.xproperty.atom);
           break;
         }
         case ButtonPress: on_button_press(&ev.xbutton); break;
@@ -3957,8 +4484,10 @@ int main(int argc, char **argv) {
     fd_set fds;
     FD_ZERO(&fds);
     FD_SET(fd, &fds);
+    if (gm_fd >= 0) FD_SET(gm_fd, &fds);
     struct timeval tv = {1, 0};
     if (shake_t0 >= 0 || anim) tv = (struct timeval){0, 16000}; /* Animation: so oft wie möglich */
-    select(fd + 1, &fds, NULL, NULL, &tv);
+    select((gm_fd > fd ? gm_fd : fd) + 1, &fds, NULL, NULL, &tv);
+    if (gm_fd >= 0 && FD_ISSET(gm_fd, &fds)) gm_read();
   }
 }
