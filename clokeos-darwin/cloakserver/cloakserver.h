@@ -28,8 +28,9 @@ WinStyle cs_window_style(Window w);
 Pixmap cs_wallpaper(void);
 
 /* apps.c: Programme als .app-Bundles wie bei macOS */
-/* APP_ARCH: nur für die andere Architektur gebaut (arm64 auf x86_64 oder umgekehrt) */
-enum { APP_OK, APP_APPKIT, APP_ARCH, APP_MISSING, APP_NOEXEC };
+/* APP_ARCH: nur für die andere Architektur gebaut (arm64 auf x86_64 oder umgekehrt);
+ * APP_ARM64E: nur arm64e (Apples eigene Programme), das ClokeOS auf arm64 nicht ausführt */
+enum { APP_OK, APP_APPKIT, APP_ARCH, APP_MISSING, APP_NOEXEC, APP_ARM64E };
 /* Darlings Mac-Frameworks (AppKit, Foundation …, macapps/), gefunden über DYLD_FRAMEWORK_PATH */
 #define MAC_FRAMEWORKS "/Library/ClokeOS/MacFrameworks"
 typedef struct {

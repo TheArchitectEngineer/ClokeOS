@@ -170,7 +170,7 @@ Grenzen:
 
 ### Desktop auf arm64
 
-![Anmeldung auf arm64 mit Apples Hypervisor, 11 Sekunden nach dem Start von QEMU](clokeos-darwin/anmeldung-arm64.png)
+![Anmeldung auf arm64 mit Apples Hypervisor, 12,6 Sekunden nach dem Start von QEMU](clokeos-darwin/anmeldung-arm64.png)
 
 ![Desktop auf arm64: Terminal, Fundus und „Über ClokeOS“ mit Architektur arm64, Prozessor „Apple processor“](clokeos-darwin/desktop-arm64.png)
 
@@ -178,7 +178,7 @@ Grenzen:
 cd clokeos-darwin && CLOKEOS_ARCH=arm64 CLOKEOS_FLAVOR=desktop ./brand.sh && CLOKEOS_ARCH=arm64 CLOKEOS_FLAVOR=desktop ./run.sh
 ```
 
-Basis ist PureDarwins Vorschau-Image `puredarwin-arm64-virt.img` (3,1 GiB). Mit Apples Hypervisor (HVF) steht die Anmeldung etwa 10 bis 13 Sekunden nach dem Start von QEMU da (x86_64 emuliert: knapp zwei Minuten), der Desktop eine Sekunde nach der Anmeldung; Terminal und Fundus öffnen in etwa einer Sekunde. Gemessen am 22.10.2026 auf dem Mac mit Apple-Chip. Was dafür nötig war, weil PureDarwins arm64-Image an mehreren Stellen nicht trägt:
+Basis ist PureDarwins Vorschau-Image `puredarwin-arm64-virt.img` (3,1 GiB). Mit Apples Hypervisor (HVF) steht die Anmeldung 12,6 Sekunden nach dem Start von QEMU da (drei Messungen, Shell nach 7,1 s; x86_64 emuliert: knapp 90 Sekunden), der Desktop eine Sekunde nach der Anmeldung; Terminal und Fundus öffnen in etwa einer Sekunde. Gemessen am 22.10.2026 auf dem Mac mit Apple-Chip. Was dafür nötig war, weil PureDarwins arm64-Image an mehreren Stellen nicht trägt:
 
 - **Bild über virtio-gpu.** Mit ramfb startet kein Grafiktreiber: `IOGOPFramebuffer` hängt sich auf arm64 nur an einen „framebuffer“-Knoten, den PureDarwin bloß für den Raspberry Pi anlegt. Xorgs Treiber `puredarwingop` nimmt auf arm64 zuerst `IOVirtIOGPU`; `run.sh` gibt dem Desktop deshalb `virtio-gpu-pci` (1280 × 800). Die Firmware bietet dort nur Blt an, der Kernel bekommt also keinen Framebuffer; mit PureDarwins Boot-Argumenten `-v gopconsole=1 serial_video_mirror=1` malt er seine Konsole trotzdem und hängt in einer Endlosschleife. ClokeOS setzt eigene Boot-Argumente ohne diese (`config.sh`). Ein Bootlogo gibt es auf arm64 noch nicht; das Bild bleibt schwarz, bis CloakServer den Umhang zeigt.
 - **Kernel-Panik beim ersten Bild.** `IOVirtIOGPU::setConsoleDrawing` schaltet beim ersten Bild von Xorg die Kernel-Konsole ab; dabei schreibt der Kernel in `cons_ops_index`, das in PureDarwins arm64-Kernel schreibgeschützt liegt („Unexpected fault in kernel static region“). `kcfix.py` ersetzt diesen einen Aufruf im Kernel Collection durch `nop` (die x86-Farbkorrektur braucht arm64 nicht, dort zeichnet `IOGOPFramebuffer` nicht).
@@ -186,12 +186,12 @@ Basis ist PureDarwins Vorschau-Image `puredarwin-arm64-virt.img` (3,1 GiB). Mit 
 - **libXcursor.** Die einzige `libXcursor.1.dylib` des Images ist eine x86_64-Datei, GTK sucht die 13 Xcursor-Funktionen aber zur Laufzeit; Terminal, NetSurf und Xfce-Einstellungen brachen ab. ClokeOS baut sie aus `libXcursor.a` neu und lädt sie mit `DYLD_INSERT_LIBRARIES` in die Sitzung.
 - **Kein System-V-Shared-Memory.** `shmget` beendet Programme mit SIGSYS (cairo prüft damit MIT-SHM). CloakServer ignoriert SIGSYS, seine Programme erben das und zeichnen ohne Shared Memory.
 - **D-Bus.** PureDarwins `dbus-launch` startet auf arm64 nicht (sucht `xcb_parse_display`). Die Sitzung läuft jetzt auf beiden Architekturen über `dbus-run-session`, der Bus des Benutzers über `dbus-daemon --fork`.
-- **Netz und Uhr.** configd benennt die Karte, holt aber keine Adresse; `com.clokeos.network` (feste Adresse, Uhr per HTTP) kommt deshalb in jedes arm64-Image.
-- **Xorg kreiste mit voller Last.** PureDarwins Tastatur- und Maustreiber beantworten `poll` sofort mit `POLLNVAL`, Xorg wartete deshalb nie: Eine zsh-Schleife mit 2 Mio. Durchläufen brauchte 6,8 statt 3,5 s. `cloakserver/xpoll.c` (in Xorg geladen von `cloakserver-xorg`) fragt solche Geräte alle 10 ms ab; danach braucht die Schleife mit Xorg 3,5 s, Xorg selbst 0,1 % CPU. Die Bibliothek ist auch im x86-Image; ob x86_64 denselben Fehler hat, ist noch nicht gemessen.
+- **Netz und Uhr.** configd benennt die Karte, holt aber keine Adresse, und startete es nach `com.clokeos.network`, räumte es dessen Default-Route wieder ab (dann keine Uhrzeit, kein Internet). brand.sh nimmt configd aus arm64-Images heraus; `com.clokeos.network` (feste Adresse, Uhr per HTTP, bis zu fünf Versuche) kommt in jedes arm64-Image. CloakServer wartet höchstens 5 s auf die Uhr, damit die Anmeldung nicht 1970 und das Nachtbild zeigt; Xorg startet unterdessen schon.
+- **Xorg kreiste mit voller Last.** PureDarwins Tastatur- und Maustreiber beantworten `poll` sofort mit `POLLNVAL`, Xorg wartete deshalb nie: Eine zsh-Schleife mit 2 Mio. Durchläufen brauchte 6,8 statt 3,5 s. `cloakserver/xpoll.c` (in Xorg geladen von `cloakserver-xorg`) fragt solche Geräte alle 10 ms ab; danach braucht die Schleife mit Xorg 3,5 s, Xorg selbst 0,1 % CPU. x86_64 hat denselben Fehler; dort liegt Xorg mit der Bibliothek bei etwa 4 % unter Emulation.
 
-Mac-Programme: arm64-Kommandozeilenprogramme aus Apples SDK laufen (auch mit „chained fixups“), arm64e (Apples eigene Programme) lehnt der Kernel ab („bad CPU type“). CloakServer prüft Programme jetzt gegen die eigene Architektur; Intel-Programme melden auf arm64, dass es kein Rosetta gibt. Darlings Mac-Frameworks baut `macapps/` nur für x86_64: Darlings CoreFoundation hat die Assembler-Teile für Nachrichtenweiterleitung und `NSInvocation` nur für x86, nicht für arm64.
+Mac-Programme: arm64-Kommandozeilenprogramme aus Apples SDK laufen (auch mit „chained fixups“), arm64e (Apples eigene Programme) lehnt der Kernel ab („bad CPU type“). CloakServer prüft Programme jetzt gegen die eigene Architektur: Intel-Programme melden auf arm64, dass es kein Rosetta gibt, reine arm64e-Programme, dass ClokeOS arm64e nicht ausführt. Darlings Mac-Frameworks baut `macapps/` nur für x86_64: Darlings CoreFoundation hat die Assembler-Teile für Nachrichtenweiterleitung und `NSInvocation` nur für x86, nicht für arm64.
 
-Offen: Die VM belegt auch im Leerlauf einen Kern des Macs ganz; im Gast rechnet dann kein Prozess, die Zeit verbringt PureDarwins Kernel in seiner Leerlaufschleife (nicht weiter untersucht). Die Uhr kommt nicht immer: In einem von drei Starts meldete `netcat` zu example.com „Network is unreachable“, obwohl der Router antwortet (Ursache offen, `clokeos-network` versucht es jetzt fünfmal). Die Änderungen an gemeinsamem Code (CloakServer, `kcfix.py`, `brand.sh`, D-Bus) sind auf x86_64 noch nicht neu gebootet.
+Offen: Die VM belegt auch im Leerlauf einen Kern des Macs ganz; im Gast rechnet dann kein Prozess, die Zeit verbringt PureDarwins Kernel in seiner Leerlaufschleife (nicht weiter untersucht). Die x86_64-Desktop-Variante ist mit allen Änderungen neu gebaut und gebootet (Anmeldung, Terminal, D-Bus über dbus-daemon).
 
 ### Architekturen
 
@@ -200,7 +200,7 @@ Offen: Die VM belegt auch im Leerlauf einen Kern des Macs ganz; im Gast rechnet 
 | x86_64 (QEMU q35, UEFI) | gebaut, gebootet, als Release | PureDarwin 20.5, `puredarwin-minimal.img` |
 | x86_64 mit Desktop | gebaut, gebootet bis CloakServer, kein Release | PureDarwins Vorschau-Image `puredarwin.img` (6,1 GiB, von puredarwin.org) |
 | arm64 (QEMU virt) | gebaut, gebootet mit Apples Hypervisor und emuliert, Netzwerk, noch kein Release | PureDarwins Vorschau-Image `puredarwin-arm64-virt-minimal.img` (578 MiB, von puredarwin.org) |
-| arm64 mit Desktop | gebaut, gebootet bis CloakServer mit HVF, Anmeldung nach etwa 11 s, kein Release | PureDarwins Vorschau-Image `puredarwin-arm64-virt.img` (3,1 GiB, von puredarwin.org) |
+| arm64 mit Desktop | gebaut, gebootet bis CloakServer mit HVF, Anmeldung nach 12,6 s, kein Release | PureDarwins Vorschau-Image `puredarwin-arm64-virt.img` (3,1 GiB, von puredarwin.org) |
 | Raspberry Pi 3 | offen | PureDarwin bootet dort bis zur Shell, bietet aber kein fertiges Image an |
 
 Die Architektur wählt `CLOKEOS_ARCH`, für alle Skripte gleich:

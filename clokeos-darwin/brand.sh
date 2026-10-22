@@ -45,9 +45,11 @@ if [ "$CLOKE_FLAVOR" = desktop ]; then
   "$HERE/macapps/install.sh" "$tmp/stage"
 fi
 # Netzwerk auf arm64: Netzwerkkarten selbst benennen und eine feste Adresse für QEMUs Benutzernetz
-# setzen, danach die Uhr stellen (tools/). Das Minimal-Image hat kein configd; im Desktop-Image
-# benennt configd die Karte zwar, holt aber keine Adresse, und eine Echtzeituhr liest PureDarwin
-# auf arm64 nie. Auf x86_64 holt configd die Adresse per DHCP, die Uhr kommt aus der RTC.
+# setzen, danach die Uhr stellen (tools/). Das Minimal-Image hat kein configd. Im Desktop-Image
+# benennt configd die Karte zwar, holt aber keine Adresse, und startet es nach clokeos-network,
+# räumt es dessen Default-Route wieder ab (dann keine Uhrzeit, kein Internet). brand.sh nimmt
+# configd dort deshalb heraus (brand_ext4). Eine Echtzeituhr liest PureDarwin auf arm64 nie.
+# Auf x86_64 holt configd die Adresse per DHCP, die Uhr kommt aus der RTC.
 if [ "$CLOKE_ARCH" = arm64 ] || ! "$DEBUGFS" -R 'stat /usr/libexec/configd' "$root" 2>/dev/null | grep -q '^Inode'; then
   mkdir -p "$tmp/stage/usr/libexec" "$tmp/stage/System/Library/LaunchDaemons"
   "$HERE/tools/build.sh" "$tmp/stage/usr/libexec"
@@ -183,6 +185,7 @@ brand_ext4() {
   {
     echo "rm /System/Library/LaunchDaemons/org.puredarwin.hostname.plist"
     echo "rm /usr/libexec/pd-set-hostname"
+    [ "$CLOKE_ARCH" = arm64 ] && echo "rm /System/Library/LaunchDaemons/com.apple.configd.plist"
     (cd "$tmp/stage" && find . -mindepth 1 -type d | sed 's|^\.||' | sort) | while read -r d; do
       echo "mkdir $d"
     done

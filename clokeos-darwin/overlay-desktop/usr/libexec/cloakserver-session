@@ -11,6 +11,13 @@ print '*customization: -color' | /bin/xrdb -nocpp -merge
 # arm64: PureDarwins GTK sucht die Xcursor-Funktionen in den geladenen Bibliotheken, lädt aber
 # keine libXcursor (siehe cloakserver/build.sh). Für CloakServer und alle Programme der Sitzung:
 [[ $(uname -m) == arm64 && -r /lib/libXcursor.1.dylib ]] && export DYLD_INSERT_LIBRARIES=/lib/libXcursor.1.dylib
+# arm64 hat keine Echtzeituhr; com.clokeos.network stellt die Uhr erst nach dem Netzwerkstart,
+# ungefähr wenn Xorg bereit ist. Damit die Anmeldung nicht kurz 1970 und das Nachtbild zeigt,
+# wartet CloakServer höchstens 5 Sekunden darauf (Xorg startet unterdessen schon).
+for i in {1..10}; do
+  (( $(date +%Y) >= 2020 )) && break
+  sleep 0.5
+done
 cd $HOME
 cs=/System/Library/CoreServices/CloakServer/CloakServer
 # dbus-run-session statt dbus-launch: PureDarwins dbus-launch startet auf arm64 nicht.

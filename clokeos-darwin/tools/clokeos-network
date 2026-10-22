@@ -1,9 +1,10 @@
 #!/bin/sh
 # Netzwerk für arm64: erst bekommen die Netzwerkkarten ihre Namen (clokeos-netup), dann setzt
 # PureDarwins netsetup eine feste Adresse. Die Vorgaben passen zu QEMUs Benutzernetz (-nic user);
-# andere Werte gehören nach /etc/clokeos-network. Im arm64-Desktop-Image läuft configd: Es benennt
-# die Karten selbst und hält den Netzwerkstapel offen, clokeos-netup kommt dann nicht heran
-# (IOServiceOpen: 0xe00002c7); eine Adresse holt configd dort aber nicht, das macht netsetup.
+# andere Werte gehören nach /etc/clokeos-network. brand.sh nimmt configd aus arm64-Images heraus
+# (es holt dort keine Adresse und räumt die von netsetup gesetzte Route ab). Läuft es doch, hält es
+# den Netzwerkstapel offen, clokeos-netup kommt nicht heran (IOServiceOpen: 0xe00002c7), und die
+# Karten hat configd schon benannt.
 #
 # Danach die Uhr: PureDarwin liest auf arm64 die Echtzeituhr der Maschine nicht, die Zeit beginnt
 # bei 1970. Steht sie noch vor 2020, holt das Skript sie aus dem Date-Kopf einer HTTP-Antwort von

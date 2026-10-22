@@ -2914,6 +2914,11 @@ static void problem_text(const App *a, char *buf, size_t n) {
                      "(x86_64); es braucht eine Intel- oder Universal-Fassung.");
 #endif
     break;
+  case APP_ARM64E:
+    snprintf(buf, n, "Das Programm ist nur für arm64e gebaut, die Variante mit Zeigersignaturen, die Apple für "
+                     "seine eigenen Programme nutzt. ClokeOS führt arm64e nicht aus; es braucht eine Fassung für "
+                     "arm64 oder eine Universal-Fassung.");
+    break;
   case APP_MISSING:
     snprintf(buf, n, "Das Mac-Programm braucht %s, das es in ClokeOS nicht gibt.", a->b.missing);
     break;

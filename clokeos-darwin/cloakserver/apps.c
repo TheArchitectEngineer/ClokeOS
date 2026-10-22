@@ -316,6 +316,13 @@ static void check_thin(Bundle *b, const unsigned char *m, size_t len) {
     b->kind = APP_ARCH;
     return;
   }
+#if defined(__arm64__) || defined(__aarch64__)
+  /* arm64e (Zeigersignaturen) lehnt PureDarwins Kernel ab: "bad CPU type in executable" */
+  if ((le32(m + 8) & 0xffffff) == CPU_SUBTYPE_ARM64E) {
+    b->kind = APP_ARM64E;
+    return;
+  }
+#endif
   if (cpu != CPU_NATIVE) {
     b->kind = APP_NOEXEC;
     snprintf(b->missing, sizeof b->missing, "unbekannte Architektur");
