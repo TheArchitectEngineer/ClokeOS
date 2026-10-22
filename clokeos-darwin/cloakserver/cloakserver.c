@@ -1728,20 +1728,25 @@ static void restore_root_env(void) {
   }
 }
 
-/* D-Bus für die Sitzung, gestartet als der Benutzer: dbus-launch gibt die Adresse aus und endet */
+/* D-Bus für die Sitzung, gestartet als der Benutzer: dbus-daemon geht in den Hintergrund und gibt
+ * vorher die Adresse aus (wie dbus-launch, das dasselbe tut; PureDarwins dbus-launch startet auf
+ * arm64 nicht, es sucht xcb_parse_display im flachen Namensraum). */
 static void start_session_bus(const Account *a) {
   int fd[2];
-  if (access("/bin/dbus-launch", X_OK) || pipe(fd)) return;
+  if (access("/bin/dbus-daemon", X_OK) || pipe(fd)) return;
   pid_t pid = fork();
   if (pid == 0) {
     setsid();
     signal(SIGCHLD, SIG_DFL);
-    dup2(fd[1], 1);
+    /* Adresse auf fd 3: als Dienst lenkt dbus-daemon 0 bis 2 auf /dev/null um */
     close(fd[0]);
-    close(fd[1]);
+    if (fd[1] != 3) {
+      dup2(fd[1], 3);
+      close(fd[1]);
+    }
     if (!become(a)) _exit(126);
     if (chdir(a->home)) { /* dann eben im aktuellen Ordner */ }
-    execl("/bin/dbus-launch", "dbus-launch", (char *)NULL);
+    execl("/bin/dbus-daemon", "dbus-daemon", "--session", "--fork", "--nopidfile", "--print-address=3", (char *)NULL);
     _exit(127);
   }
   close(fd[1]);
@@ -1757,13 +1762,12 @@ static void start_session_bus(const Account *a) {
     ssize_t k = read(fd[0], out + n, sizeof out - 1 - n);
     if (k <= 0) break;
     n += k;
+    if (memchr(out, '\n', n)) break; /* der Dienst hält die Leitung womöglich offen */
   }
   close(fd[0]);
   out[n] = 0;
-  const char *key = "DBUS_SESSION_BUS_ADDRESS=";
-  char *v = strstr(out, key);
+  char *v = strstr(out, "unix:"); /* eine Zeile wie unix:path=/tmp/dbus-…,guid=… */
   if (v) {
-    v += strlen(key);
     v[strcspn(v, "\n")] = 0;
     setenv("DBUS_SESSION_BUS_ADDRESS", v, 1);
   } else {
@@ -2901,9 +2905,14 @@ static void problem_text(const App *a, char *buf, size_t n) {
                      "noch nicht: PureDarwin hat CoreFoundation und die Objective-C-Laufzeit, aber noch kein AppKit.",
              a->b.missing);
     break;
-  case APP_ARM64:
+  case APP_ARCH:
+#if defined(__arm64__) || defined(__aarch64__)
+    snprintf(buf, n, "Das Programm ist nur für Mac mit Intel-Prozessor (x86_64) gebaut. Dieses ClokeOS läuft auf "
+                     "arm64 und hat kein Rosetta; es braucht eine Fassung für Apple-Chips oder eine Universal-Fassung.");
+#else
     snprintf(buf, n, "Das Programm ist nur für Mac mit Apple-Chip (arm64) gebaut. Dieses ClokeOS läuft auf Intel "
                      "(x86_64); es braucht eine Intel- oder Universal-Fassung.");
+#endif
     break;
   case APP_MISSING:
     snprintf(buf, n, "Das Mac-Programm braucht %s, das es in ClokeOS nicht gibt.", a->b.missing);
@@ -3807,6 +3816,10 @@ int main(int argc, char **argv) {
   if (!realpath(argv[0], self)) snprintf(self, sizeof self, "%s", argv[0]);
   snprintf(resdir, sizeof resdir, "%s/Resources", dirname(self));
   signal(SIGCHLD, SIG_IGN); /* gestartete Programme nicht als Zombies behalten */
+  /* PureDarwins arm64-Kernel hat kein System-V-Shared-Memory: shmget, das cairo und Xlib für
+   * MIT-SHM ausprobieren, beendet das Programm sonst mit SIGSYS statt mit ENOSYS. Ignoriert, gibt
+   * es nur einen Fehler, und alle zeichnen ohne Shared Memory. Gestartete Programme erben das. */
+  signal(SIGSYS, SIG_IGN);
 
   dpy = XOpenDisplay(NULL);
   if (!dpy) {

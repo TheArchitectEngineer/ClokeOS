@@ -63,6 +63,13 @@ if [ "$CLOKE_ARCH" = arm64 ]; then
   # Wie PureDarwins Runner für arm64 (nix run .#vm-arm64-virt).
   cpu=neoverse-n2
   [ "$accel" = hvf ] && cpu=host
+  # Bild: ramfb genügt für Loader und Kernel-Konsole. Xorg braucht dagegen einen Grafiktreiber,
+  # und auf QEMUs virt-Maschine gibt es bei PureDarwin nur IOVirtIOGPU: IOGOPFramebuffer hängt sich
+  # auf arm64 nur an einen "framebuffer"-Knoten, den PureDarwin bloß für den Raspberry Pi anlegt.
+  # Der Desktop bekommt deshalb virtio-gpu (1280 x 800 wie bei x86_64); die Firmware zeigt darüber
+  # auch Loader und Kernel-Konsole.
+  gpu=ramfb
+  [ "$CLOKE_FLAVOR" = desktop ] && gpu=virtio-gpu-pci,xres=1280,yres=800
   args=(
     -M virt,gic-version=3
     -accel "$accel"
@@ -71,7 +78,7 @@ if [ "$CLOKE_ARCH" = arm64 ]; then
     "${common[@]}"
     -drive if=none,id=system,format=raw,file="$image$snapshot"
     -device virtio-blk-pci,drive=system,bootindex=1
-    -device ramfb
+    -device "$gpu"
     -device usb-mouse,bus=xhci.0
     -nic user,model=virtio-net-pci
   )

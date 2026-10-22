@@ -8,7 +8,11 @@ export XDG_CONFIG_DIRS=/etc/xdg:/etc
 export XFILESEARCHPATH=/share/X11/%T/%N%C%S:/share/X11/%T/%N%S:/usr/share/X11/%T/%N%S
 export XUSERFILESEARCHPATH=$HOME/%N%C:$HOME/%N
 print '*customization: -color' | /bin/xrdb -nocpp -merge
+# arm64: PureDarwins GTK sucht die Xcursor-Funktionen in den geladenen Bibliotheken, lädt aber
+# keine libXcursor (siehe cloakserver/build.sh). Für CloakServer und alle Programme der Sitzung:
+[[ $(uname -m) == arm64 && -r /lib/libXcursor.1.dylib ]] && export DYLD_INSERT_LIBRARIES=/lib/libXcursor.1.dylib
 cd $HOME
 cs=/System/Library/CoreServices/CloakServer/CloakServer
-[[ -x /bin/dbus-launch ]] && exec /bin/dbus-launch --exit-with-session $cs
+# dbus-run-session statt dbus-launch: PureDarwins dbus-launch startet auf arm64 nicht.
+[[ -x /bin/dbus-run-session ]] && exec /bin/dbus-run-session -- $cs
 exec $cs

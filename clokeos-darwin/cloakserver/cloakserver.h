@@ -28,7 +28,8 @@ WinStyle cs_window_style(Window w);
 Pixmap cs_wallpaper(void);
 
 /* apps.c: Programme als .app-Bundles wie bei macOS */
-enum { APP_OK, APP_APPKIT, APP_ARM64, APP_MISSING, APP_NOEXEC };
+/* APP_ARCH: nur für die andere Architektur gebaut (arm64 auf x86_64 oder umgekehrt) */
+enum { APP_OK, APP_APPKIT, APP_ARCH, APP_MISSING, APP_NOEXEC };
 /* Darlings Mac-Frameworks (AppKit, Foundation …, macapps/), gefunden über DYLD_FRAMEWORK_PATH */
 #define MAC_FRAMEWORKS "/Library/ClokeOS/MacFrameworks"
 typedef struct {

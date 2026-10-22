@@ -24,6 +24,10 @@ M="$HERE/macapps"
 D="$WORK/download/darling"
 fw="$WORK/out/macapps/root/Library/ClokeOS/MacFrameworks"
 
+if [ "$CLOKE_ARCH" != x86_64 ]; then
+  echo "Mac-Frameworks: bisher nur für x86_64, das $CLOKE_ARCH-Image bleibt ohne AppKit"
+  exit 0
+fi
 for r in darling-corefoundation darling-foundation darling-cocotron; do
   if [ ! -d "$D/$r" ]; then
     echo "Mac-Frameworks: ohne $D/$r, das Image bleibt ohne AppKit"

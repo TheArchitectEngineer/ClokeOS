@@ -8,14 +8,14 @@ WORK="${CLOKEOS_WORK:-$HOME/ClokeOS-work}"
 # Zielarchitektur: x86_64 (Standard) oder arm64 (QEMU virt), z. B. CLOKEOS_ARCH=arm64 ./brand.sh
 CLOKE_ARCH="${CLOKEOS_ARCH:-x86_64}"
 
-# Variante: minimal (Standard: nur die Shell, 262 MiB) oder desktop (PureDarwins Vorschau-Image mit
-# Xorg, Wayland und Xfce, 6,1 GiB; darauf startet CloakServer, der ClokeOS-Desktop), z. B.
-# CLOKEOS_FLAVOR=desktop ./brand.sh. Den Desktop gibt es bisher nur für x86_64.
+# Variante: minimal (Standard: nur die Shell) oder desktop (PureDarwins Vorschau-Image mit Xorg,
+# Wayland und Xfce, 6,1 GiB für x86_64 und 3,1 GiB für arm64; darauf startet CloakServer, der
+# ClokeOS-Desktop), z. B. CLOKEOS_FLAVOR=desktop ./brand.sh.
 CLOKE_FLAVOR="${CLOKEOS_FLAVOR:-minimal}"
-case "$CLOKE_ARCH/$CLOKE_FLAVOR" in
-  */minimal|x86_64/desktop) ;;
+case "$CLOKE_FLAVOR" in
+  minimal|desktop) ;;
   *)
-    echo "Unbekannte Variante: $CLOKE_FLAVOR für $CLOKE_ARCH (minimal; desktop nur für x86_64)" >&2
+    echo "Unbekannte Variante: $CLOKE_FLAVOR (minimal oder desktop)" >&2
     exit 1
     ;;
 esac
@@ -38,12 +38,19 @@ case "$CLOKE_ARCH" in
     EFI_BINARY="BOOTX64.EFI"
     ;;
   arm64)
-    # PureDarwin hat für arm64 kein Release, nur ein Vorschau-Image auf puredarwin.org (Stand
-    # 23.08.2026, wie das x86_64-Image von 20.5). Trotz des Namens ist es die Variante
-    # "arm64-virt-minimal-release": Release-Kernel, ext4-Wurzel auf der Partition, keine RAM-Disk.
-    PD_FILE="puredarwin-arm64-virt-minimal.img"
+    # PureDarwin hat für arm64 kein Release, nur Vorschau-Images auf puredarwin.org (Stand
+    # 23.08.2026, wie das x86_64-Image von 20.5).
+    if [ "$CLOKE_FLAVOR" = desktop ]; then
+      # Wie puredarwin.img für x86_64: Xorg, Wayland/sway, Xfce und Compiler, Bild über ramfb.
+      PD_FILE="puredarwin-arm64-virt.img"
+      PD_SHA256="584d9f2601f58079d7bafa307499662a48dfc558cbac7f0fc04c0c143892fb2c"
+    else
+      # Trotz des Namens die Variante "arm64-virt-minimal-release": Release-Kernel, ext4-Wurzel
+      # auf der Partition, keine RAM-Disk.
+      PD_FILE="puredarwin-arm64-virt-minimal.img"
+      PD_SHA256="351de0f7611f34912653f5fc9e685eba7d5b1724fb502993a59b8f4eebbcc218"
+    fi
     PD_URL="https://internal.lab004.dev/private/images/$PD_FILE"
-    PD_SHA256="351de0f7611f34912653f5fc9e685eba7d5b1724fb502993a59b8f4eebbcc218"
     EFI_BINARY="BOOTAA64.EFI"
     ;;
   *)
@@ -72,9 +79,16 @@ LOADER_EFI=""
 # Shell laufen über die serielle Konsole (serial=3), auf dem Bildschirm folgt der Desktop.
 # Mit "-v gopconsole=1" vorn dran sieht der Bildschirm wieder aus wie bei PureDarwin (Taste V beim
 # Start hängt beides einmalig an). PureDarwins eigene Vorgabe hat gopconsole=1 immer dabei.
-# Leer = die Boot-Argumente des Basisimages bleiben (arm64, solange es dort keinen eigenen Loader gibt).
+# Leer = die Boot-Argumente des Basisimages bleiben (arm64-Minimal, solange es dort keinen eigenen
+# Loader gibt).
+# arm64-Desktop: PureDarwins Vorgabe ohne -v, gopconsole=1, serial_video_mirror=1, pdtrace=1 und
+# vgpu_debug=1. Mit virtio-gpu bekommt der Kernel vom Loader keinen Framebuffer (die Firmware bietet
+# dort nur Blt an), und mit -v oder serial_video_mirror=1 malt er seine Konsole trotzdem und hängt
+# kurz nach dem Start in einer Endlosschleife.
 CLOKE_BOOT_ARGS=""
 [ "$CLOKE_ARCH" = x86_64 ] && CLOKE_BOOT_ARGS="debug=0x218 -nogzalloc_mode keepsyms=1 serial=3 gen9_debug=1"
+[ "$CLOKE_ARCH/$CLOKE_FLAVOR" = arm64/desktop ] &&
+  CLOKE_BOOT_ARGS="debug=0x218 -nogzalloc_mode keepsyms=1 serial=3 no_interrupt_masked_debug=1"
 
 # ClokeOS-Version, passend zur Oberfläche in clokeos.html (OS-Objekt).
 CLOKE_NAME="ClokeOS"

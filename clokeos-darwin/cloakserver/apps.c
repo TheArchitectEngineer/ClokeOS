@@ -273,6 +273,18 @@ bool plist_write(const char *path, const PlistItem *items, int n) {
 #define FAT_MAGIC   0xcafebabeu
 #define CPU_X86_64  0x01000007u
 #define CPU_ARM64   0x0100000cu
+#define CPU_SUBTYPE_ARM64E 2u
+/* Die Architektur, für die CloakServer gebaut ist, ist die von ClokeOS. Die andere läuft nicht:
+ * ClokeOS hat weder Rosetta noch einen arm64-Emulator. */
+#if defined(__arm64__) || defined(__aarch64__)
+#define CPU_NATIVE  CPU_ARM64
+#define CPU_FOREIGN CPU_X86_64
+#define NATIVE_NAME "arm64"
+#else
+#define CPU_NATIVE  CPU_X86_64
+#define CPU_FOREIGN CPU_ARM64
+#define NATIVE_NAME "x86_64"
+#endif
 #define LC_LOAD_DYLIB        0xcu
 #define LC_REEXPORT_DYLIB    0x8000001fu
 #define LC_LOAD_UPWARD_DYLIB 0x80000023u
@@ -300,11 +312,11 @@ static void check_thin(Bundle *b, const unsigned char *m, size_t len) {
   }
   uint32_t cpu = le32(m + 4), ncmds = le32(m + 16), size = le32(m + 20);
   b->mac = true;
-  if (cpu == CPU_ARM64) {
-    b->kind = APP_ARM64;
+  if (cpu == CPU_FOREIGN) {
+    b->kind = APP_ARCH;
     return;
   }
-  if (cpu != CPU_X86_64) {
+  if (cpu != CPU_NATIVE) {
     b->kind = APP_NOEXEC;
     snprintf(b->missing, sizeof b->missing, "unbekannte Architektur");
     return;
@@ -370,23 +382,28 @@ static void check_exec(Bundle *b) {
       b->kind = APP_NOEXEC;
       snprintf(b->missing, sizeof b->missing, "Startdatei nicht ausführbar");
     }
-  } else if (len >= 8 && be(m, 4) == FAT_MAGIC) { /* Universal: x86_64-Teil suchen */
+  } else if (len >= 8 && be(m, 4) == FAT_MAGIC) { /* Universal: den Teil für ClokeOS suchen */
     uint32_t n = (uint32_t)be(m + 4, 4);
-    bool arm = false, found = false;
+    bool foreign = false;
+    const unsigned char *pick = NULL;
+    uint32_t pick_sz = 0;
     for (uint32_t i = 0; i < n && 8 + (i + 1) * 20 <= len; i++) {
       const unsigned char *a = m + 8 + i * 20;
-      uint32_t cpu = (uint32_t)be(a, 4), off = (uint32_t)be(a + 8, 4), sz = (uint32_t)be(a + 12, 4);
-      if (cpu == CPU_ARM64) arm = true;
-      if (cpu == CPU_X86_64 && (size_t)off + sz <= len) {
-        check_thin(b, m + off, sz);
-        found = true;
-        break;
+      uint32_t cpu = (uint32_t)be(a, 4), sub = (uint32_t)be(a + 4, 4) & 0xffffff;
+      uint32_t off = (uint32_t)be(a + 8, 4), sz = (uint32_t)be(a + 12, 4);
+      if (cpu == CPU_FOREIGN) foreign = true;
+      /* wie dyld: arm64 vor arm64e, das nur Apples eigene Programme brauchen */
+      if (cpu == CPU_NATIVE && (size_t)off + sz <= len && (!pick || sub != CPU_SUBTYPE_ARM64E)) {
+        pick = m + off;
+        pick_sz = sz;
       }
     }
-    if (!found) {
+    if (pick) {
+      check_thin(b, pick, pick_sz);
+    } else {
       b->mac = true;
-      b->kind = arm ? APP_ARM64 : APP_NOEXEC;
-      if (!arm) snprintf(b->missing, sizeof b->missing, "kein x86_64-Teil");
+      b->kind = foreign ? APP_ARCH : APP_NOEXEC;
+      if (!foreign) snprintf(b->missing, sizeof b->missing, "kein " NATIVE_NAME "-Teil");
     }
   } else {
     check_thin(b, m, len);

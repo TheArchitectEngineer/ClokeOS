@@ -1,0 +1,6 @@
+#!/bin/zsh
+# Xorg für CloakServer (von cloakserver-start über xinit gestartet), mit libclokeos-xpoll:
+# PureDarwins Tastatur- und Maustreiber können kein poll, Xorg kreist sonst mit voller Last
+# (siehe cloakserver/xpoll.c).
+[[ -r /usr/lib/libclokeos-xpoll.dylib ]] && export DYLD_INSERT_LIBRARIES=/usr/lib/libclokeos-xpoll.dylib
+exec /bin/Xorg "$@"

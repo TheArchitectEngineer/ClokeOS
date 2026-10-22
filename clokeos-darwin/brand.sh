@@ -1,7 +1,7 @@
 #!/bin/bash
 # Baut aus dem PureDarwin-Image ein ClokeOS-Image (~/ClokeOS-work/out/clokeos-<version>-<arch>.img).
 # Architektur wie bei run.sh mit CLOKEOS_ARCH=arm64 (Standard: x86_64), die Desktop-Variante mit
-# CLOKEOS_FLAVOR=desktop (Ergebnis: clokeos-<version>-x86_64-desktop.img).
+# CLOKEOS_FLAVOR=desktop (Ergebnis: clokeos-<version>-<arch>-desktop.img).
 #
 # Das Basisimage bleibt unverändert. Das Wurzeldateisystem (ext4) wird mit debugfs bearbeitet,
 # dafür braucht es weder Linux noch Root-Rechte. Was geändert wird:
@@ -29,6 +29,7 @@ rm -rf "$tmp"
 mkdir -p "$tmp/stage" "$(dirname "$CLOKE_IMG")"
 # Auf APFS ist -c ein Klon: kostet bei den 6 GiB des Desktop-Images weder Zeit noch Platz.
 cp -c "$PD_IMG" "$tmp/image.img" 2>/dev/null || cp "$PD_IMG" "$tmp/image.img"
+chmod u+w "$tmp/image.img"   # auch wenn der Download schreibgeschützt liegt
 
 read -r root_start root_count < <(gpt_part "$tmp/image.img" "$GUID_LINUX_FS")
 root="$tmp/root.ext4"
@@ -39,13 +40,15 @@ cp -R "$HERE/overlay/." "$tmp/stage/"
 if [ "$CLOKE_FLAVOR" = desktop ]; then
   cp -R "$HERE/overlay-desktop/." "$tmp/stage/"
   "$HERE/cloakserver/build.sh" "$tmp/stage"
-  python3 -I "$HERE/cloakserver/bundles.py" "$tmp/stage" "$WORK/out/CloakServer/Resources/icons" \
+  python3 -I "$HERE/cloakserver/bundles.py" "$tmp/stage" "$tmp/stage/System/Library/CoreServices/CloakServer/Resources/icons" \
     "$CLOKE_VERSION" "$CLOKE_BUILD"
   "$HERE/macapps/install.sh" "$tmp/stage"
 fi
-# Netzwerk ohne configd (arm64-Image): Netzwerkkarten selbst benennen und eine feste Adresse für
-# QEMUs Benutzernetz setzen (tools/). Mit configd (x86_64) holt PureDarwin sie per DHCP.
-if ! "$DEBUGFS" -R 'stat /usr/libexec/configd' "$root" 2>/dev/null | grep -q '^Inode'; then
+# Netzwerk auf arm64: Netzwerkkarten selbst benennen und eine feste Adresse für QEMUs Benutzernetz
+# setzen, danach die Uhr stellen (tools/). Das Minimal-Image hat kein configd; im Desktop-Image
+# benennt configd die Karte zwar, holt aber keine Adresse, und eine Echtzeituhr liest PureDarwin
+# auf arm64 nie. Auf x86_64 holt configd die Adresse per DHCP, die Uhr kommt aus der RTC.
+if [ "$CLOKE_ARCH" = arm64 ] || ! "$DEBUGFS" -R 'stat /usr/libexec/configd' "$root" 2>/dev/null | grep -q '^Inode'; then
   mkdir -p "$tmp/stage/usr/libexec" "$tmp/stage/System/Library/LaunchDaemons"
   "$HERE/tools/build.sh" "$tmp/stage/usr/libexec"
   cp "$HERE/tools/clokeos-network" "$tmp/stage/usr/libexec/"
@@ -237,9 +240,10 @@ if [ -n "$LOADER_EFI" ]; then
   mtype -i "$esp" "::/EFI/BOOT/$EFI_BINARY" | cmp -s - "$LOADER_EFI" ||
     { echo "Loader nicht in der EFI-Partition angekommen" >&2; exit 1; }
 fi
-if [ "$CLOKE_ARCH" = x86_64 ]; then
-  # PureDarwins Grafiktreiber legt /dev/fb0 und Xorgs Bild ein Byte neben den Framebuffer
-  # (falsche Farben). kcfix.py korrigiert das im Kernel Collection.
+# Grafiktreiber im Kernel Collection korrigieren (kcfix.py): auf x86_64 legt IOGOPFramebuffer
+# /dev/fb0 und Xorgs Bild ein Byte neben den Framebuffer (falsche Farben), auf arm64 gerät der
+# Kernel in Panik, sobald Xorg über IOVirtIOGPU das erste Bild zeigt.
+if [ "$CLOKE_ARCH" = x86_64 ] || [ "$CLOKE_FLAVOR" = desktop ]; then
   mcopy -n -i "$esp" ::/EFI/BOOT/kernel "$tmp/kernel"
   python3 -I "$HERE/kcfix.py" "$tmp/kernel"
   mcopy -o -i "$esp" "$tmp/kernel" ::/EFI/BOOT/kernel
