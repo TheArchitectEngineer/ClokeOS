@@ -580,15 +580,33 @@ static void install_asset(const char *base, const Asset *a, int fd, uint64_t off
   sha_init(&w.sha);
   char url[1024], err[CURL_ERROR_SIZE] = "";
   snprintf(url, sizeof url, "%s/%s", base, a->file);
-  CURL *c = curl_easy_init();
-  curl_common(c, url);
-  curl_easy_setopt(c, CURLOPT_WRITEFUNCTION, on_data);
-  curl_easy_setopt(c, CURLOPT_WRITEDATA, &w);
-  curl_easy_setopt(c, CURLOPT_ERRORBUFFER, err);
-  CURLcode rc = curl_easy_perform(c);
-  curl_easy_cleanup(c);
-  if (w.bad) fail("%s is damaged or too large.", a->file);
-  if (rc != CURLE_OK) fail("Download of %s failed: %s", a->file, err[0] ? err : curl_easy_strerror(rc));
+  /* Bricht die Verbindung ab (GitHub setzt lange Downloads gelegentlich zurück, und solange der
+   * Installer Nullbereiche auf eine langsame Platte schreibt, liest er nichts), geht es mit einer
+   * Range-Anfrage ab dem letzten empfangenen Byte weiter: Entpacker, Prüfsumme und Schreibstelle
+   * laufen einfach weiter. Antwortet der Server ohne Range (200 statt 206), meldet libcurl
+   * CURLE_RANGE_ERROR, statt Daten doppelt zu liefern. */
+  for (int attempt = 1;; attempt++) {
+    CURL *c = curl_easy_init();
+    if (!c) fail("Out of memory");
+    curl_common(c, url);
+    curl_easy_setopt(c, CURLOPT_WRITEFUNCTION, on_data);
+    curl_easy_setopt(c, CURLOPT_WRITEDATA, &w);
+    curl_easy_setopt(c, CURLOPT_ERRORBUFFER, err);
+    if (w.got) curl_easy_setopt(c, CURLOPT_RESUME_FROM_LARGE, (curl_off_t)w.got);
+    err[0] = 0;
+    CURLcode rc = curl_easy_perform(c);
+    long code = 0;
+    curl_easy_getinfo(c, CURLINFO_RESPONSE_CODE, &code);
+    curl_easy_cleanup(c);
+    if (w.bad) fail("%s is damaged or too large.", a->file);
+    if (rc == CURLE_OK) break;
+    bool again = strncmp(url, "file:", 5) && attempt < 10 && rc != CURLE_RANGE_ERROR && rc != CURLE_WRITE_ERROR &&
+                 !(rc == CURLE_HTTP_RETURNED_ERROR && code >= 400 && code < 500);
+    if (!again) fail("Download of %s failed: %s", a->file, err[0] ? err : curl_easy_strerror(rc));
+    fprintf(stderr, "%s: %s, continuing at byte %llu (attempt %d)\n", a->file, err[0] ? err : curl_easy_strerror(rc),
+            (unsigned long long)w.got, attempt + 1);
+    sleep(attempt < 5 ? 2u * attempt : 15u);
+  }
   for (;;) { /* was der Entpacker noch zurückhält */
     w.z.next_in = NULL;
     w.z.avail_in = 0;
