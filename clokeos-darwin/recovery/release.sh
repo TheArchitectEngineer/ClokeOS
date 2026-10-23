@@ -90,6 +90,11 @@ for arch in "${arches[@]}"; do
       [ "$k" = disk ] && rm -f "$src/$k.img" # gut 5 GB, gepackt reicht es
     done
   fi
+  # CLOKEOS_RELEASE_PRUNE=1: große Zwischendateien nach dem Packen löschen (wenig Platz auf der Platte);
+  # das Desktop-Image von arm64 bleibt für Bildschirmfotos
+  if [ "${CLOKEOS_RELEASE_PRUNE:-0}" = 1 ] && [ "$arch" = x86_64 ]; then
+    rm -f "$src/system.ext4" "$src/installer.img" "$src/usb-offline.img" "$src/usb-online.img" "$WORK"/out/clokeos-*-x86_64-desktop.img
+  fi
 done
 
 # Quellcode: dieser Commit und die Fremdquellen, aus denen mitgebaut wurde
