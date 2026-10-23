@@ -24,6 +24,8 @@
 #include <string.h>
 #include <sys/ipc.h>
 #include <sys/shm.h>
+#include <errno.h>
+#include <signal.h>
 #include <time.h>
 
 @interface X11Display (ClokePending)
@@ -79,6 +81,28 @@ static void destroyImage(ClokePresent *p, Display *dpy) {
     p->image = NULL;
 }
 
+// PureDarwin hat auf arm64 kein System-V-shm: shmget löst dort SIGSYS aus, und ohne SIG_IGN
+// (CloakServer vererbt es, eine Shell nicht) endet das Programm. Der Aufruf läuft deshalb mit
+// ignoriertem SIGSYS, liefert dann ENOSYS, und danach wird es nicht mehr versucht.
+static int shmgetNoSigsys(size_t size) {
+    static int missing;
+    if (missing) {
+        errno = ENOSYS;
+        return -1;
+    }
+    struct sigaction ign, old;
+    memset(&ign, 0, sizeof ign);
+    ign.sa_handler = SIG_IGN;
+    sigaction(SIGSYS, &ign, &old);
+    int id = shmget(IPC_PRIVATE, size, IPC_CREAT | 0600);
+    int err = errno;
+    sigaction(SIGSYS, &old, NULL);
+    if (id < 0 && err == ENOSYS)
+        missing = 1;
+    errno = err;
+    return id;
+}
+
 // Legt ein XImage in shm an. Scheitert still (Rückgabe 0), dann gilt XPutImage.
 static int createShmImage(ClokePresent *p, Display *dpy, XVisualInfo *vi, size_t w, size_t h) {
     if (getenv("CLOKE_NO_XSHM") != NULL || !XShmQueryExtension(dpy))
@@ -86,7 +110,7 @@ static int createShmImage(ClokePresent *p, Display *dpy, XVisualInfo *vi, size_t
     XImage *img = XShmCreateImage(dpy, vi->visual, vi->depth, ZPixmap, NULL, &p->shm, w, h);
     if (img == NULL)
         return 0;
-    p->shm.shmid = shmget(IPC_PRIVATE, (size_t) img->bytes_per_line * h, IPC_CREAT | 0600);
+    p->shm.shmid = shmgetNoSigsys((size_t) img->bytes_per_line * h);
     if (p->shm.shmid < 0) {
         if (debugEnabled())
             fprintf(stderr, "ClokeOS AppKit: shmget(%zu Bytes) fehlgeschlagen, nehme XPutImage "

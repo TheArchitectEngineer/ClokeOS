@@ -8,9 +8,13 @@
 # bleibt das Image ohne Mac-Frameworks, und CloakServer meldet bei Mac-Programmen mit Fenstern
 # weiter, dass AppKit fehlt.
 #
+# Gebaut wird für die Architektur des Images (CLOKEOS_ARCH, x86_64 oder arm64); Hallo.app ist wie
+# heutige Mac-Programme universal (x86_64 und arm64 in einer Datei, CloakServer und dyld nehmen den
+# passenden Teil).
+#
 # In der Stage landen
 #   /Library/ClokeOS/MacFrameworks/*.framework   CoreFoundation, Foundation, AppKit, Cocoa, …
-#   /Applications/Hallo.app                      hallo.m als echtes Mac-Programm (x86_64, Apples SDK)
+#   /Applications/Hallo.app                      hallo.m als echtes Mac-Programm (universal, Apples SDK)
 # CloakServer erkennt Programme, deren Frameworks in /Library/ClokeOS/MacFrameworks liegen, und
 # startet sie mit DYLD_FRAMEWORK_PATH (cloakserver/apps.c). PureDarwins CoreFoundation, Onyx2D und
 # CoreGraphics bleiben für alles andere.
@@ -23,11 +27,7 @@ stage="$1"
 M="$HERE/macapps"
 D="$WORK/download/darling"
 fw="$WORK/out/macapps/root/Library/ClokeOS/MacFrameworks"
-
-if [ "$CLOKE_ARCH" != x86_64 ]; then
-  echo "Mac-Frameworks: bisher nur für x86_64, das $CLOKE_ARCH-Image bleibt ohne AppKit"
-  exit 0
-fi
+[ "$CLOKE_ARCH" = arm64 ] && fw="$WORK/out/macapps-arm64/root/Library/ClokeOS/MacFrameworks"
 for r in darling-corefoundation darling-foundation darling-cocotron; do
   if [ ! -d "$D/$r" ]; then
     echo "Mac-Frameworks: ohne $D/$r, das Image bleibt ohne AppKit"
@@ -45,7 +45,7 @@ cp -R "$fw" "$stage/Library/ClokeOS/MacFrameworks"   # mit den Symlinks der Bund
 app="$stage/Applications/Hallo.app/Contents"
 rm -rf "$stage/Applications/Hallo.app"
 mkdir -p "$app/MacOS" "$app/Resources"
-clang -target x86_64-apple-macos11.0 -fobjc-arc -O2 -framework Cocoa -o "$app/MacOS/hallo" "$M/hallo.m"
+clang -arch x86_64 -arch arm64 -mmacosx-version-min=11.0 -fobjc-arc -O2 -framework Cocoa -o "$app/MacOS/hallo" "$M/hallo.m"
 cp "$M/hallo-icon.svg" "$app/Resources/AppIcon.svg"
 printf 'APPL????' > "$app/PkgInfo"
 cat > "$app/Info.plist" <<EOF

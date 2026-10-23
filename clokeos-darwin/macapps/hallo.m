@@ -1,9 +1,9 @@
-/* AppKit-Probe: eine kleine Cocoa-App wie aus Xcode (x86_64, macOS 11, ARC) mit Menü, Fenster,
+/* AppKit-Probe: eine kleine Cocoa-App wie aus Xcode (universal, macOS 11, ARC) mit Menü, Fenster,
  * Textfeld, Knopf und Beschriftung. Gebaut mit Apples SDK; unter ClokeOS läuft sie gegen Darlings
  * AppKit aus macapps/appkit.sh (DYLD_FRAMEWORK_PATH=/Library/ClokeOS/MacFrameworks), auf dem Mac
  * gegen Apples.
  *
- *   clang -target x86_64-apple-macos11.0 -fobjc-arc -framework Cocoa -o hallo hallo.m
+ *   clang -arch x86_64 -arch arm64 -mmacosx-version-min=11.0 -fobjc-arc -framework Cocoa -o hallo hallo.m
  *
  * Auf stdout meldet sie jeden Schritt ("hallo: …"), damit sich ein Absturz zuordnen lässt.
  *   --klick N     drückt nach N Sekunden den Knopf (performClick:), die Beschriftung ändert sich

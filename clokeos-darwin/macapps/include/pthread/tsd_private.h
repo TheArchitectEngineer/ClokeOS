@@ -1,4 +1,5 @@
-/* Ersatz für <pthread/tsd_private.h>: feste TSD-Plätze für Apples Frameworks (x86_64, %gs). */
+/* Ersatz für <pthread/tsd_private.h>: feste TSD-Plätze für Apples Frameworks
+ * (x86_64 über %gs, arm64 über TPIDRRO_EL0 wie in Apples libsyscall/os/tsd.h). */
 #ifndef CLOKE_PTHREAD_TSD_PRIVATE_H
 #define CLOKE_PTHREAD_TSD_PRIVATE_H
 #include <pthread/private.h>
@@ -23,6 +24,21 @@
 #define __PTK_FRAMEWORK_FOUNDATION_KEY8 58
 #define __PTK_FRAMEWORK_FOUNDATION_KEY9 59
 
+#if defined(__arm64__)
+/* Die unteren 3 Bit von TPIDRRO_EL0 tragen bei XNU 20 die CPU-Nummer. */
+static inline void **_cloke_tsd_base(void) {
+    unsigned long tsd;
+    __asm__("mrs %0, TPIDRRO_EL0\n\tbic %0, %0, #0x7" : "=r"(tsd));
+    return (void **)tsd;
+}
+static inline void *_pthread_getspecific_direct(unsigned long slot) {
+    return _cloke_tsd_base()[slot];
+}
+static inline int _pthread_setspecific_direct(unsigned long slot, void *val) {
+    _cloke_tsd_base()[slot] = val;
+    return 0;
+}
+#else
 static inline void *_pthread_getspecific_direct(unsigned long slot) {
     void *ret;
     __asm__("mov %%gs:%1, %0" : "=r"(ret) : "m"(*(void **)(slot * sizeof(void *))));
@@ -32,4 +48,5 @@ static inline int _pthread_setspecific_direct(unsigned long slot, void *val) {
     __asm__("movq %1, %%gs:%0" : "=m"(*(void **)(slot * sizeof(void *))) : "rn"(val));
     return 0;
 }
+#endif
 #endif

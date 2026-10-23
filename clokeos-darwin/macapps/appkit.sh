@@ -3,6 +3,7 @@
 # für ClokeOS, auf den CoreFoundation und Foundation aus foundation.sh.
 #
 #   macapps/appkit.sh        bauen nach ~/ClokeOS-work/out/macapps/root/
+#   CLOKEOS_ARCH=arm64 macapps/appkit.sh      arm64, nach ~/ClokeOS-work/out/macapps-arm64/root/
 #
 # Gleiches Vorgehen wie foundation.sh: Apples clang und SDK-Header, gelinkt gegen die echten
 # Bibliotheken aus PureDarwins Image (libSystem, libobjc, libX11, Xext, Xrandr, Xcursor,
@@ -27,6 +28,10 @@
 # OpenGL und IOKit wird nicht gelinkt (Mesa mit LLVM beim Start, zweite CoreFoundation); die
 # wenigen Aufrufe bekommen Platzhalter ohne Export (appkit/sysstubs.c).
 #
+# arm64: Im arm64-Image gibt es Xlib und die X-Erweiterungen nur als statische Archive. Die beiden
+# X11.backend-Bundles bekommen deshalb je eine eigene statische Xlib (wie CloakServer); jedes
+# öffnet ohnehin seine eigene X-Verbindung.
+#
 # Quelle (Download nach Rückfrage am 20.10.2026, git clone --depth 1, Commit d89d7aa):
 #   ~/ClokeOS-work/download/darling/darling-cocotron   github.com/darlinghq/darling-cocotron
 set -euo pipefail
@@ -41,12 +46,19 @@ CF="$WORK/download/darling/darling-corefoundation"
 FND="$WORK/download/darling/darling-foundation"
 [ -d "$COC" ] || { echo "Fehlt: $COC (git clone --depth 1 https://github.com/darlinghq/darling-cocotron)" >&2; exit 1; }
 SDK="$(xcrun --show-sdk-path)"
+# Ausgabe, Sysroot und Schalter je Architektur wie in foundation.sh
+TARGET="$CLOKE_ARCH-apple-macos11.0"
 out="$WORK/out/macapps"
+ARCHCC=() ARCHLD=()
+if [ "$CLOKE_ARCH" = arm64 ]; then
+  out="$WORK/out/macapps-arm64"
+  ARCHCC=(-fno-stack-check) ARCHLD=(-Wl,-no_fixup_chains)
+fi
 obj="$out/obj/appkit"
 root="$out/root"
 fwdir="/Library/ClokeOS/MacFrameworks"
 fw="$root$fwdir"
-sysroot="$WORK/sysroot/x86_64-${PD_SHA256:0:12}"
+sysroot="$WORK/sysroot/$CLOKE_ARCH-${PD_SHA256:0:12}"
 pd="$out/pdlibs"
 JOBS="$(sysctl -n hw.ncpu)"
 for f in CoreFoundation.framework/Versions/A/CoreFoundation Foundation.framework/Versions/C/Foundation; do
@@ -58,8 +70,11 @@ done
 read -r root_start _ < <(gpt_part "$PD_IMG" "$GUID_LINUX_FS")
 fs="$PD_IMG?offset=$((root_start * 512))"
 mkdir -p "$pd/usr/lib/system" "$pd/lib" "$obj"
+xlibs=(/lib/libX11.6.dylib /lib/libXext.6.dylib /lib/libXrandr.2.dylib /lib/libXcursor.1.dylib)
+[ "$CLOKE_ARCH" = arm64 ] && xlibs=(/lib/libXcursor.a /lib/libXrandr.a /lib/libXrender.a /lib/libXfixes.a /lib/libXext.a
+                                    /lib/libX11.a /lib/libxcb.a /lib/libXau.a /lib/libXdmcp.a)
 for p in /usr/lib/libSystem.B.dylib /usr/lib/system/libdyld.dylib /usr/lib/libobjc.A.dylib /usr/lib/libz.1.dylib \
-         /lib/libX11.6.dylib /lib/libXext.6.dylib /lib/libXrandr.2.dylib /lib/libXcursor.1.dylib \
+         "${xlibs[@]}" \
          /lib/libfontconfig.1.dylib /lib/libfreetype.6.20.6.dylib /lib/libpng16.a /lib/libjpeg.a; do  # libfreetype.6.dylib ist ein Symlink
   [ -s "$pd$p" ] || "$DEBUGFS" -R "dump $p $pd$p" "$fs" >/dev/null 2>&1 || true
   [ -s "$pd$p" ] || { echo "Nicht aus dem Image geholt: $p" >&2; exit 1; }
@@ -67,22 +82,31 @@ done
 sys=("$pd/usr/lib/libSystem.B.dylib" "$pd/usr/lib/system/libdyld.dylib" "$pd/usr/lib/libobjc.A.dylib")
 cf="$fw/CoreFoundation.framework/Versions/A/CoreFoundation"
 fnd="$fw/Foundation.framework/Versions/C/Foundation"
-x11=("$pd/lib/libX11.6.dylib" "$pd/lib/libXext.6.dylib" "$pd/lib/libXrandr.2.dylib" "$pd/lib/libXcursor.1.dylib"
-     "$pd/lib/libfontconfig.1.dylib")
+x11=()
+for p in "${xlibs[@]}"; do x11+=("$pd$p"); done
+x11+=("$pd/lib/libfontconfig.1.dylib")
 
 # --- Quellen: APFS-Klon von darling-cocotron mit den Korrekturen aus patches/ -------------------
 # Ein Klon statt einzelner Kopien, weil auch Header korrigiert werden (X11Window.h), die andere
 # Dateien mit "…" relativ zu sich selbst einbinden. Die heruntergeladenen Quellen bleiben
 # unverändert. Korrigierte Dateien werden nur neu geschrieben, wenn sich der Inhalt ändert.
+# Korrekturen aus patches/darling-cocotron/ und patches/arm64/darling-cocotron/ (gibt es für eine
+# Datei beide, gelten beide).
 src="$obj/src"
 [ -d "$src" ] || cp -cR "$COC" "$src"
 touch "$obj/patched.list"
+P1="$M/patches/darling-cocotron" P2="$M/patches/arm64/darling-cocotron"
 while read -r f; do   # Korrekturen, die es nicht mehr gibt, zurücknehmen
-  [ -f "$M/patches/darling-cocotron/$f.sed" ] || cp -p "$COC/$f" "$src/$f"
+  [ -f "$P1/$f.sed" ] || [ -f "$P2/$f.sed" ] || cp -p "$COC/$f" "$src/$f"
 done < "$obj/patched.list"
-(cd "$M/patches/darling-cocotron" && find . -name '*.sed' | sed -e 's|^\./||' -e 's|\.sed$||' | sort) > "$obj/patched.list"
+for d in "$P1" "$P2"; do
+  [ -d "$d" ] && (cd "$d" && find . -name '*.sed' | sed -e 's|^\./||' -e 's|\.sed$||')
+done | sort -u > "$obj/patched.list"
 while read -r f; do
-  sed -E -f "$M/patches/darling-cocotron/$f.sed" "$COC/$f" > "$src/$f.neu"
+  p=()
+  [ -f "$P1/$f.sed" ] && p+=(-f "$P1/$f.sed")
+  [ -f "$P2/$f.sed" ] && p+=(-f "$P2/$f.sed")
+  sed -E "${p[@]}" "$COC/$f" > "$src/$f.neu"
   if cmp -s "$src/$f.neu" "$src/$f"; then rm "$src/$f.neu"; else mv "$src/$f.neu" "$src/$f"; fi
 done < "$obj/patched.list"
 
@@ -91,7 +115,7 @@ done < "$obj/patched.list"
 # private Header (OpenGL/CGLInternal.h, X11/extensions/XKBrules.h), nimmt aus Apples CFCGTypes.h
 # und ApplicationServices.h heraus, was mit Darling oder X11 kollidiert, und ergänzt OpenGL.h,
 # ImageIO.h und Onyx2Ds Schalter für libtiff.
-CC=(clang -target x86_64-apple-macos11.0 -isysroot "$SDK" -O2 -g0 -w -fblocks -fexceptions -fobjc-exceptions
+CC=(clang -target "$TARGET" -isysroot "$SDK" -O2 -g0 -w -fblocks -fexceptions -fobjc-exceptions
     -fconstant-cfstrings -Xclang -fno-constant-nsarray-literals -Xclang -fno-constant-nsdictionary-literals
     -Xclang -fno-constant-nsnumber-literals
     -include math.h -include stdlib.h -include CoreFoundation/CoreFoundation.h -include Foundation/Foundation.h
@@ -103,11 +127,11 @@ CC=(clang -target x86_64-apple-macos11.0 -isysroot "$SDK" -O2 -g0 -w -fblocks -f
     -iframework "$SDK/System/Library/Frameworks/ApplicationServices.framework/Frameworks"
     -iframework "$SDK/System/Library/Frameworks/Carbon.framework/Frameworks"
     -idirafter "$sysroot/include/freetype2" -idirafter "$sysroot/include" -idirafter "$sysroot/include/libpng16"
-    -DDARLING=1 -DOBJC_OLD_DISPATCH_PROTOTYPES=1 -D__CONSTANT_CFSTRINGS__=1)
+    -DDARLING=1 -DOBJC_OLD_DISPATCH_PROTOTYPES=1 -D__CONSTANT_CFSTRINGS__=1 ${ARCHCC[@]+"${ARCHCC[@]}"})
 # Ohne -dead_strip_dylibs: ld-1230 wirft damit Re-Exporte weg, deren Symbole das Framework selbst
 # nicht benutzt (Cocoa verlöre AppKit und CoreData).
-LD=(clang -target x86_64-apple-macos11.0 -dynamiclib -nostdlib -Wl,-platform_version,macos,11.0,11.5
-    -Wl,-syslibroot,"$pd" -Wl,-unexported_symbols_list,"$M/appkit/sysstubs.unexp")
+LD=(clang -target "$TARGET" -dynamiclib -nostdlib -Wl,-platform_version,macos,11.0,11.5
+    -Wl,-syslibroot,"$pd" -Wl,-unexported_symbols_list,"$M/appkit/sysstubs.unexp" ${ARCHLD[@]+"${ARCHLD[@]}"})
 
 # compile_all <objdir> <quellordner> <liste> <flags…>: wie in foundation.sh. Übersetzt die Liste
 # parallel (.c als Objective-C, wie Darling), neu nur, was fehlt, sich geändert hat oder andere
@@ -226,7 +250,7 @@ framework ImageIO A 1 1 "$obj/iio" "$(fwlib Onyx2D)" "$(fwlib CoreGraphics)" "$c
 echo "Baue ApplicationServices"
 mkdir -p "$obj/as"
 printf 'static const char cloke_as[] __attribute__((used)) = "ClokeOS ApplicationServices";\n' > "$obj/as/as.c"
-clang -target x86_64-apple-macos11.0 -isysroot "$SDK" -c "$obj/as/as.c" -o "$obj/as/as.o"
+clang -target "$TARGET" -isysroot "$SDK" -c "$obj/as/as.c" -o "$obj/as/as.o"
 framework ApplicationServices A 1 66 "$obj/as" -Wl,-reexport_library,"$(fwlib CoreGraphics)" \
   -Wl,-reexport_library,"$(fwlib CoreText)" -Wl,-reexport_library,"$(fwlib ImageIO)" "${sys[@]}"
 

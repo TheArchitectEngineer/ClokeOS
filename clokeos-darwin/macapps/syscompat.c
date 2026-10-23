@@ -85,3 +85,75 @@ void dispatch_io_read(dispatch_io_t channel, off_t offset, size_t length, dispat
   dispatch_async(queue, ^{ io_handler(true, NULL, ENOTSUP); });
 }
 void dispatch_io_set_low_water(dispatch_io_t channel, size_t low_water) {}
+
+#if defined(__arm64__)
+/* PureDarwins arm64-libSystem fehlt nftw (x86_64 hat nftw$INODE64; fts gibt es auf beiden nicht).
+ * NSFileManager löscht damit Ordner (NSFilesystemItemRemoveOperation, FTW_DEPTH). Rekursiv mit
+ * opendir/readdir; FTW_PHYS, FTW_DEPTH und FTW_MOUNT wie bei POSIX, FTW_CHDIR wird übergangen. */
+#include <dirent.h>
+#include <ftw.h>
+#include <limits.h>
+#include <sys/stat.h>
+
+typedef int (*cloke_nftw_fn)(const char *, const struct stat *, int, struct FTW *);
+
+static int cloke_nftw_walk(char *path, size_t len, int level, cloke_nftw_fn fn, int flags, dev_t dev) {
+  struct stat st;
+  struct FTW ftw;
+  int type, r;
+  size_t base = len;
+  while (base > 0 && path[base - 1] != '/') base--;
+  ftw.base = (int)base;
+  ftw.level = level;
+  if (((flags & FTW_PHYS) ? lstat(path, &st) : stat(path, &st)) != 0)
+    type = !(flags & FTW_PHYS) && lstat(path, &st) == 0 && S_ISLNK(st.st_mode) ? FTW_SLN : FTW_NS;
+  else if (S_ISDIR(st.st_mode))
+    type = FTW_D;
+  else
+    type = S_ISLNK(st.st_mode) ? FTW_SL : FTW_F;
+  if (type != FTW_D) return fn(path, &st, type, &ftw);
+  if ((flags & FTW_MOUNT) && level > 0 && st.st_dev != dev) return 0;
+  DIR *d = opendir(path);
+  if (d == NULL) return fn(path, &st, FTW_DNR, &ftw);
+  if (!(flags & FTW_DEPTH) && (r = fn(path, &st, FTW_D, &ftw)) != 0) {
+    closedir(d);
+    return r;
+  }
+  struct dirent *e;
+  while ((e = readdir(d)) != NULL) {
+    if (strcmp(e->d_name, ".") == 0 || strcmp(e->d_name, "..") == 0) continue;
+    size_t nl = strlen(e->d_name), sep = len > 0 && path[len - 1] == '/' ? 0 : 1;
+    if (len + sep + nl >= PATH_MAX) {
+      closedir(d);
+      errno = ENAMETOOLONG;
+      return -1;
+    }
+    if (sep) path[len] = '/';
+    memcpy(path + len + sep, e->d_name, nl + 1);
+    r = cloke_nftw_walk(path, len + sep + nl, level + 1, fn, flags, dev);
+    path[len] = 0;
+    if (r != 0) {
+      closedir(d);
+      return r;
+    }
+  }
+  closedir(d);
+  return (flags & FTW_DEPTH) ? fn(path, &st, FTW_DP, &ftw) : 0;
+}
+
+int nftw(const char *path, cloke_nftw_fn fn, int nfds, int flags) {
+  char buf[PATH_MAX];
+  struct stat st;
+  size_t len = strlen(path);
+  if (nfds < 1) {
+    errno = EINVAL;
+    return -1;
+  }
+  if (len >= sizeof buf) {
+    errno = ENAMETOOLONG;
+    return -1;
+  }
+  memcpy(buf, path, len + 1);
+  return cloke_nftw_walk(buf, len, 0, fn, flags, stat(path, &st) == 0 ? st.st_dev : 0);
+}
+#endif

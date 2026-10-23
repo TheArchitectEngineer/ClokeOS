@@ -10,3 +10,4 @@ _dispatch_read
 _dispatch_io_create
 _dispatch_io_read
 _dispatch_io_set_low_water
+_nftw

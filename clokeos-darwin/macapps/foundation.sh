@@ -2,6 +2,7 @@
 # Foundation-Probe: baut Darlings CoreFoundation und Foundation als Mac-Frameworks für ClokeOS.
 #
 #   macapps/foundation.sh        bauen nach ~/ClokeOS-work/out/macapps/root/
+#   CLOKEOS_ARCH=arm64 macapps/foundation.sh      arm64, nach ~/ClokeOS-work/out/macapps-arm64/root/
 #
 # Übersetzt wird auf dem Mac mit Apples clang und Apples SDK-Headern, wie ein Mac-Programm für
 # macOS 11. Gelinkt wird gegen die echten Bibliotheken aus PureDarwins Image (libSystem, libdyld,
@@ -11,6 +12,12 @@
 # Das Ergebnis ersetzt nichts im System. Es liegt im Gast unter /Library/ClokeOS/MacFrameworks
 # und wird mit DYLD_FRAMEWORK_PATH benutzt; launchd, configd usw. behalten PureDarwins
 # CoreFoundation (/usr/lib/libCoreFoundation.dylib). Zwei CFs in einem Prozess darf es nicht geben.
+#
+# arm64: Darlings CoreFoundation hat Weiterleitung (_CF_forwarding_prep_*) und NSInvocation
+# (__invoke__) nur in x86- und arm32-Assembler und rechnet NSMethodSignature nach der x86_64-
+# Aufrufkonvention. Für arm64 ersetzen cfarm64.S und cfarm64.m die beiden .S-Dateien, und
+# patches/arm64/darling-corefoundation/NSMethodSignature.m.sed und NSInvocation.m.sed hängen die
+# arm64-Fassung (Apples Konvention: Stack-Packing, HFA, Strukturen per Verweis, x8) dort ein.
 #
 # Quellen (Download nach Rückfrage am 20.10.2026, je git clone --depth 1):
 #   ~/ClokeOS-work/download/darling/darling-corefoundation   github.com/darlinghq/darling-corefoundation
@@ -30,11 +37,21 @@ for d in "$CF" "$FND"; do
   [ -d "$d" ] || { echo "Fehlt: $d (git clone --depth 1 https://github.com/darlinghq/$(basename "$d"))" >&2; exit 1; }
 done
 SDK="$(xcrun --show-sdk-path)"
+# Je Architektur eigener Ausgabeordner (x86_64 behält out/macapps, wie probe-image.sh es erwartet)
+# und Sysroot aus dem passenden Desktop-Image (cloakserver/build.sh legt es an).
+# arm64: PureDarwins libSystem hat kein ___chkstk_darwin (-fno-stack-check), dyld ohne chained
+# fixups (-no_fixup_chains).
+TARGET="$CLOKE_ARCH-apple-macos11.0"
 out="$WORK/out/macapps"
+ARCHCC=() ARCHLD=()
+if [ "$CLOKE_ARCH" = arm64 ]; then
+  out="$WORK/out/macapps-arm64"
+  ARCHCC=(-fno-stack-check) ARCHLD=(-Wl,-no_fixup_chains)
+fi
 obj="$out/obj"
 root="$out/root"
 fwdir="/Library/ClokeOS/MacFrameworks"
-sysroot="$WORK/sysroot/x86_64-${PD_SHA256:0:12}"
+sysroot="$WORK/sysroot/$CLOKE_ARCH-${PD_SHA256:0:12}"
 pd="$out/pdlibs"
 JOBS="$(sysctl -n hw.ncpu)"
 
@@ -58,7 +75,7 @@ for f in "$CF"/include/CoreFoundation/*; do
   [ -L "$f" ] && [ ! -e "$f" ] && ln -sfn "$SDK/System/Library/Frameworks/CoreFoundation.framework/Headers/$(basename "$f")" "$obj/cfhdr/"
 done
 
-CC=(clang -target x86_64-apple-macos11.0 -isysroot "$SDK" -O2 -g0 -w -fblocks -fexceptions -fobjc-exceptions
+CC=(clang -target "$TARGET" -isysroot "$SDK" -O2 -g0 -w -fblocks -fexceptions -fobjc-exceptions
     -fconstant-cfstrings -Xclang -fno-constant-nsarray-literals -Xclang -fno-constant-nsdictionary-literals
     -Xclang -fno-constant-nsnumber-literals
     -include "$M/include/cloke_cf_compat.h" -include "$CF/CoreFoundation_Prefix.h" -include "$CF/macros.h"
@@ -66,9 +83,10 @@ CC=(clang -target x86_64-apple-macos11.0 -isysroot "$SDK" -O2 -g0 -w -fblocks -f
     -I"$obj/icu" -iframework "$SDK/System/Library/Frameworks/CoreServices.framework/Frameworks"
     -idirafter "$sysroot/usr/include" -idirafter "$sysroot/include/libxml2"
     -DDARLING=1 -DINCLUDE_OBJC -DDEPLOYMENT_TARGET_MACOSX=1 -D__CONSTANT_CFSTRINGS__=1 -D__CONSTANT_STRINGS__=1
-    -DOBJC_OLD_DISPATCH_PROTOTYPES=1)
-LD=(clang -target x86_64-apple-macos11.0 -dynamiclib -nostdlib -Wl,-platform_version,macos,11.0,11.5
-    -Wl,-syslibroot,"$pd" -Wl,-dead_strip_dylibs -Wl,-unexported_symbols_list,"$M/syscompat.unexp")
+    -DOBJC_OLD_DISPATCH_PROTOTYPES=1 ${ARCHCC[@]+"${ARCHCC[@]}"})
+LD=(clang -target "$TARGET" -dynamiclib -nostdlib -Wl,-platform_version,macos,11.0,11.5
+    -Wl,-syslibroot,"$pd" -Wl,-dead_strip_dylibs -Wl,-unexported_symbols_list,"$M/syscompat.unexp"
+    ${ARCHLD[@]+"${ARCHLD[@]}"})
 
 # compile_all <objdir> <quellordner> <liste> <flags…>: übersetzt alle Dateien der Liste parallel,
 # .c als Objective-C (wie Darling), .S ohne die vorab geladenen Header. Neu übersetzt wird nur,
@@ -105,17 +123,25 @@ bundle() {
   ln -s "Versions/Current/Resources" "$d/Resources"
 }
 
-# patch_list <repo> <liste>: Einträge mit Korrektur in patches/<repo>/ durch eine korrigierte Kopie
-# ersetzen (siehe patches/README). Die Kopie wird nur neu geschrieben, wenn sich etwas ändert.
+# patch_list <repo> <liste>: Einträge mit Korrektur in patches/<repo>/ oder patches/arm64/<repo>/
+# durch eine korrigierte Kopie ersetzen (siehe patches/README; gibt es beide, gelten beide). Die
+# Kopie wird nur neu geschrieben, wenn sich etwas ändert.
 patch_list() {
   local repo="$1" list="$2" base="$WORK/download/darling/$1" s p dst
   while read -r s; do
-    p="$M/patches/$repo/$s.sed"
-    if [ -f "$p" ]; then
+    p=()
+    [ -f "$M/patches/$repo/$s.sed" ] && p+=(-f "$M/patches/$repo/$s.sed")
+    [ -f "$M/patches/arm64/$repo/$s.sed" ] && p+=(-f "$M/patches/arm64/$repo/$s.sed")
+    if [ ${#p[@]} -gt 0 ]; then
       dst="$obj/patched/$repo/$s"
       mkdir -p "$(dirname "$dst")"
-      sed -E -f "$p" "$base/$s" > "$dst.neu"
+      sed -E "${p[@]}" "$base/$s" > "$dst.neu"
       if cmp -s "$dst.neu" "$dst"; then rm "$dst.neu"; else mv "$dst.neu" "$dst"; fi
+      # #include "…" sucht zuerst neben der Datei: die Header des Originalordners dorthin verlinken
+      # (Foundations src/CFInternal.h verdeckt sonst nicht mehr die von CoreFoundation).
+      for h in "$(dirname "$base/$s")"/*.h; do
+        [ -e "$(dirname "$dst")/${h##*/}" ] || [ -L "$(dirname "$dst")/${h##*/}" ] || ln -s "$h" "$(dirname "$dst")/"
+      done
       echo "$dst"
     else
       echo "$s"
@@ -127,8 +153,10 @@ patch_list() {
 # --- CoreFoundation ----------------------------------------------------------------------------
 echo "Baue CoreFoundation"
 { sed -n '/^set(cf_c_sources/,/^)/p; /^set(cf_sources/,/^)/p' "$CF/CMakeLists.txt" |
-    grep -oE '^[[:space:]]+[A-Za-z0-9_+-]+\.(c|m|S)' | sed -E 's/^[[:space:]]+//' | sort -u
-  echo "$M/cfcompat.m"; echo "$M/syscompat.c"; } > "$obj/cf.list"
+    grep -oE '^[[:space:]]+[A-Za-z0-9_+-]+\.(c|m|S)' | sed -E 's/^[[:space:]]+//' | sort -u |
+    { if [ "$CLOKE_ARCH" = arm64 ]; then grep -vxE 'CFForwardingPrep\.S|NSInvoke-x86\.S'; else cat; fi; }
+  echo "$M/cfcompat.m"; echo "$M/syscompat.c"
+  [ "$CLOKE_ARCH" != arm64 ] || { echo "$M/cfarm64.S"; echo "$M/cfarm64.m"; }; } > "$obj/cf.list"
 patch_list darling-corefoundation "$obj/cf.list"
 compile_all "$obj/cf" "$CF" "$obj/cf.list" -DCF_BUILDING_CF -DU_SHOW_DRAFT_API=1 -DU_SHOW_CPLUSPLUS_API=0 -DDISPATCH_SUPPORT=1
 "${LD[@]}" -o "$obj/CoreFoundation" "$obj"/cf/*.o \
