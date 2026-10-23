@@ -46,6 +46,23 @@ if [ "$CLOKE_FLAVOR" = desktop ]; then
   python3 -I "$HERE/cloakserver/bundles.py" "$tmp/stage" "$tmp/stage/System/Library/CoreServices/CloakServer/Resources/icons" \
     "$CLOKE_VERSION" "$CLOKE_BUILD"
   "$HERE/macapps/install.sh" "$tmp/stage"
+  # Tastentabelle in Xorgs Eingabetreiber ergänzen (Einfg, Pos1, Entf, Ziffernfeld, <>|, ...)
+  pdi=/usr/lib/xorg/modules/input/puredarwininput_drv.so
+  mkdir -p "$tmp/stage$(dirname "$pdi")"
+  "$DEBUGFS" -R "dump $pdi $tmp/stage$pdi" "$root" >/dev/null 2>&1
+  python3 -I "$HERE/inputfix.py" "$tmp/stage$pdi"
+  # Eigene Kernel-Treiber (kext/build.sh): ins System, damit pd-rebuild-kc sie mit einbaut; der
+  # Kernel Collection selbst kommt unten in die EFI-Partition
+  if [ "$CLOKE_ARCH" = x86_64 ]; then
+    "$HERE/kext/build.sh" | tail -1
+    mkdir -p "$tmp/stage/System/Library/Extensions" "$tmp/stage/usr/sbin"
+    cp -R "$WORK"/out/kexts/*.kext "$tmp/stage/System/Library/Extensions/"
+    "$DEBUGFS" -R "cat /usr/sbin/pd-rebuild-kc" "$root" 2>/dev/null |
+      awk -v add="$(cd "$WORK/out/kexts" && for k in *.kext; do printf 'set -- "$@" -kext "$KEXTS/%s"\\n' "$k"; done)" \
+        '/^for p in "\$KEXTS"\/System.kext/ && !done { printf "%s", add; done = 1 } { print }' > "$tmp/stage/usr/sbin/pd-rebuild-kc"
+    grep -q ClokePS2 "$tmp/stage/usr/sbin/pd-rebuild-kc" || { echo "pd-rebuild-kc nicht ergänzt" >&2; exit 1; }
+    chmod 755 "$tmp/stage/usr/sbin/pd-rebuild-kc"
+  fi
 fi
 # Netzwerk auf arm64: Netzwerkkarten selbst benennen und eine feste Adresse für QEMUs Benutzernetz
 # setzen, danach die Uhr stellen (tools/). Das Minimal-Image hat kein configd. Im Desktop-Image
@@ -252,9 +269,12 @@ fi
 # Grafiktreiber im Kernel Collection korrigieren (kcfix.py): auf x86_64 legt IOGOPFramebuffer
 # /dev/fb0 und Xorgs Bild ein Byte neben den Framebuffer (falsche Farben), auf arm64 gerät der
 # Kernel in Panik, sobald Xorg über IOVirtIOGPU das erste Bild zeigt.
+# Im x86_64-Desktop stattdessen der Kernel Collection von kext/build.sh: derselbe, neu gebaut mit den
+# eigenen Treibern (ClokePS2) und ebenso korrigiert.
 if [ "$CLOKE_ARCH" = x86_64 ] || [ "$CLOKE_FLAVOR" = desktop ]; then
   mcopy -n -i "$esp" ::/EFI/BOOT/kernel "$tmp/kernel"
   python3 -I "$HERE/kcfix.py" "$tmp/kernel"
+  [ "$CLOKE_ARCH" = x86_64 ] && [ "$CLOKE_FLAVOR" = desktop ] && cp "$WORK/out/kernel" "$tmp/kernel"
   mcopy -o -i "$esp" "$tmp/kernel" ::/EFI/BOOT/kernel
   mtype -i "$esp" ::/EFI/BOOT/kernel | cmp -s - "$tmp/kernel" ||
     { echo "Kernel nicht in der EFI-Partition angekommen" >&2; exit 1; }

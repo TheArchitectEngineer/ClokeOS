@@ -25,13 +25,14 @@ if [[ -r /lib/gtk-3.0/modules/libappmenu-gtk-module.so ]]; then
   export GTK_PATH=/lib/gtk-3.0 GTK_MODULES=appmenu-gtk-module
 fi
 cd $HOME
-# Xorg liest Tastatur und Maus nur von USB (/dev/usb_hid_kbd, /dev/usb_hid_mouse), und nur, wenn sie
-# beim Start schon stecken. Fehlt eins davon nach 45 Sekunden, zeigt ein Fenster, was ClokeOS von der
-# Hardware sieht (clokeos-diag), zum Abfotografieren: ohne Eingabe gibt es sonst keinen Weg zu den
-# Meldungen, und die Wiederherstellung vom USB-Stick hat kein SSH.
+# Xorg liest Tastatur und Maus von USB (/dev/usb_hid_kbd, /dev/usb_hid_mouse, nur wenn sie beim Start
+# stecken) und vom PS/2-Controller (/dev/clokeos_kbd, /dev/clokeos_mouse, kext/ClokePS2). Fehlt nach
+# 45 Sekunden jede Tastatur oder jede Maus, zeigt ein Fenster, was ClokeOS von der Hardware sieht
+# (clokeos-diag), zum Abfotografieren: ohne Eingabe gibt es sonst keinen Weg zu den Meldungen, und
+# die Wiederherstellung vom USB-Stick hat kein SSH.
 if [[ -x /usr/libexec/clokeos-diag && -x /bin/xfce4-terminal ]]; then
   ( sleep 45
-    [[ -e /dev/usb_hid_kbd && -e /dev/usb_hid_mouse ]] ||
+    [[ ( -e /dev/usb_hid_kbd || -e /dev/clokeos_kbd ) && ( -e /dev/usb_hid_mouse || -e /dev/clokeos_mouse ) ]] ||
       /bin/xfce4-terminal --disable-server --title="ClokeOS Diagnostics" --geometry=150x44 --hold \
         -x /usr/libexec/clokeos-diag ) &!
 fi
