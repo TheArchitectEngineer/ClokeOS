@@ -430,7 +430,13 @@ static void fetch_manifest(const char *base, const char *arch, Manifest *m) {
   curl_easy_setopt(c, CURLOPT_WRITEDATA, &text);
   curl_easy_setopt(c, CURLOPT_ERRORBUFFER, err);
   CURLcode rc = curl_easy_perform(c);
+  long status = 0;
+  curl_easy_getinfo(c, CURLINFO_RESPONSE_CODE, &status);
   curl_easy_cleanup(c);
+  if (rc == CURLE_HTTP_RETURNED_ERROR && status == 404)
+    fail("Für %s gibt es auf dem ClokeOS-Server noch kein Release (%s).", arch, url);
+  if (rc == CURLE_HTTP_RETURNED_ERROR)
+    fail("Der ClokeOS-Server antwortet mit Fehler %ld. Bitte später noch einmal versuchen.", status);
   if (rc != CURLE_OK || !text)
     fail("Keine Verbindung zum ClokeOS-Server (%s). Ist das Netzwerk verbunden?", err[0] ? err : curl_easy_strerror(rc));
   memset(m, 0, sizeof *m);
