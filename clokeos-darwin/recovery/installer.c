@@ -50,11 +50,38 @@ static void out(const char *fmt, ...) {
   fflush(stdout);
 }
 
+/* Sprache wie in CloakServer (cloakserver/l10n.c): Texte englisch, Deutsch aus derselben Tabelle */
+static const char *const DE[][2] = {
+#include "../cloakserver/strings-de.h"
+};
+static bool lang_de;
+
+static void lang_init(void) {
+  const char *env = getenv("CLOKE_LANG");
+  char buf[16] = "";
+  if (env && *env) snprintf(buf, sizeof buf, "%s", env);
+  else {
+    FILE *f = fopen("/etc/clokeos-language", "r");
+    if (f) {
+      if (!fgets(buf, sizeof buf, f)) buf[0] = 0;
+      fclose(f);
+    }
+  }
+  lang_de = !strncmp(buf, "de", 2);
+}
+
+static const char *L(const char *en) {
+  if (lang_de)
+    for (size_t i = 0; i < sizeof DE / sizeof DE[0]; i++)
+      if (!strcmp(DE[i][0], en)) return DE[i][1];
+  return en;
+}
+
 static void fail(const char *fmt, ...) {
   char msg[512];
   va_list ap;
   va_start(ap, fmt);
-  vsnprintf(msg, sizeof msg, fmt, ap);
+  vsnprintf(msg, sizeof msg, L(fmt), ap);
   va_end(ap);
   out("ERROR %s", msg);
   exit(1);
@@ -254,7 +281,7 @@ static void unmount_disk(const char *disk, int keep_part) {
   for (int i = 0; i < n; i++) {
     if (strncmp(m[i].f_mntfromname, prefix, strlen(prefix))) continue;
     if (keep_part && atoi(m[i].f_mntfromname + strlen(prefix)) == keep_part) continue;
-    if (unmount(m[i].f_mntonname, MNT_FORCE)) fail("%s ist noch eingebunden: %s", m[i].f_mntonname, strerror(errno));
+    if (unmount(m[i].f_mntonname, MNT_FORCE)) fail("%s is still mounted: %s", m[i].f_mntonname, strerror(errno));
   }
 }
 
@@ -270,7 +297,7 @@ static void cmd_disks(void) {
     if (d.installer) flags[f++] = 'i';
     if (d.clokeos) flags[f++] = 'c';
     if (!f) flags[f++] = '-';
-    const char *label = d.installer ? "ClokeOS-Installationsmedium" : d.clokeos ? "ClokeOS-Festplatte" : "Festplatte";
+    const char *label = L(d.installer ? "ClokeOS Installer" : d.clokeos ? "ClokeOS Disk" : "Disk");
     out("DISK %s %llu %s %s", d.name, (unsigned long long)d.bytes, flags, label);
     for (int k = 0; k < d.nparts; k++)
       out("PART %s %d %llu %s", d.name, k + 1, (unsigned long long)(d.part[k].count * d.bsize),
@@ -309,7 +336,7 @@ static void write_gpt(int fd, const Disk *d, NewPart *p, int n) {
   uint64_t last = d->bytes / bs - 1;
   uint32_t tab_blocks = (128 * 128 + bs - 1) / bs;
   uint8_t *tab = calloc(1, (size_t)tab_blocks * bs), *hdr = calloc(1, bs), *mbr = calloc(1, bs);
-  if (!tab || !hdr || !mbr) fail("Kein Speicher");
+  if (!tab || !hdr || !mbr) fail("Out of memory");
   for (int i = 0; i < n; i++) {
     uint8_t *e = tab + 128 * i;
     memcpy(e, p[i].type, 16);
@@ -355,9 +382,9 @@ static void write_gpt(int fd, const Disk *d, NewPart *p, int n) {
     memcpy(hdr + 16, &hcrc, 4);
     if (pwrite(fd, tab, (size_t)tab_blocks * bs, (off_t)(tab_lba * bs)) != (ssize_t)((size_t)tab_blocks * bs) ||
         pwrite(fd, hdr, bs, (off_t)(my * bs)) != (ssize_t)bs)
-      fail("GPT nicht geschrieben: %s", strerror(errno));
+      fail("Could not write the GPT: %s", strerror(errno));
   }
-  if (pwrite(fd, mbr, bs, 0) != (ssize_t)bs) fail("MBR nicht geschrieben: %s", strerror(errno));
+  if (pwrite(fd, mbr, bs, 0) != (ssize_t)bs) fail("Could not write the MBR: %s", strerror(errno));
   free(tab);
   free(hdr);
   free(mbr);
@@ -365,12 +392,12 @@ static void write_gpt(int fd, const Disk *d, NewPart *p, int n) {
 
 static void cmd_erase(const char *disk) {
   Disk d;
-  if (!probe_disk(disk, &d)) fail("Keine Festplatte %s", disk);
-  if (d.root) fail("Von dieser Festplatte läuft das System, sie lässt sich nicht löschen.");
+  if (!probe_disk(disk, &d)) fail("No disk %s", disk);
+  if (d.root) fail("The system is running from this disk, so it can’t be erased.");
   unmount_disk(disk, 0);
   int fd = open_raw(disk, O_RDWR);
-  if (fd < 0) fail("%s lässt sich nicht öffnen: %s", disk, strerror(errno));
-  out("STEP Festplatte wird gelöscht");
+  if (fd < 0) fail("Could not open %s: %s", disk, strerror(errno));
+  out("STEP %s", L("Erasing the disk"));
   uint8_t *z = calloc(1, CHUNK);
   /* alte Dateisysteme am Anfang unkenntlich machen, dann eine leere GPT */
   for (int i = 0; i < 8 && z; i++) (void)pwrite(fd, z, CHUNK, (off_t)i * CHUNK);
@@ -434,11 +461,11 @@ static void fetch_manifest(const char *base, const char *arch, Manifest *m) {
   curl_easy_getinfo(c, CURLINFO_RESPONSE_CODE, &status);
   curl_easy_cleanup(c);
   if (rc == CURLE_HTTP_RETURNED_ERROR && status == 404)
-    fail("Für %s gibt es auf dem ClokeOS-Server noch kein Release (%s).", arch, url);
+    fail("The ClokeOS server has no release for %s yet (%s).", arch, url);
   if (rc == CURLE_HTTP_RETURNED_ERROR)
-    fail("Der ClokeOS-Server antwortet mit Fehler %ld. Bitte später noch einmal versuchen.", status);
+    fail("The ClokeOS server answered with error %ld. Please try again later.", status);
   if (rc != CURLE_OK || !text)
-    fail("Keine Verbindung zum ClokeOS-Server (%s). Ist das Netzwerk verbunden?", err[0] ? err : curl_easy_strerror(rc));
+    fail("Could not connect to the ClokeOS server (%s). Is the network connected?", err[0] ? err : curl_easy_strerror(rc));
   memset(m, 0, sizeof *m);
   char *save = NULL;
   for (char *line = strtok_r(text, "\n", &save); line; line = strtok_r(NULL, "\n", &save)) {
@@ -456,7 +483,7 @@ static void fetch_manifest(const char *base, const char *arch, Manifest *m) {
   }
   free(text);
   if (strcmp(m->arch, arch) || !m->esp.raw || !m->system.raw || !m->recovery.raw)
-    fail("Die Beschreibung des Releases ist unvollständig.");
+    fail("The release description is incomplete.");
 }
 
 /* ---- Herunterladen, entpacken, schreiben -------------------------------------------------- */
@@ -527,13 +554,13 @@ static size_t on_data(char *p, size_t s, size_t n, void *arg) {
 /* Abbild a von base herunterladen und ab Byte off auf fd schreiben, höchstens limit Bytes */
 static void install_asset(const char *base, const Asset *a, int fd, uint64_t off, uint64_t limit, uint64_t done_before,
                           uint64_t total) {
-  if (a->raw > limit) fail("%s passt nicht in die Partition.", a->file);
+  if (a->raw > limit) fail("%s does not fit into the partition.", a->file);
   Writer w = {.fd = fd, .off = off, .limit = limit, .done_before = done_before, .total = total};
   w.buf = malloc(CHUNK + 4096);
-  if (!w.buf) fail("Kein Speicher");
+  if (!w.buf) fail("Out of memory");
   lzma_stream init = LZMA_STREAM_INIT;
   w.z = init;
-  if (lzma_stream_decoder(&w.z, UINT64_MAX, 0) != LZMA_OK) fail("xz-Entpacker startet nicht");
+  if (lzma_stream_decoder(&w.z, UINT64_MAX, 0) != LZMA_OK) fail("Could not start the xz decompressor");
   sha_init(&w.sha);
   char url[1024], err[CURL_ERROR_SIZE] = "";
   snprintf(url, sizeof url, "%s/%s", base, a->file);
@@ -544,8 +571,8 @@ static void install_asset(const char *base, const Asset *a, int fd, uint64_t off
   curl_easy_setopt(c, CURLOPT_ERRORBUFFER, err);
   CURLcode rc = curl_easy_perform(c);
   curl_easy_cleanup(c);
-  if (w.bad) fail("%s ist beschädigt oder zu groß.", a->file);
-  if (rc != CURLE_OK) fail("Download von %s abgebrochen: %s", a->file, err[0] ? err : curl_easy_strerror(rc));
+  if (w.bad) fail("%s is damaged or too large.", a->file);
+  if (rc != CURLE_OK) fail("Download of %s failed: %s", a->file, err[0] ? err : curl_easy_strerror(rc));
   for (;;) { /* was der Entpacker noch zurückhält */
     w.z.next_in = NULL;
     w.z.avail_in = 0;
@@ -553,17 +580,17 @@ static void install_asset(const char *base, const Asset *a, int fd, uint64_t off
     w.z.avail_out = CHUNK - w.fill;
     lzma_ret r = lzma_code(&w.z, LZMA_FINISH);
     w.fill = CHUNK - w.z.avail_out;
-    if (w.fill == CHUNK && !flush_buf(&w, false)) fail("Schreiben auf die Festplatte fehlgeschlagen: %s", strerror(errno));
+    if (w.fill == CHUNK && !flush_buf(&w, false)) fail("Writing to the disk failed: %s", strerror(errno));
     if (r == LZMA_STREAM_END) break;
-    if (r != LZMA_OK) fail("%s ist beschädigt.", a->file);
+    if (r != LZMA_OK) fail("%s is damaged.", a->file);
   }
-  if (!flush_buf(&w, true)) fail("Schreiben auf die Festplatte fehlgeschlagen: %s", strerror(errno));
+  if (!flush_buf(&w, true)) fail("Writing to the disk failed: %s", strerror(errno));
   lzma_end(&w.z);
   free(w.buf);
   char hex[65];
   sha_hex(&w.sha, hex);
-  if (w.got != a->xz || strcmp(hex, a->sha)) fail("%s ist nicht vollständig angekommen (Prüfsumme falsch).", a->file);
-  if (w.written < a->raw) fail("%s ist kürzer als angegeben.", a->file);
+  if (w.got != a->xz || strcmp(hex, a->sha)) fail("%s did not arrive completely (wrong checksum).", a->file);
+  if (w.written < a->raw) fail("%s is shorter than stated.", a->file);
   out("PROGRESS %llu %llu", (unsigned long long)(done_before + a->xz), (unsigned long long)total);
 }
 
@@ -577,14 +604,14 @@ static const char *machine_arch(void) {
 
 static void cmd_install(const char *disk, const char *base) {
   Disk d;
-  if (!probe_disk(disk, &d)) fail("Keine Festplatte %s", disk);
-  if (d.installer) fail("Das ist das Installationsmedium selbst.");
+  if (!probe_disk(disk, &d)) fail("No disk %s", disk);
+  if (d.installer) fail("This is the installer disk itself.");
   int rootp = d.root ? root_part(disk) : 0;
   /* Neu installieren aus der Wiederherstellung derselben Platte: GPT und Wiederherstellung bleiben */
   bool keep = d.root && rootp == 3 && d.nparts >= 3 && !strcmp(d.part[2].name, "ClokeOS Recovery");
-  if (d.root && !keep) fail("Von dieser Festplatte läuft das System gerade.");
+  if (d.root && !keep) fail("The system is running from this disk.");
 
-  out("STEP Informationen über ClokeOS werden geladen");
+  out("STEP %s", L("Loading information about ClokeOS"));
   curl_global_init(CURL_GLOBAL_DEFAULT);
   Manifest m;
   fetch_manifest(base, machine_arch(), &m);
@@ -598,15 +625,15 @@ static void cmd_install(const char *disk, const char *base) {
   if (keep) {
     /* vorhandene Lage übernehmen */
     if (d.part[0].count * bs < m.esp.raw || d.part[1].count * bs < m.system.raw)
-      fail("Diese Version braucht mehr Platz, als die Partitionen haben. Bitte vom Installationsmedium "
-           "starten und die Festplatte neu einrichten.");
+      fail("This version needs more space than the partitions have. Please start from the installer "
+           "disk and set up the disk again.");
     for (int i = 0; i < 2; i++) p[i].first = d.part[i].first, p[i].count = d.part[i].count;
   } else {
     p[1].first = p[0].first + p[0].count;
     p[2].first = p[1].first + p[1].count;
     uint64_t need = (p[2].first + p[2].count) * bs + mib;
     if (d.bytes < need)
-      fail("Die Festplatte ist zu klein: ClokeOS %s braucht %.1f GB, sie hat %.1f GB.", m.version, need / 1e9,
+      fail("The disk is too small: ClokeOS %s needs %.1f GB, it has %.1f GB.", m.version, need / 1e9,
            d.bytes / 1e9);
   }
   unmount_disk(disk, keep ? 3 : 0);
@@ -620,28 +647,28 @@ static void cmd_install(const char *disk, const char *base) {
       char part[24];
       snprintf(part, sizeof part, "%ss%d", disk, i + 1);
       fd[i] = open_raw(part, O_RDWR);
-      if (fd[i] < 0) fail("%s lässt sich nicht beschreiben: %s", part, strerror(errno));
+      if (fd[i] < 0) fail("Could not write to %s: %s", part, strerror(errno));
       off[i] = 0;
     }
   } else {
     fd[0] = fd[1] = open_raw(disk, O_RDWR);
-    if (fd[0] < 0) fail("%s lässt sich nicht beschreiben: %s", disk, strerror(errno));
+    if (fd[0] < 0) fail("Could not write to %s: %s", disk, strerror(errno));
     off[0] = p[0].first * bs, off[1] = p[1].first * bs;
-    out("STEP Festplatte wird vorbereitet");
+    out("STEP %s", L("Preparing the disk"));
     write_gpt(fd[0], &d, p, 3);
   }
   uint64_t total = m.system.xz + m.esp.xz + (keep ? 0 : m.recovery.xz), done = 0;
   char step[256];
-  snprintf(step, sizeof step, "STEP ClokeOS %s wird geladen und installiert", m.version);
-  out("%s", step);
+  snprintf(step, sizeof step, L("Downloading and installing ClokeOS %s"), m.version);
+  out("STEP %s", step);
   install_asset(base, &m.system, fd[1], off[1], p[1].count * bs, done, total);
   done += m.system.xz;
   if (!keep) {
-    out("STEP Wiederherstellung wird eingerichtet");
+    out("STEP %s", L("Setting up the recovery"));
     install_asset(base, &m.recovery, fd[0], p[2].first * bs, p[2].count * bs, done, total);
     done += m.recovery.xz;
   }
-  out("STEP Startvolume wird eingerichtet");
+  out("STEP %s", L("Setting up the startup volume"));
   install_asset(base, &m.esp, fd[0], off[0], p[0].count * bs, done, total);
   fsync(fd[1]);
   if (keep) { /* Kennungen der vorhandenen Partitionen */
@@ -818,10 +845,10 @@ static void patch_esp(int fd, uint32_t dbs, uint64_t esp_off, const uint8_t sys[
   char sg[37], rg[37];
   guid_str(sys, sg);
   guid_str(rec, rg);
-  if (!fat_init(&f, fd, dbs, esp_off)) fail("Die EFI-Partition ist kein FAT32.");
+  if (!fat_init(&f, fd, dbs, esp_off)) fail("The EFI partition is not FAT32.");
   if (!set_boot_uuid(&f, "boot-args-system.txt", sg) || !set_boot_uuid(&f, "boot-args-recovery.txt", rg) ||
       !set_boot_uuid(&f, "boot-args.txt", sg))
-    fail("Boot-Argumente in der EFI-Partition nicht gesetzt.");
+    fail("Could not set the boot arguments in the EFI partition.");
 }
 
 static void cmd_bootnext(const char *which) {
@@ -832,29 +859,30 @@ static void cmd_bootnext(const char *which) {
     snprintf(name, sizeof name, "disk%d", i);
     if (root_part(name)) disk = i;
   }
-  if (disk < 0) fail("Startplatte nicht gefunden");
+  if (disk < 0) fail("Startup disk not found");
   char name[16];
   snprintf(name, sizeof name, "disk%d", disk);
   Disk d;
-  if (!probe_disk(name, &d) || d.nparts < 1 || memcmp(d.part[0].type, GUID_ESP, 16)) fail("Keine EFI-Partition");
+  if (!probe_disk(name, &d) || d.nparts < 1 || memcmp(d.part[0].type, GUID_ESP, 16)) fail("No EFI partition");
   /* Die ganze Platte lässt sich nicht zum Schreiben öffnen, solange eine ihrer Partitionen (die
    * laufende Wurzel) eingebunden ist; die EFI-Partition selbst ist frei */
   char esp[24];
   snprintf(esp, sizeof esp, "%ss1", name);
   int fd = open_raw(esp, O_RDWR);
-  if (fd < 0) fail("Die EFI-Partition (%s) lässt sich nicht öffnen: %s", esp, strerror(errno));
+  if (fd < 0) fail("Could not open the EFI partition (%s): %s", esp, strerror(errno));
   Fat f;
-  if (!fat_init(&f, fd, d.bsize, 0)) fail("Die EFI-Partition ist kein FAT32");
+  if (!fat_init(&f, fd, d.bsize, 0)) fail("The EFI partition is not FAT32");
   char src[64], args[1024];
   snprintf(src, sizeof src, "boot-args-%s.txt", which);
-  if (!fat_read(&f, src, args, sizeof args)) fail("%s fehlt in der EFI-Partition", src);
-  if (!fat_write(&f, "boot-args.txt", args)) fail("boot-args.txt nicht geschrieben");
+  if (!fat_read(&f, src, args, sizeof args)) fail("%s is missing from the EFI partition", src);
+  if (!fat_write(&f, "boot-args.txt", args)) fail("Could not write boot-args.txt");
   fsync(fd);
   close(fd);
   out("DONE %s", which);
 }
 
 int main(int argc, char **argv) {
+  lang_init();
   if (argc >= 2 && !strcmp(argv[1], "disks")) cmd_disks();
   else if (argc == 4 && !strcmp(argv[1], "install")) cmd_install(argv[2], argv[3]);
   else if (argc == 3 && !strcmp(argv[1], "erase")) cmd_erase(argv[2]);

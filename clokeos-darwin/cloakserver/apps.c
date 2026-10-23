@@ -12,6 +12,7 @@
 
 #include <ctype.h>
 #include <dirent.h>
+#include <glib.h>
 #include <libgen.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -304,10 +305,74 @@ static void lib_name(const char *path, char *out, size_t n) {
   }
 }
 
+/* Name in der eingestellten Sprache wie bei macOS: Contents/Resources/<sprache>.lproj/InfoPlist.strings
+ * mit CFBundleDisplayName oder CFBundleName. Die Datei ist ein Text im alten Plist-Format
+ * ("CFBundleName" = "Notizen";, UTF-8 oder UTF-16 mit BOM) oder, bei Mac-Programmen aus Xcode,
+ * eine binäre Plist. */
+static bool strings_get(const unsigned char *d, size_t len, const char *key, char *out, size_t n) {
+  if (len >= 6 && (!memcmp(d, "bplist", 6) || !memcmp(d, "<?xml", 5))) return plist_get(d, len, key, out, n);
+  char *txt = NULL;
+  if (len >= 2 && ((d[0] == 0xff && d[1] == 0xfe) || (d[0] == 0xfe && d[1] == 0xff))) { /* UTF-16 nach UTF-8 */
+    txt = g_utf16_to_utf8((const gunichar2 *)(d + 2), (glong)(len - 2) / 2, NULL, NULL, NULL);
+    if (txt && d[0] == 0xfe) { /* big endian: Bytes tauschen und neu wandeln */
+      g_free(txt);
+      size_t m = (len - 2) / 2;
+      gunichar2 *w = g_malloc(m * 2);
+      for (size_t i = 0; i < m; i++) w[i] = (gunichar2)(d[2 + 2 * i] << 8 | d[3 + 2 * i]);
+      txt = g_utf16_to_utf8(w, (glong)m, NULL, NULL, NULL);
+      g_free(w);
+    }
+  } else {
+    size_t skip = len >= 3 && !memcmp(d, "\xef\xbb\xbf", 3) ? 3 : 0;
+    txt = g_strndup((const char *)d + skip, len - skip);
+  }
+  if (!txt) return false;
+  bool found = false;
+  size_t kl = strlen(key);
+  for (char *p = txt; (p = strstr(p, key)) && !found; p += kl) {
+    char *q = p + kl;
+    if (*q == '"') q++;
+    while (*q == ' ' || *q == '\t') q++;
+    if (*q != '=') continue;
+    q++;
+    while (*q == ' ' || *q == '\t') q++;
+    if (*q != '"') continue;
+    q++;
+    size_t k = 0;
+    for (; *q && *q != '"' && k + 1 < n; q++) {
+      if (*q == '\\' && q[1]) q++;
+      out[k++] = *q;
+    }
+    out[k] = 0;
+    found = k > 0;
+  }
+  g_free(txt);
+  return found;
+}
+
+static void localized_name(Bundle *b, const char *path) {
+  const char *lang = l10n_lang();
+  const char *dirs[3] = {lang, !strcmp(lang, "de") ? "German" : "English", NULL};
+  for (int i = 0; dirs[i]; i++) {
+    char f[1200];
+    snprintf(f, sizeof f, "%s/Contents/Resources/%s.lproj/InfoPlist.strings", path, dirs[i]);
+    size_t len = 0;
+    unsigned char *d = read_bytes(f, &len);
+    if (!d) continue;
+    char v[256];
+    bool ok = strings_get(d, len, "CFBundleDisplayName", v, sizeof v) || strings_get(d, len, "CFBundleName", v, sizeof v);
+    free(d);
+    if (ok) {
+      snprintf(b->name, sizeof b->name, "%s", v);
+      return;
+    }
+  }
+}
+
 static void check_thin(Bundle *b, const unsigned char *m, size_t len) {
   if (len < 32 || le32(m) != MH_MAGIC_64) {
     b->kind = APP_NOEXEC;
-    snprintf(b->missing, sizeof b->missing, "keine ausführbare Datei");
+    snprintf(b->missing, sizeof b->missing, "%s", L("no executable file"));
     return;
   }
   uint32_t cpu = le32(m + 4), ncmds = le32(m + 16), size = le32(m + 20);
@@ -325,7 +390,7 @@ static void check_thin(Bundle *b, const unsigned char *m, size_t len) {
 #endif
   if (cpu != CPU_NATIVE) {
     b->kind = APP_NOEXEC;
-    snprintf(b->missing, sizeof b->missing, "unbekannte Architektur");
+    snprintf(b->missing, sizeof b->missing, "%s", L("unknown architecture"));
     return;
   }
   if (32 + (size_t)size > len) return;
@@ -387,7 +452,7 @@ static void check_exec(Bundle *b) {
   if (len >= 2 && m[0] == '#' && m[1] == '!') { /* Startskript: Programm für ClokeOS */
     if (access(b->exec, X_OK)) {
       b->kind = APP_NOEXEC;
-      snprintf(b->missing, sizeof b->missing, "Startdatei nicht ausführbar");
+      snprintf(b->missing, sizeof b->missing, "%s", L("the executable is not executable"));
     }
   } else if (len >= 8 && be(m, 4) == FAT_MAGIC) { /* Universal: den Teil für ClokeOS suchen */
     uint32_t n = (uint32_t)be(m + 4, 4);
@@ -410,7 +475,7 @@ static void check_exec(Bundle *b) {
     } else {
       b->mac = true;
       b->kind = foreign ? APP_ARCH : APP_NOEXEC;
-      if (!foreign) snprintf(b->missing, sizeof b->missing, "kein " NATIVE_NAME "-Teil");
+      if (!foreign) snprintf(b->missing, sizeof b->missing, L("no %s part"), NATIVE_NAME);
     }
   } else {
     check_thin(b, m, len);
@@ -465,6 +530,7 @@ bool bundle_read(const char *path, Bundle *b) {
   if (plist_get(pl, len, "CFBundleDisplayName", v, sizeof v) && v[0]) snprintf(b->name, sizeof b->name, "%s", v);
   else if (plist_get(pl, len, "CFBundleName", v, sizeof v) && v[0]) snprintf(b->name, sizeof b->name, "%s", v);
   else snprintf(b->name, sizeof b->name, "%s", base);
+  localized_name(b, path);
   if (plist_get(pl, len, "CFBundleIdentifier", v, sizeof v)) snprintf(b->ident, sizeof b->ident, "%s", v);
   if (plist_get(pl, len, "CFBundleExecutable", v, sizeof v) && v[0]) snprintf(b->exec_name, sizeof b->exec_name, "%s", v);
   else snprintf(b->exec_name, sizeof b->exec_name, "%s", base);

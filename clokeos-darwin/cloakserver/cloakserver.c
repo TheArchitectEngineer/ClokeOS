@@ -151,6 +151,7 @@ struct Client {
   int th, bw;          /* Titelleiste und Rand; 0, wenn das Programm selbst zeichnet */
   int minw, minh;
   char title[256];
+  const char *title_en; /* eigene Fenster: englischer Titel, L() übersetzt ihn (auch nach Sprachwechsel) */
   char cls[128];
   int app;             /* Index in apps oder -1 */
   bool minimized, zoomed, can_delete, can_focus, take_focus, argb;
@@ -198,6 +199,8 @@ static Cursor cur_arrow, cur_resize, cur_move;
 static int cascade;
 static bool debug;
 static Window loginwin;      /* Anmeldebildschirm */
+static Window setupwin;      /* Einrichtungsassistent (setup.c) */
+static bool setup_active;
 static bool locked, sleeping; /* gesperrt; Ruhezustand (Bildschirm schwarz) */
 
 static Atom WM_PROTOCOLS, WM_WINDOW_ROLE, WM_DELETE_WINDOW, WM_TAKE_FOCUS, WM_STATE, WM_CHANGE_STATE, UTF8_STRING,
@@ -560,7 +563,10 @@ static uint32_t xsettings_serial;
 static void xsettings_update(void) {
   if (!xsettings_win) return;
   static const char *name = "Net/ThemeName";
-  const char *val = dark ? "Adwaita-dark" : "Adwaita";
+  /* Eigenes Thema ClokeOS (overlay-desktop/share/themes): Adwaita mit Farben und Formen wie
+   * CloakServer; fehlt es, das eingebaute Adwaita */
+  bool own = access("/share/themes/ClokeOS/gtk-3.0/gtk.css", R_OK) == 0;
+  const char *val = own ? (dark ? "ClokeOS-dark" : "ClokeOS") : dark ? "Adwaita-dark" : "Adwaita";
   /* Gtk/ShellShowsMenubar: GTK-Programme zeigen ihre Menüleiste nicht im Fenster, die Menüs
    * stehen oben in der Leiste (globale Menüleiste, siehe dort). Nur wenn cloakmenu da ist. */
   bool menus = access(CLOAKMENU, X_OK) == 0;
@@ -672,7 +678,8 @@ static void set_theme_mode(long mode) {
 /* ---------------------------------------------------------------------------------------- */
 /* Icons, Programme starten                                                                   */
 
-static const char *MONTHS[] = {"JAN", "FEB", "MÄRZ", "APR", "MAI", "JUNI", "JULI", "AUG", "SEPT", "OKT", "NOV", "DEZ"};
+static const char *MONTHS_EN[] = {"JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"};
+static const char *MONTHS_DE[] = {"JAN", "FEB", "MÄRZ", "APR", "MAI", "JUNI", "JULI", "AUG", "SEPT", "OKT", "NOV", "DEZ"};
 
 static const char *const *cal_subst(void) {
   static char day[8];
@@ -681,7 +688,7 @@ static const char *const *cal_subst(void) {
   struct tm tm;
   localtime_r(&t, &tm);
   snprintf(day, sizeof day, "%d", tm.tm_mday);
-  cal[0] = "@MON@", cal[1] = MONTHS[tm.tm_mon], cal[2] = "@DAY@", cal[3] = day, cal[4] = NULL;
+  cal[0] = "@MON@", cal[1] = (strcmp(l10n_lang(), "de") ? MONTHS_EN : MONTHS_DE)[tm.tm_mon], cal[2] = "@DAY@", cal[3] = day, cal[4] = NULL;
   cal_day = tm.tm_mday;
   return cal;
 }
@@ -1325,6 +1332,7 @@ static void keep_ui_on_top(void) {
   if (!lp_open) XRaiseWindow(dpy, menubar);
   if (menuwin) XRaiseWindow(dpy, menuwin);
   if (locked && loginwin) XRaiseWindow(dpy, loginwin);
+  if (setup_active && setupwin) XRaiseWindow(dpy, setupwin);
 }
 
 static void raise_client(Client *c) {
@@ -1554,8 +1562,8 @@ static void collect_sysinfo(void) {
   char buf[128];
   if (!uname(&u)) {
     snprintf(buf, sizeof buf, "Darwin %s (XNU)", u.release);
-    add_info("Kernel", buf);
-    add_info("Architektur", u.machine);
+    add_info(L("Kernel"), buf);
+    add_info(L("Architecture"), u.machine);
   }
   char cpu[128] = "";
   size_t n = sizeof cpu;
@@ -1565,22 +1573,22 @@ static void collect_sysinfo(void) {
   sysctlbyname("hw.ncpu", &ncpu, &ni, NULL, 0);
   char *p = cpu;
   while (*p == ' ') p++;
-  if (*p) add_info("Prozessor", p);
+  if (*p) add_info(L("Processor"), p);
   if (ncpu) {
     snprintf(buf, sizeof buf, "%d", ncpu);
-    add_info("Kerne", buf);
+    add_info(L("Cores"), buf);
   }
   uint64_t mem = 0;
   size_t nm = sizeof mem;
   if (!sysctlbyname("hw.memsize", &mem, &nm, NULL, 0) && mem) {
     snprintf(buf, sizeof buf, "%.0f GB", mem / 1073741824.0);
-    add_info("Speicher", buf);
+    add_info(L("Memory"), buf);
   }
   snprintf(buf, sizeof buf, "%d × %d", SW, SH);
-  add_info("Bildschirm", buf);
+  add_info(L("Display"), buf);
   char host[128] = "";
   gethostname(host, sizeof host);
-  add_info("Gerätename", host);
+  add_info(L("Computer Name"), host);
   add_info("Build", os_build);
 }
 
@@ -1595,7 +1603,7 @@ static void paint_about(Client *c, cairo_t *cr) {
   }
   text(cr, w / 2.0, 140, "ClokeOS", 22, true, T->fg, 0, 1);
   char ver[96];
-  snprintf(ver, sizeof ver, "„%s“ · Version %s", os_codename, os_version);
+  snprintf(ver, sizeof ver, L("“%s” · Version %s"), os_codename, os_version);
   text(cr, w / 2.0, 166, ver, 12.5, false, T->fg2, 0, 1);
   int y = 196;
   for (int i = 0; i < nsysinfo; i++, y += 19) {
@@ -1603,7 +1611,7 @@ static void paint_about(Client *c, cairo_t *cr) {
     text(cr, w * .36 + 12, y, sysinfo[i][1], 11.5, false, T->fg2, w * .64 - 30, 0);
   }
   /* Knopf "Weitere Informationen …" */
-  const char *b = "Weitere Informationen …";
+  const char *b = L("More Info…");
   int bwid = text_width(b, 12, false) + 28;
   double bx = (w - bwid) / 2.0, by = c->h - 46;
   rrect(cr, bx, by, bwid, 26, 13);
@@ -1624,7 +1632,7 @@ static void draw_own(Client *c);
 /* Rückfragen vor Neustart (data 1), Ausschalten (0) und Neustart in die Wiederherstellung (2);
  * 3: die Startplatte hat keine Wiederherstellung (nur eine Meldung) */
 static const char *confirm_ok(long data) {
-  return data == 1 ? "Neustart" : data == 2 ? "Neustart" : data == 3 ? "OK" : "Ausschalten";
+  return data == 1 || data == 2 ? L("Restart") : data == 3 ? "OK" : L("Shut Down");
 }
 
 static void paint_confirm(Client *c, cairo_t *cr) {
@@ -1634,15 +1642,15 @@ static void paint_confirm(Client *c, cairo_t *cr) {
     cairo_paint(cr);
     cairo_surface_destroy(lg);
   }
-  static const char *const head[] = {"Möchtest du ClokeOS jetzt ausschalten?", "Möchtest du ClokeOS jetzt neu starten?",
-                                     "In die Wiederherstellung neu starten?", "Keine Wiederherstellung gefunden"};
-  static const char *const sub[] = {"Nicht gesicherte Änderungen in Programmen gehen verloren.",
-                                    "Nicht gesicherte Änderungen in Programmen gehen verloren.",
-                                    "Nur dieses eine Mal, danach startet wieder ClokeOS.",
-                                    "Die Startplatte hat keine Wiederherstellungspartition."};
+  static const char *const head[] = {"Are you sure you want to shut down your computer now?",
+                                     "Are you sure you want to restart your computer now?", "Restart in Recovery now?",
+                                     "No Recovery Found"};
+  static const char *const sub[] = {"Unsaved changes in apps will be lost.", "Unsaved changes in apps will be lost.",
+                                    "Only this once, then ClokeOS starts again.",
+                                    "The startup disk has no recovery partition."};
   int k = c->data >= 0 && c->data <= 3 ? (int)c->data : 0;
-  text(cr, 94, 40, head[k], 13, true, T->fg, c->w - 110, 0);
-  text(cr, 94, 64, sub[k], 11.5, false, T->fg2, c->w - 110, 0);
+  text(cr, 94, 40, L(head[k]), 13, true, T->fg, c->w - 110, 0);
+  text(cr, 94, 64, L(sub[k]), 11.5, false, T->fg2, c->w - 110, 0);
   if (c->data == 3) { /* nur OK */
     const char *ok = "OK";
     int w2 = text_width(ok, 12.5, false) + 40;
@@ -1654,14 +1662,14 @@ static void paint_confirm(Client *c, cairo_t *cr) {
     return;
   }
   const char *ok = confirm_ok(c->data);
-  int w2 = text_width(ok, 12.5, false) + 32, w1 = text_width("Abbrechen", 12.5, false) + 32;
+  int w2 = text_width(ok, 12.5, false) + 32, w1 = text_width(L("Cancel"), 12.5, false) + 32;
   double y = c->h - 44, x2 = c->w - 20 - w2, x1 = x2 - 10 - w1;
   rrect(cr, x1, y, w1, 28, 14);
   set(cr, dark ? (RGBA){1, 1, 1, .12} : (RGBA){1, 1, 1, .95});
   cairo_fill_preserve(cr);
   set(cr, T->line_strong);
   cairo_stroke(cr);
-  text(cr, x1 + w1 / 2.0, y + 14, "Abbrechen", 12.5, false, T->fg, 0, 1);
+  text(cr, x1 + w1 / 2.0, y + 14, L("Cancel"), 12.5, false, T->fg, 0, 1);
   rrect(cr, x2, y, w2, 28, 14);
   set(cr, ACCENT);
   cairo_fill(cr);
@@ -1670,7 +1678,7 @@ static void paint_confirm(Client *c, cairo_t *cr) {
 
 static void click_confirm(Client *c, int x, int y) {
   const char *ok = confirm_ok(c->data);
-  int w2 = text_width(ok, 12.5, false) + (c->data == 3 ? 40 : 32), w1 = text_width("Abbrechen", 12.5, false) + 32;
+  int w2 = text_width(ok, 12.5, false) + (c->data == 3 ? 40 : 32), w1 = text_width(L("Cancel"), 12.5, false) + 32;
   double by = c->h - 44, x2 = c->w - 20 - w2, x1 = x2 - 10 - w1;
   if (y < by || y > by + 28) return;
   if (x >= x2 && x <= x2 + w2) {
@@ -1718,14 +1726,16 @@ static Client *own_window(int w, int h, const char *title, void (*draw)(Client *
   sa.event_mask = ExposureMask | ButtonPressMask;
   Window win = XCreateWindow(dpy, root, (SW - w) / 2, (SH - h) / 2 - 30, w, h, 0, CopyFromParent, InputOutput,
                              CopyFromParent, CWEventMask, &sa);
-  XStoreName(dpy, win, title);
-  XChangeProperty(dpy, win, NET_WM_NAME, UTF8_STRING, 8, PropModeReplace, (unsigned char *)title, strlen(title));
+  const char *title_l = L(title);
+  XStoreName(dpy, win, title_l);
+  XChangeProperty(dpy, win, NET_WM_NAME, UTF8_STRING, 8, PropModeReplace, (unsigned char *)title_l, strlen(title_l));
   XClassHint ch = {.res_name = "cloakserver", .res_class = "CloakServer"};
   XSetClassHint(dpy, win, &ch);
   XSizeHints sh = {.flags = PPosition | PMinSize | PMaxSize, .min_width = w, .max_width = w, .min_height = h, .max_height = h};
   XSetWMNormalHints(dpy, win, &sh);
   Client *c = manage(win, false, true);
   if (c) {
+    c->title_en = title;
     c->draw = draw;
     c->click = click;
     c->data = data;
@@ -1743,11 +1753,11 @@ static Client *own_window(int w, int h, const char *title, void (*draw)(Client *
 static void show_about(long unused) {
   (void)unused;
   collect_sysinfo();
-  own_window(420, 420, "Über ClokeOS", paint_about, click_about, 0);
+  own_window(420, 420, "About ClokeOS", paint_about, click_about, 0);
 }
 
 static void confirm_power(long reboot) {
-  own_window(500, 140, reboot == 2 ? "Wiederherstellung" : reboot ? "Neustart" : "Ausschalten", paint_confirm,
+  own_window(500, 140, reboot == 2 ? "Recovery" : reboot ? "Restart" : "Shut Down", paint_confirm,
              click_confirm, reboot);
 }
 
@@ -1801,7 +1811,13 @@ static bool account_has_password(const Account *a) {
   return a->passwd[0] && strcmp(a->passwd, "*") && a->passwd[0] != '!';
 }
 
-static const char *session_name(void) { return session ? session->full : "System Administrator"; }
+/* Anzeigename: Gast und root heißen wie bei macOS in jeder Sprache passend */
+static const char *display_name(const Account *a) {
+  if (!strcmp(a->full, "Guest") || !strcmp(a->full, "System Administrator")) return L(a->full);
+  return a->full;
+}
+
+static const char *session_name(void) { return session ? display_name(session) : L("System Administrator"); }
 
 /* Umgebung der Sitzung; die von cloakserver-session (root) kommt beim Abmelden zurück */
 static const char *const SESSION_ENV[] = {"HOME", "USER", "LOGNAME", "SHELL", "XDG_RUNTIME_DIR",
@@ -1931,7 +1947,7 @@ static int pwlen;
 static double shake_t0 = -1; /* Wackeln nach falschem Passwort */
 static int lg_arrow_x, lg_arrow_y, lg_btn_x[3], lg_btn_y;
 static const char *const POWER_KIND[3] = {"sleep", "restart", "off"};
-static const char *const POWER_LABEL[3] = {"Ruhezustand", "Neustart", "Ausschalten"};
+static const char *const POWER_LABEL[3] = {"Sleep", "Restart", "Shut Down"};
 static cairo_surface_t *power_icon[3];
 static int lg_av_x[8], lg_av_y;
 
@@ -1972,18 +1988,15 @@ static void paint_login(cairo_t *cr, int w, int h, void *arg) {
   cairo_set_source_rgba(cr, 10 / 255., 6 / 255., 20 / 255., .18);
   cairo_paint(cr);
 
-  static const char *wd[] = {"Sonntag", "Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag"};
-  static const char *mo[] = {"Januar", "Februar", "März", "April", "Mai", "Juni", "Juli", "August", "September",
-                             "Oktober", "November", "Dezember"};
   time_t t = time(NULL);
   struct tm tm;
   localtime_r(&t, &tm);
   char buf[96];
   double cx = w / 2.0;
   int top = h * 12 / 100;
-  snprintf(buf, sizeof buf, "%s, %d. %s", wd[tm.tm_wday], tm.tm_mday, mo[tm.tm_mon]);
+  l10n_date_long(buf, sizeof buf, &tm);
   shadow_text(cr, cx, top + 12, buf, 20, true, .9);
-  snprintf(buf, sizeof buf, "%02d:%02d", tm.tm_hour, tm.tm_min);
+  l10n_big_clock(buf, sizeof buf, &tm);
   shadow_text(cr, cx, top + 28 + 58, buf, 116, true, 1);
 
   /* Knöpfe unten */
@@ -2005,7 +2018,7 @@ static void paint_login(cairo_t *cr, int w, int h, void *arg) {
       cairo_set_source_surface(cr, power_icon[i], bx - 8, py + 11);
       cairo_paint(cr);
     }
-    text(cr, bx, py + 38 + 6 + 8, POWER_LABEL[i], 12, false, (RGBA){1, 1, 1, .85}, 0, 1);
+    text(cr, bx, py + 38 + 6 + 8, L(POWER_LABEL[i]), 12, false, (RGBA){1, 1, 1, .85}, 0, 1);
   }
 
   /* Konten in der Mitte zwischen Uhr und Knöpfen, das ausgewählte groß, die anderen kleiner
@@ -2036,11 +2049,12 @@ static void paint_login(cairo_t *cr, int w, int h, void *arg) {
     cairo_pattern_destroy(g);
     char initial[8] = {0};
     int il = 1;
-    while (a->full[il] && (a->full[il] & 0xc0) == 0x80) il++; /* erstes Zeichen in UTF-8 */
-    snprintf(initial, sizeof initial, "%.*s", il, a->full);
+    const char *dn = display_name(a);
+    while (dn[il] && (dn[il] & 0xc0) == 0x80) il++; /* erstes Zeichen in UTF-8 */
+    snprintf(initial, sizeof initial, "%.*s", il, dn);
     for (char *p = initial; *p; p++) *p = (char)toupper((unsigned char)*p);
     text(cr, ax, lg_av_y, initial, on ? 32 : 25, true, (RGBA){1, 1, 1, al}, 0, 1);
-    shadow_text(cr, ax, uy + 78 + 10 + 11, a->full, on ? 17 : 14, on, on ? 1 : .8);
+    shadow_text(cr, ax, uy + 78 + 10 + 11, dn, on ? 17 : 14, on, on ? 1 : .8);
   }
   const Account *cur = login_account(login_sel());
   double lx = lg_av_x[login_sel()]; /* Feld und Hinweis unter dem ausgewählten Konto */
@@ -2058,7 +2072,7 @@ static void paint_login(cairo_t *cr, int w, int h, void *arg) {
     for (int i = 0; i < n; i++) strcat(dots, "•");
     text(cr, fx + 14, fy + 15, dots, 13, false, (RGBA){1, 1, 1, 1}, 0, 0);
   } else {
-    text(cr, fx + 14, fy + 15, "Passwort eingeben", 13, false, (RGBA){1, 1, 1, .7}, 0, 0);
+    text(cr, fx + 14, fy + 15, L("Enter Password"), 13, false, (RGBA){1, 1, 1, .7}, 0, 0);
   }
   lg_arrow_x = (int)(fx + 220 - 15);
   lg_arrow_y = (int)(fy + 15);
@@ -2078,7 +2092,7 @@ static void paint_login(cairo_t *cr, int w, int h, void *arg) {
   cairo_line_to(cr, ax + 9 * k, ay + 12 * k);
   cairo_stroke(cr);
   if (!account_has_password(cur))
-    text(cr, lx, fy + 30 + 10 + 8, "Ohne Passwort: Die Eingabetaste meldet an.", 11.5, false, (RGBA){1, 1, 1, .72}, 0, 1);
+    text(cr, lx, fy + 30 + 10 + 8, L("No password: press Return to log in."), 11.5, false, (RGBA){1, 1, 1, .72}, 0, 1);
 }
 
 static void draw_login(void) {
@@ -2466,11 +2480,11 @@ static int current_app(void) {
 }
 
 static const char *current_app_name(void) {
-  if (recovery && (!focused || focused->draw)) return "Wiederherstellung";
+  if (recovery && (!focused || focused->draw)) return L("Recovery");
   if (!focused) return app_fundus >= 0 ? apps[app_fundus].b.name : "Fundus";
   if (focused->app >= 0) return apps[focused->app].b.name;
   if (focused->draw) return "ClokeOS";
-  return focused->cls[0] ? focused->cls : "Programm";
+  return focused->cls[0] ? focused->cls : L("App");
 }
 
 /* ---------------------------------------------------------------------------------------- */
@@ -2801,59 +2815,59 @@ static void build_menu(int which) {
   char buf[160];
   switch (which) {
   case MB_LOGO:
-    add_item("Über ClokeOS", show_about, 0, false);
+    add_item(L("About ClokeOS"), show_about, 0, false);
     add_sep();
     if (recovery) {
-      add_item("Neustart …", confirm_power, 1, false);
-      add_item("Ausschalten …", confirm_power, 0, false);
+      add_item(L("Restart…"), confirm_power, 1, false);
+      add_item(L("Shut Down…"), confirm_power, 0, false);
       break;
     }
-    add_item("Systemeinstellungen …", show_settings, -1, false);
-    add_item("Aktivitätsanzeige", launch_app, app_by_ident("com.clokeos.aktivitaet"), app_by_ident("com.clokeos.aktivitaet") < 0);
-    add_item("Programme", cmd_spot, 0, false);
+    add_item(L("System Settings…"), show_settings, -1, false);
+    add_item(L("Activity Monitor"), launch_app, app_by_ident("com.clokeos.aktivitaet"), app_by_ident("com.clokeos.aktivitaet") < 0);
+    add_item(L("Applications"), cmd_spot, 0, false);
     add_sep();
-    add_item("Ruhezustand", cmd_sleep, 0, false);
-    add_item("Neustart …", confirm_power, 1, false);
-    add_item("Neustart in Wiederherstellung …", confirm_power, 2, access(INSTALLER, X_OK) != 0);
-    add_item("Ausschalten …", confirm_power, 0, false);
+    add_item(L("Sleep"), cmd_sleep, 0, false);
+    add_item(L("Restart…"), confirm_power, 1, false);
+    add_item(L("Restart in Recovery…"), confirm_power, 2, access(INSTALLER, X_OK) != 0);
+    add_item(L("Shut Down…"), confirm_power, 0, false);
     add_sep();
-    snprintf(buf, sizeof buf, "„%s“ abmelden …", session_name());
+    snprintf(buf, sizeof buf, L("Log Out “%s”…"), session_name());
     add_item(buf, cmd_logout, 0, false);
     break;
   case MB_APP: {
     if (recovery && (!focused || focused->draw)) {
-      add_item("Über ClokeOS", show_about, 0, false);
+      add_item(L("About ClokeOS"), show_about, 0, false);
       add_sep();
-      add_item("Wiederherstellung beenden …", confirm_power, 1, false);
+      add_item(L("Quit Recovery…"), confirm_power, 1, false);
       break;
     }
     const char *name = current_app_name();
-    snprintf(buf, sizeof buf, "Über %s", name);
-    add_item(focused && app >= 0 ? buf : "Über ClokeOS", show_about, 0, false);
+    snprintf(buf, sizeof buf, L("About %s"), name);
+    add_item(focused && app >= 0 ? buf : L("About ClokeOS"), show_about, 0, false);
     add_sep();
     bool running = false;
     for (Client *c = clients; c; c = c->next) running |= c->app == app && app >= 0;
-    snprintf(buf, sizeof buf, "%s ausblenden", name);
+    snprintf(buf, sizeof buf, L("Hide %s"), name);
     add_item(buf, cmd_hide_app, app, !running);
-    snprintf(buf, sizeof buf, "%s beenden", name);
+    snprintf(buf, sizeof buf, L("Quit %s"), name);
     add_item(buf, cmd_quit_app, app, !running);
     break;
   }
   case MB_FILE:
     if (recovery) { /* "Dienstprogramme" wie in macOS Recovery */
-      add_item("ClokeOS installieren …", rec_menu_install, 0, false);
+      add_item(L("Install ClokeOS…"), rec_menu_install, 0, false);
       add_sep();
-      add_item("Festplattendienstprogramm", show_disk_utility, 0, false);
+      add_item(L("Disk Utility"), show_disk_utility, 0, false);
       add_item("Terminal", rec_menu_terminal, 0, false);
-      add_item("Online-Hilfe", rec_menu_help, 0, false);
+      add_item(L("Get Help Online"), rec_menu_help, 0, false);
       break;
     }
-    add_item("Neues Fenster", launch_app, app, app < 0);
-    add_item("Fenster schließen", cmd_close, 0, !focused);
+    add_item(L("New Window"), launch_app, app, app < 0);
+    add_item(L("Close Window"), cmd_close, 0, !focused);
     break;
   case MB_WINDOW: {
-    add_item("Ins Dock", cmd_minimize, 0, !focused || !focused->th);
-    add_item("Zoomen", cmd_zoom, 0, !focused || !focused->th);
+    add_item(L("Minimize"), cmd_minimize, 0, !focused || !focused->th);
+    add_item(L("Zoom"), cmd_zoom, 0, !focused || !focused->th);
     bool any = false;
     for (Client *c = clients; c; c = c->next) {
       if (c->draw || (focused && c->app != focused->app) || (focused && focused->app < 0 && c != focused)) continue;
@@ -2865,7 +2879,7 @@ static void build_menu(int which) {
     break;
   }
   case MB_WIFI: {
-    add_head("Netzwerk");
+    add_head(L("Network"));
     struct ifaddrs *ifa = NULL;
     bool any = false;
     if (!getifaddrs(&ifa)) {
@@ -2879,29 +2893,28 @@ static void build_menu(int which) {
       }
       freeifaddrs(ifa);
     }
-    if (!any) add_item("Nicht verbunden", NULL, 0, true);
+    if (!any) add_item(L("Not Connected"), NULL, 0, true);
     break;
   }
   case MB_CC: {
-    add_head("Erscheinungsbild");
-    const char *names[3] = {"Automatisch (abends dunkel)", "Hell", "Dunkel"};
+    add_head(L("Appearance"));
+    const char *names[3] = {"Auto (dark in the evening)", "Light", "Dark"};
     for (int i = 0; i < 3; i++) {
-      add_item(names[i], set_theme_mode, i, false);
+      add_item(L(names[i]), set_theme_mode, i, false);
       menu[nmenu - 1].checked = theme_mode == i;
     }
     break;
   }
   case MB_CLOCK: {
-    static const char *wd[] = {"Sonntag", "Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag"};
-    static const char *mo[] = {"Januar", "Februar", "März", "April", "Mai", "Juni", "Juli", "August", "September",
-                               "Oktober", "November", "Dezember"};
     time_t t = time(NULL);
     struct tm tm;
     localtime_r(&t, &tm);
-    snprintf(buf, sizeof buf, "%s, %d. %s %d", wd[tm.tm_wday], tm.tm_mday, mo[tm.tm_mon], tm.tm_year + 1900);
+    char day[96];
+    l10n_date_long(day, sizeof day, &tm);
+    snprintf(buf, sizeof buf, !strcmp(l10n_lang(), "de") ? "%s %d" : "%s, %d", day, tm.tm_year + 1900);
     add_head(buf);
     add_sep();
-    add_item("Kalender öffnen", launch_app, app_by_ident("com.clokeos.kalender"), app_by_ident("com.clokeos.kalender") < 0);
+    add_item(L("Open Calendar"), launch_app, app_by_ident("com.clokeos.kalender"), app_by_ident("com.clokeos.kalender") < 0);
     break;
   }
   }
@@ -2911,20 +2924,18 @@ static void build_menu(int which) {
 /* Menüleiste                                                                                 */
 
 static void clock_text(char *buf, size_t n) {
-  static const char *wd[] = {"So.", "Mo.", "Di.", "Mi.", "Do.", "Fr.", "Sa."};
-  static const char *mo[] = {"Jan.", "Feb.", "März", "Apr.", "Mai", "Juni", "Juli", "Aug.", "Sept.", "Okt.", "Nov.", "Dez."};
   time_t t = time(NULL);
   struct tm tm;
   localtime_r(&t, &tm);
-  snprintf(buf, n, "%s %d. %s  %02d:%02d", wd[tm.tm_wday], tm.tm_mday, mo[tm.tm_mon], tm.tm_hour, tm.tm_min);
+  l10n_menubar_clock(buf, n, &tm);
 }
 
 static const char *mb_label(int i) {
   if (i >= MB_DYN) return i - MB_DYN < ngm_top ? gm[gm_top[i - MB_DYN]].label : "";
   switch (i) {
   case MB_APP: return current_app_name();
-  case MB_FILE: return recovery ? "Dienstprogramme" : "Ablage";
-  case MB_WINDOW: return "Fenster";
+  case MB_FILE: return recovery ? L("Utilities") : L("File");
+  case MB_WINDOW: return L("Window");
   }
   return "";
 }
@@ -3236,7 +3247,7 @@ static void show_tip(int k) {
     if (tipwin) XUnmapWindow(dpy, tipwin);
     return;
   }
-  tip_text = ditems[k].app == DOCK_TRASH ? "Papierkorb" : apps[ditems[k].app].b.name;
+  tip_text = ditems[k].app == DOCK_TRASH ? L("Trash") : apps[ditems[k].app].b.name;
   tip_w = text_width(tip_text, 12, false) + 24;
   int th = 24;
   double cx, cy;
@@ -3310,22 +3321,22 @@ static void dock_menu(int k) {
   int i = ditems[k].app;
   nmenu = 0;
   if (i == DOCK_TRASH) {
-    add_head("Papierkorb");
-    add_item("Öffnen", cmd_open_trash, 0, false);
+    add_head(L("Trash"));
+    add_item(L("Open"), cmd_open_trash, 0, false);
   } else if (i >= 0) {
     add_head(apps[i].b.name);
     bool running = app_running(i);
-    add_item(running ? "Neues Fenster" : "Öffnen", launch_app, i, false);
+    add_item(running ? L("New Window") : L("Open"), launch_app, i, false);
     add_sep();
     if (i != app_fundus) {
       bool kept = kept_in_dock(i);
-      add_item(kept ? "Aus dem Dock entfernen" : "Im Dock behalten", kept ? cmd_unkeep : cmd_keep, i, false);
+      add_item(kept ? L("Remove from Dock") : L("Keep in Dock"), kept ? cmd_unkeep : cmd_keep, i, false);
     }
-    add_item("Im Fundus zeigen", cmd_show_in_fundus, i, false);
+    add_item(L("Show in Fundus"), cmd_show_in_fundus, i, false);
     if (running) {
       add_sep();
-      add_item("Alle ausblenden", cmd_hide_app, i, false);
-      add_item("Beenden", cmd_quit_app, i, false);
+      add_item(L("Hide"), cmd_hide_app, i, false);
+      add_item(L("Quit"), cmd_quit_app, i, false);
     }
   } else {
     return;
@@ -3406,6 +3417,23 @@ static void set_dock_pos(long pos) {
   save_prefs();
 }
 
+/* Sprache umstellen (Systemeinstellungen, Einrichtungsassistent): CloakServer wechselt sofort,
+ * die Namen der Programme kommen neu aus ihren Paketen, neue Programme starten mit dem neuen LANG */
+static void set_language(const char *code) {
+  if (!l10n_set_lang(code)) warn("kann %s nicht schreiben", LANGUAGE_FILE);
+  setenv("LANG", l10n_locale(), 1);
+  for (int i = 0; i < napps; i++) apps[i].b.mtime = -1; /* Namen neu lesen */
+  scan_apps();
+  for (Client *c = clients; c; c = c->next) /* Titel der eigenen Fenster */
+    if (c->draw && c->title_en) {
+      const char *t = L(c->title_en);
+      XStoreName(dpy, c->win, t);
+      XChangeProperty(dpy, c->win, NET_WM_NAME, UTF8_STRING, 8, PropModeReplace, (const unsigned char *)t, strlen(t));
+      snprintf(c->title, sizeof c->title, "%s", t);
+    }
+  redraw_all();
+}
+
 static void set_dock_size(long size) {
   ds = ds_pref = (int)size;
   show_tip(-1);
@@ -3456,29 +3484,28 @@ static void button(cairo_t *cr, double x, double y, double w, const char *label,
 static void problem_text(const App *a, char *buf, size_t n) {
   switch (a->b.kind) {
   case APP_APPKIT:
-    snprintf(buf, n, "Das ist ein Mac-Programm mit grafischer Oberfläche. Es braucht %s, und das gibt es in ClokeOS "
-                     "noch nicht: PureDarwin hat CoreFoundation und die Objective-C-Laufzeit, aber noch kein AppKit.",
+    snprintf(buf, n, L("This is a Mac app with a graphical user interface. It needs %s, which is not installed on "
+                       "this ClokeOS (the Mac frameworks in /Library/ClokeOS/MacFrameworks are missing)."),
              a->b.missing);
     break;
   case APP_ARCH:
 #if defined(__arm64__) || defined(__aarch64__)
-    snprintf(buf, n, "Das Programm ist nur für Mac mit Intel-Prozessor (x86_64) gebaut. Dieses ClokeOS läuft auf "
-                     "arm64 und hat kein Rosetta; es braucht eine Fassung für Apple-Chips oder eine Universal-Fassung.");
+    snprintf(buf, n, "%s", L("The app is built only for Macs with an Intel processor (x86_64). This ClokeOS runs on arm64 "
+                             "and has no Rosetta; it needs a version for Apple chips or a universal version."));
 #else
-    snprintf(buf, n, "Das Programm ist nur für Mac mit Apple-Chip (arm64) gebaut. Dieses ClokeOS läuft auf Intel "
-                     "(x86_64); es braucht eine Intel- oder Universal-Fassung.");
+    snprintf(buf, n, "%s", L("The app is built only for Macs with Apple silicon (arm64). This ClokeOS runs on Intel "
+                             "(x86_64); it needs an Intel or universal version."));
 #endif
     break;
   case APP_ARM64E:
-    snprintf(buf, n, "Das Programm ist nur für arm64e gebaut, die Variante mit Zeigersignaturen, die Apple für "
-                     "seine eigenen Programme nutzt. ClokeOS führt arm64e nicht aus; es braucht eine Fassung für "
-                     "arm64 oder eine Universal-Fassung.");
+    snprintf(buf, n, "%s", L("The app is built only for arm64e, the variant with pointer authentication that Apple uses "
+                             "for its own apps. ClokeOS does not run arm64e; it needs an arm64 or universal version."));
     break;
   case APP_MISSING:
-    snprintf(buf, n, "Das Mac-Programm braucht %s, das es in ClokeOS nicht gibt.", a->b.missing);
+    snprintf(buf, n, L("The Mac app needs %s, which ClokeOS does not have."), a->b.missing);
     break;
   default:
-    snprintf(buf, n, "Das Programmpaket ist unvollständig: %s.", a->b.missing);
+    snprintf(buf, n, L("The app bundle is incomplete: %s."), a->b.missing);
   }
 }
 
@@ -3490,7 +3517,7 @@ static void paint_problem(Client *c, cairo_t *cr) {
   cairo_paint(cr);
   cairo_surface_destroy(ic);
   char t[200], body[600];
-  snprintf(t, sizeof t, "„%s“ kann nicht geöffnet werden.", a->b.name);
+  snprintf(t, sizeof t, L("“%s” can’t be opened."), a->b.name);
   text(cr, 104, 34, t, 13, true, T->fg, c->w - 124, 0);
   problem_text(a, body, sizeof body);
   text_block(cr, 104, 50, body, 11.5, false, T->fg2, c->w - 124);
@@ -3501,7 +3528,7 @@ static void click_problem(Client *c, int x, int y) {
   if (x >= c->w - 100 && x <= c->w - 20 && y >= c->h - 44 && y <= c->h - 16) close_client(c);
 }
 
-static void show_app_problem(int i) { own_window(500, 168, "Programm", paint_problem, click_problem, i); }
+static void show_app_problem(int i) { own_window(500, 168, "App", paint_problem, click_problem, i); }
 
 /* ---------------------------------------------------------------------------------------- */
 /* Launchpad („Programme“) wie #launchpad in clokeos.html: alle Programme als Raster über dem   */
@@ -3545,7 +3572,7 @@ static void paint_launchpad(cairo_t *cr, int w, int h, void *arg) {
   cairo_set_line_width(cr, 1);
   cairo_stroke(cr);
   if (lp_query[0]) text(cr, w / 2.0, fy + 14, lp_query, 13, false, (RGBA){1, 1, 1, 1}, 220, 1);
-  else text(cr, w / 2.0, fy + 14, "Suchen", 13, false, (RGBA){1, 1, 1, .7}, 0, 1);
+  else text(cr, w / 2.0, fy + 14, L("Search"), 13, false, (RGBA){1, 1, 1, .7}, 0, 1);
 
   int list[96];
   lp_n = 0;
@@ -3582,7 +3609,7 @@ static void paint_launchpad(cairo_t *cr, int w, int h, void *arg) {
     text(cr, cx, y + LP_ICON + 8 + 9, a->b.name, 13, false, (RGBA){0, 0, 0, .35}, lp_cell + 16, 1);
     text(cr, cx, y + LP_ICON + 8 + 8, a->b.name, 13, false, (RGBA){1, 1, 1, 1}, lp_cell + 16, 1);
   }
-  if (!lp_n) text(cr, w / 2.0, y0 + 40, "Keine Treffer", 15, false, (RGBA){1, 1, 1, .8}, 0, 1);
+  if (!lp_n) text(cr, w / 2.0, y0 + 40, L("No Results"), 15, false, (RGBA){1, 1, 1, .8}, 0, 1);
 }
 
 static void draw_launchpad(void) {
@@ -3666,10 +3693,11 @@ static void lp_key(XKeyEvent *e) {
 /* Erscheinungsbild (Hell, Dunkel, Automatisch), Schreibtisch & Dock (Lage, Größe), Programme   */
 /* (wie man installiert). Alles Übrige bleibt in den Xfce-Einstellungen.                        */
 
-enum { ST_SECTION, ST_THEME, ST_DOCKPOS, ST_DOCKSIZE, ST_XFCE, ST_OPENAPPS };
+enum { ST_SECTION, ST_THEME, ST_DOCKPOS, ST_DOCKSIZE, ST_XFCE, ST_OPENAPPS, ST_LANG };
 static struct { int x, y, w, h, act; long arg; } st_hit[24];
 static int nst_hit;
-static const char *const ST_NAMES[] = {"Erscheinungsbild", "Schreibtisch & Dock", "Programme"};
+static const char *const ST_NAMES[] = {"Appearance", "Desktop & Dock", "Applications", "Language & Region"};
+#define ST_N 4
 static const int DOCK_SIZES[3] = {40, 50, 64};
 
 static void st_add(double x, double y, double w, double h, int act, long arg) {
@@ -3747,8 +3775,8 @@ static void paint_settings(Client *c, cairo_t *cr) {
   cairo_rectangle(cr, 196, 0, 1, h);
   set(cr, T->line);
   cairo_fill(cr);
-  static const RGBA ICO[3] = {{.49, .36, 1, 1}, {.2, .55, .95, 1}, {.2, .72, .45, 1}};
-  for (int i = 0; i < 3; i++) {
+  static const RGBA ICO[ST_N] = {{.49, .36, 1, 1}, {.2, .55, .95, 1}, {.2, .72, .45, 1}, {.95, .55, .2, 1}};
+  for (int i = 0; i < ST_N; i++) {
     double y = 16 + i * 32;
     if (i == sec) {
       rrect(cr, 10, y, 176, 28, 7);
@@ -3758,55 +3786,79 @@ static void paint_settings(Client *c, cairo_t *cr) {
     rrect(cr, 18, y + 5, 18, 18, 5);
     set(cr, i == sec ? (RGBA){1, 1, 1, .9} : ICO[i]);
     cairo_fill(cr);
-    text(cr, 44, y + 14, ST_NAMES[i], 12.5, false, i == sec ? (RGBA){1, 1, 1, 1} : T->fg, 140, 0);
+    text(cr, 44, y + 14, L(ST_NAMES[i]), 12.5, false, i == sec ? (RGBA){1, 1, 1, 1} : T->fg, 140, 0);
     st_add(10, y, 176, 28, ST_SECTION, i);
   }
-  text(cr, 18, h - 26, "Xfce-Einstellungen …", 12, false, ACCENT, 170, 0);
+  text(cr, 18, h - 26, L("Xfce Settings…"), 12, false, ACCENT, 170, 0);
   st_add(10, h - 40, 176, 28, ST_XFCE, 0);
 
   double x0 = 216;
-  text(cr, x0, 34, ST_NAMES[sec], 19, true, T->fg, w - x0 - 20, 0);
+  text(cr, x0, 34, L(ST_NAMES[sec]), 19, true, T->fg, w - x0 - 20, 0);
   if (sec == 0) {
-    static const char *const names[3] = {"Hell", "Dunkel", "Automatisch"};
+    static const char *const names[3] = {"Light", "Dark", "Auto"};
     static const int mode[3] = {1, 2, 0};
     for (int i = 0; i < 3; i++)
-      option(cr, x0 + i * 140, 70, names[i], theme_mode == mode[i], i, POS_BOTTOM, ST_THEME, mode[i]);
-    text_block(cr, x0, 192, "Automatisch: hell am Tag, dunkel von 19 bis 7 Uhr. Fenster, Dock und Menüs wechseln "
-                            "sofort mit, ebenso Fundus, Terminal und die übrigen GTK-Programme.",
+      option(cr, x0 + i * 140, 70, L(names[i]), theme_mode == mode[i], i, POS_BOTTOM, ST_THEME, mode[i]);
+    text_block(cr, x0, 192, L("Auto: light during the day, dark from 7 PM to 7 AM. Windows, the Dock and menus switch "
+                              "right away, and so do Fundus, Terminal and the other GTK apps."),
                11.5, false, T->fg2, w - x0 - 24);
   } else if (sec == 1) {
-    text(cr, x0, 66, "Position auf dem Bildschirm", 12.5, true, T->fg, 0, 0);
-    static const char *const names[3] = {"Links", "Unten", "Rechts"};
+    text(cr, x0, 66, L("Position on screen"), 12.5, true, T->fg, 0, 0);
+    static const char *const names[3] = {"Left", "Bottom", "Right"};
     static const int pos[3] = {POS_LEFT, POS_BOTTOM, POS_RIGHT};
     for (int i = 0; i < 3; i++)
-      option(cr, x0 + i * 140, 84, names[i], dock_pos == pos[i], dark ? 1 : 0, pos[i], ST_DOCKPOS, pos[i]);
-    text(cr, x0, 222, "Größe", 12.5, true, T->fg, 0, 0);
-    static const char *const sizes[3] = {"Klein", "Mittel", "Groß"};
+      option(cr, x0 + i * 140, 84, L(names[i]), dock_pos == pos[i], dark ? 1 : 0, pos[i], ST_DOCKPOS, pos[i]);
+    text(cr, x0, 222, L("Size"), 12.5, true, T->fg, 0, 0);
+    static const char *const sizes[3] = {"Small", "Medium", "Large"};
     for (int i = 0; i < 3; i++) {
       double bx = x0 + i * 100, by = 238;
-      button(cr, bx, by, 90, sizes[i], ds_pref == DOCK_SIZES[i]);
+      button(cr, bx, by, 90, L(sizes[i]), ds_pref == DOCK_SIZES[i]);
       st_add(bx, by, 90, 28, ST_DOCKSIZE, DOCK_SIZES[i]);
     }
-    text_block(cr, x0, 286, "Rechtsklick auf ein Symbol: „Im Dock behalten“ oder „Aus dem Dock entfernen“. ClokeOS "
-                            "merkt sich das Dock für jeden Benutzer in ~/Library/Preferences.",
+    text_block(cr, x0, 286, L("Right-click an icon: “Keep in Dock” or “Remove from Dock”. ClokeOS remembers the Dock "
+                              "for each user in ~/Library/Preferences."),
                11.5, false, T->fg2, w - x0 - 24);
-  } else {
+  } else if (sec == 2) {
     int nmac = 0, nall = 0;
     for (int i = 0; i < napps; i++)
       if (!apps[i].gone && !apps[i].b.internal[0]) nall++, nmac += apps[i].b.mac;
     char buf[700];
     snprintf(buf, sizeof buf,
-             "Programme sind wie bei macOS Pakete mit der Endung .app: Ordner mit Contents/Info.plist, "
-             "Contents/MacOS und Contents/Resources. Zum Installieren ziehst du das Paket in den Ordner "
-             "„Programme“ (/Applications), nur für dich nach ~/Applications; zum Entfernen in den Papierkorb. "
-             "Launchpad und Dock zeigen neue Programme nach ein, zwei Sekunden.\n\n"
-             "Mac-Programme erkennt ClokeOS an ihrer Info.plist und zeigt ihr Icon. Starten lassen sich "
-             "Programme für Intel ohne eigene Oberfläche; Programme mit Fenstern brauchen AppKit, das ClokeOS "
-             "noch fehlt.\n\nGefunden: %d Programme, davon %d Mac-Programme.",
+             L("Apps are bundles with the extension .app, as on macOS: folders with Contents/Info.plist, "
+               "Contents/MacOS and Contents/Resources. To install one, drag it to the Applications folder "
+               "(/Applications), or to ~/Applications for yourself only; to remove it, move it to the Trash. "
+               "Launchpad and the Dock show new apps after a second or two.\n\n"
+               "ClokeOS recognizes Mac apps by their Info.plist and shows their icon. Apps with windows run on "
+               "the Mac frameworks from Darling (AppKit), which are still incomplete.\n\n"
+               "Found: %d apps, %d of them Mac apps."),
              nall, nmac);
     text_block(cr, x0, 58, buf, 11.5, false, T->fg2, w - x0 - 24);
-    button(cr, x0, h - 52, 200, "Ordner „Programme“ öffnen", false);
+    button(cr, x0, h - 52, 200, L("Open Applications Folder"), false);
     st_add(x0, h - 52, 200, 28, ST_OPENAPPS, 0);
+  } else if (sec == 3) {
+    text(cr, x0, 66, L("Preferred language"), 12.5, true, T->fg, 0, 0);
+    static const char *const langs[2][2] = {{"en", "English"}, {"de", "Deutsch"}};
+    for (int i = 0; i < 2; i++) {
+      double bx = x0 + i * 130, by = 82;
+      button(cr, bx, by, 120, langs[i][1], !strcmp(l10n_lang(), langs[i][0]));
+      st_add(bx, by, 120, 28, ST_LANG, i);
+    }
+    text_block(cr, x0, 128,
+               L("ClokeOS, the login window and the menu bar switch right away. Apps that are already open "
+                 "switch the next time they open."),
+               11.5, false, T->fg2, w - x0 - 24);
+    text(cr, x0, 196, L("Date and time"), 12.5, true, T->fg, 0, 0);
+    time_t t = time(NULL);
+    struct tm tm;
+    localtime_r(&t, &tm);
+    char d1[96], d2[96], buf[220];
+    l10n_date_long(d1, sizeof d1, &tm);
+    l10n_menubar_clock(d2, sizeof d2, &tm);
+    snprintf(buf, sizeof buf, "%s\n%s", d1, d2);
+    text_block(cr, x0, 214, buf, 12, false, T->fg2, w - x0 - 24);
+    text_block(cr, x0, 268, L("The region follows the language: English uses the US format with AM and PM, Deutsch the "
+                              "German format with a 24-hour clock."),
+               11.5, false, T->fg3, w - x0 - 24);
   }
 }
 
@@ -3821,6 +3873,7 @@ static void click_settings(Client *c, int x, int y) {
     case ST_DOCKSIZE: set_dock_size(arg); break;
     case ST_XFCE: launch_ident("org.xfce.settings.manager"); break;
     case ST_OPENAPPS: spawn("exec thunar /Applications"); break;
+    case ST_LANG: set_language(arg ? "de" : "en"); break;
     }
     draw_own(c);
     return;
@@ -3830,7 +3883,7 @@ static void click_settings(Client *c, int x, int y) {
 static void show_settings(long section) {
   static long last;
   if (section >= 0) last = section;
-  Client *c = own_window(680, 400, "Systemeinstellungen", paint_settings, click_settings, last);
+  Client *c = own_window(680, 400, "System Settings", paint_settings, click_settings, last);
   if (c) c->app = app_by_ident("com.clokeos.systemeinstellungen");
   draw_menubar();
   draw_dock();
@@ -3850,6 +3903,8 @@ static void redraw_all(void) {
   }
 }
 
+#include "setup.c"
+
 /* ---------------------------------------------------------------------------------------- */
 /* Ereignisse                                                                                 */
 
@@ -3857,6 +3912,11 @@ static void on_button_press(XButtonEvent *e) {
   /* Klicks in ein Programmfenster kommen über den synchronen Griff aus grab_buttons(): Bis
    * XAllowEvents steht der Zeiger still. Deshalb immer zuerst freigeben, auch bei offenem Menü. */
   Client *gc = find_client(e->window);
+  if (setup_active) {
+    if (gc && e->window == gc->win) XAllowEvents(dpy, AsyncPointer, CurrentTime);
+    if (e->window == setupwin && e->button == Button1) setup_click(e->x, e->y);
+    return;
+  }
   if (locked) {
     if (gc && e->window == gc->win) XAllowEvents(dpy, AsyncPointer, CurrentTime);
     if (e->window == loginwin && e->button == Button1) login_click(e->x, e->y);
@@ -4073,6 +4133,7 @@ static void on_expose(XExposeEvent *e) {
   else if (subwin && e->window == subwin) draw_sub();
   else if (e->window == tipwin) paint_window(tipwin, tip_w, 24, paint_tip, NULL);
   else if (e->window == lpwin) draw_launchpad();
+  else if (setupwin && e->window == setupwin) draw_setup();
   else {
     Client *c = find_client(e->window);
     if (!c) return;
@@ -4107,6 +4168,10 @@ static void on_client_message(XClientMessageEvent *e) {
 }
 
 static void on_key(XKeyEvent *e) {
+  if (setup_active) {
+    setup_key(e);
+    return;
+  }
   if (locked) {
     login_key(e);
     return;
@@ -4206,6 +4271,7 @@ static bool animate(void) {
 static void tick(void) {
   static int last_min = -1;
   static double last_scan;
+  setup_tick();
   if (now_s() - last_scan > 2) { /* ein Bundle nach /Applications kopiert oder gelöscht */
     last_scan = now_s();
     if (apps_signature() != apps_sig) {
@@ -4432,6 +4498,8 @@ int main(int argc, char **argv) {
    * es nur einen Fehler, und alle zeichnen ohne Shared Memory. Gestartete Programme erben das. */
   signal(SIGSYS, SIG_IGN);
   rec_init();
+  l10n_init();
+  setenv("LANG", l10n_locale(), 1); /* für die Programme der Sitzung */
 
   dpy = XOpenDisplay(NULL);
   if (!dpy) {
@@ -4495,7 +4563,8 @@ int main(int argc, char **argv) {
       if (accounts[i].uid == 0) start_session(&accounts[i]);
     if (!session) start_session(&accounts[0]);
     rec_show(RP_CHOOSE);
-  } else if (strcmp(os_login, "nein")) show_login(false);
+  } else if (setup_needed()) show_setup(); /* erster Start nach der Installation */
+  else if (strcmp(os_login, "nein")) show_login(false);
   else start_session(&accounts[0]);
   focus_client(clients);
   redraw_all();
@@ -4576,6 +4645,7 @@ int main(int argc, char **argv) {
     if (rec_fd > maxfd) maxfd = rec_fd;
     struct timeval tv = {1, 0};
     if (shake_t0 >= 0 || anim) tv = (struct timeval){0, 16000}; /* Animation: so oft wie möglich */
+    if (setup_anim()) tv = (struct timeval){0, 50000};     /* "hello" im Einrichtungsassistenten */
     select(maxfd + 1, &fds, NULL, NULL, &tv);
     if (gm_fd >= 0 && FD_ISSET(gm_fd, &fds)) gm_read();
     if (rec_fd >= 0 && FD_ISSET(rec_fd, &fds)) rec_read();

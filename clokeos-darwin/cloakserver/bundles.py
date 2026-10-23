@@ -21,33 +21,38 @@ import sys
 from xml.sax.saxutils import escape
 
 
-def term(ident, title, size, cmd):
-    """Programm, das im Terminal läuft; die Fensterrolle ist die Bundle-Kennung."""
-    return (f"exec xfce4-terminal --disable-server --role={ident} --title='{title}' "
+def term(ident, title_en, title_de, size, cmd):
+    """Programm, das im Terminal läuft; die Fensterrolle ist die Bundle-Kennung. Der Fenstertitel
+    folgt der Sprache von ClokeOS (/etc/clokeos-language)."""
+    return (f"title='{title_en}'; [ \"$(cat /etc/clokeos-language 2>/dev/null)\" = de ] && title='{title_de}'\n"
+            f"exec xfce4-terminal --disable-server --role={ident} --title=\"$title\" "
             f"--dynamic-title-mode=none --geometry={size} -x {cmd}")
 
 
-# Ordner, Name, Kennung, Icon aus clokeos.html (oder None), Startzeile, Fensterklassen, intern
+# Ordner, Name (englisch, deutsch), Kennung, Icon aus clokeos.html (oder None), Startzeile,
+# Fensterklassen, intern. Wie bei macOS heißt das Paket englisch; den deutschen Namen findet
+# CloakServer in Contents/Resources/de.lproj/InfoPlist.strings.
 APPS = [
-    ('System/Library/CoreServices', 'Fundus', 'com.clokeos.fundus', 'dateien', 'exec thunar "$@"', 'Thunar', ''),
-    ('System/Applications', 'Programme', 'com.clokeos.launchpad', 'programme', None, '', 'launchpad'),
-    ('System/Applications', 'Search', 'com.clokeos.search', 'search', 'exec netsurf-gtk3 "$@"',
+    ('System/Library/CoreServices', 'Fundus', 'Fundus', 'com.clokeos.fundus', 'dateien', 'exec thunar "$@"', 'Thunar', ''),
+    ('System/Applications', 'Launchpad', 'Programme', 'com.clokeos.launchpad', 'programme', None, '', 'launchpad'),
+    ('System/Applications', 'Search', 'Search', 'com.clokeos.search', 'search', 'exec netsurf-gtk3 "$@"',
      'Netsurf-gtk3 Netsurf* NetSurf*', ''),
-    ('System/Applications/Utilities', 'Terminal', 'com.clokeos.terminal', 'terminal', 'exec xfce4-terminal "$@"',
-     'Xfce4-terminal XTerm UXTerm', ''),
-    ('System/Applications', 'Notizen', 'com.clokeos.notizen', 'notizen',
-     term('com.clokeos.notizen', 'Notizen', '84x28', 'nano "$HOME/Notizen.txt"'), '', ''),
-    ('System/Applications', 'Rechner', 'com.clokeos.rechner', 'rechner', 'exec xcalc', 'XCalc', ''),
-    ('System/Applications', 'Kalender', 'com.clokeos.kalender', 'kalender',
-     term('com.clokeos.kalender', 'Kalender', '72x22', '/usr/libexec/clokeos-kalender'), '', ''),
-    ('System/Applications/Utilities', 'Aktivitätsanzeige', 'com.clokeos.aktivitaet', 'aktivitaet',
-     term('com.clokeos.aktivitaet', 'Aktivitätsanzeige', '92x30', '/usr/libexec/clokeos-aktivitaet'), '', ''),
-    ('System/Applications', 'Systemeinstellungen', 'com.clokeos.systemeinstellungen', 'einstellungen', None, '',
-     'settings'),
-    ('System/Applications/Utilities', 'Xfce-Einstellungen', 'org.xfce.settings.manager', None,
+    ('System/Applications/Utilities', 'Terminal', 'Terminal', 'com.clokeos.terminal', 'terminal',
+     'exec xfce4-terminal "$@"', 'Xfce4-terminal XTerm UXTerm', ''),
+    ('System/Applications', 'Notes', 'Notizen', 'com.clokeos.notizen', 'notizen',
+     term('com.clokeos.notizen', 'Notes', 'Notizen', '84x28', 'nano "$HOME/Notes.txt"'), '', ''),
+    ('System/Applications', 'Calculator', 'Rechner', 'com.clokeos.rechner', 'rechner', 'exec xcalc', 'XCalc', ''),
+    ('System/Applications', 'Calendar', 'Kalender', 'com.clokeos.kalender', 'kalender',
+     term('com.clokeos.kalender', 'Calendar', 'Kalender', '72x22', '/usr/libexec/clokeos-kalender'), '', ''),
+    ('System/Applications/Utilities', 'Activity Monitor', 'Aktivitätsanzeige', 'com.clokeos.aktivitaet', 'aktivitaet',
+     term('com.clokeos.aktivitaet', 'Activity Monitor', 'Aktivitätsanzeige', '92x30', '/usr/libexec/clokeos-aktivitaet'),
+     '', ''),
+    ('System/Applications', 'System Settings', 'Systemeinstellungen', 'com.clokeos.systemeinstellungen', 'einstellungen',
+     None, '', 'settings'),
+    ('System/Applications/Utilities', 'Xfce Settings', 'Xfce-Einstellungen', 'org.xfce.settings.manager', None,
      'exec xfce4-settings-manager', 'Xfce4-settings* Xfce4-*-settings Xfwm4-settings', ''),
     # nachinstalliert wie ein Programm aus dem Netz: liegt in /Applications
-    ('Applications', 'Dillo', 'org.dillo.dillo', None, 'exec dillo "$@"', 'Dillo', ''),
+    ('Applications', 'Dillo', 'Dillo', 'org.dillo.dillo', None, 'exec dillo "$@"', 'Dillo', ''),
 ]
 
 DOCK = ['com.clokeos.fundus', 'com.clokeos.launchpad', 'com.clokeos.search', 'com.clokeos.terminal',
@@ -97,20 +102,18 @@ def write(path, text, mode=0o644):
 
 
 def ascii_name(name):
-    """Ordner- und Dateinamen ohne Umlaute: Der Anzeigename steht in der Info.plist (wie bei macOS,
-    wo „Aktivitätsanzeige“ im Ordner Activity Monitor.app liegt), und tar oder debugfs müssen
-    keine Zeichensätze umwandeln."""
-    for a, b in (('ä', 'ae'), ('ö', 'oe'), ('ü', 'ue'), ('Ä', 'Ae'), ('Ö', 'Oe'), ('Ü', 'Ue'), ('ß', 'ss')):
-        name = name.replace(a, b)
-    assert name.isascii() and ' ' not in name, name
+    """Ordner- und Dateinamen ohne Leerzeichen und Umlaute (Activity Monitor -> ActivityMonitor): Der
+    Anzeigename steht in der Info.plist, und die debugfs-Befehle von brand.sh trennen an Leerzeichen."""
+    name = name.replace(' ', '')
+    assert name.isascii(), name
     return name
 
 
 def main(stage, icons, version, build):
-    for folder, name, ident, icon, start, classes, internal in APPS:
+    for folder, name, name_de, ident, icon, start, classes, internal in APPS:
         exe = ascii_name(name)
         app = os.path.join(stage, folder, exe + '.app', 'Contents')
-        items = [('CFBundleDevelopmentRegion', 'de'), ('CFBundleDisplayName', name), ('CFBundleExecutable', exe),
+        items = [('CFBundleDevelopmentRegion', 'en'), ('CFBundleDisplayName', name), ('CFBundleExecutable', exe),
                  ('CFBundleIconFile', 'AppIcon'), ('CFBundleIdentifier', ident),
                  ('CFBundleInfoDictionaryVersion', '6.0'), ('CFBundleName', name), ('CFBundlePackageType', 'APPL'),
                  ('CFBundleShortVersionString', version), ('CFBundleVersion', build)]
@@ -120,6 +123,9 @@ def main(stage, icons, version, build):
             items.append(('CLInternal', internal))
         write(os.path.join(app, 'Info.plist'), plist(items))
         write(os.path.join(app, 'PkgInfo'), 'APPL????')
+        if name_de != name:
+            write(os.path.join(app, 'Resources', 'de.lproj', 'InfoPlist.strings'),
+                  f'"CFBundleDisplayName" = "{name_de}";\n"CFBundleName" = "{name_de}";\n')
         script = '#!/bin/sh\n'
         script += start + '\n' if start else f'# {name} zeichnet CloakServer selbst ({internal}).\nexit 0\n'
         write(os.path.join(app, 'MacOS', exe), script, 0o755)

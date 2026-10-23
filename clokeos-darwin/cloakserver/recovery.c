@@ -56,14 +56,15 @@ static void rec_init(void) {
   fclose(f);
 }
 
-/* 8 589 934 592 -> "8,6 GB" */
+/* 8 589 934 592 -> "8.6 GB" (Deutsch "8,6 GB") */
 static void fmt_size(char *out, size_t n, unsigned long long b) {
   double v = b / 1e9;
   const char *unit = "GB";
   if (v < 1) v = b / 1e6, unit = "MB";
   snprintf(out, n, v < 10 ? "%.1f %s" : "%.0f %s", v, unit);
-  for (char *p = out; *p; p++)
-    if (*p == '.') *p = ',';
+  if (!strcmp(l10n_lang(), "de"))
+    for (char *p = out; *p; p++)
+      if (*p == '.') *p = ',';
 }
 
 static void rec_load_disks(void) {
@@ -177,11 +178,12 @@ static void icon_at(cairo_t *cr, const char *name, double x, double y, int s) {
 
 /* Optionen der ersten Seite: Titel, Beschreibung, Symbol */
 static const char *const ROPT[4][3] = {
-  {"ClokeOS installieren", "Lädt die aktuelle Version von ClokeOS aus dem Internet und installiert sie auf einer Festplatte.",
+  {"Install ClokeOS", "Download the current version of ClokeOS from the internet and install it on a disk.",
    "logo-gradient.svg"},
-  {"Online-Hilfe", "Zeigt die Hilfe zu ClokeOS im Browser an, auch wenn ClokeOS selbst nicht startet.", "icons/search.svg"},
-  {"Festplattendienstprogramm", "Festplatten und ihre Partitionen ansehen und Festplatten löschen.", "icons/hd.svg"},
-  {"Terminal", "Befehlszeile als Systemverwalter (root).", "icons/terminal.svg"},
+  {"Get Help Online", "Browse the ClokeOS help in a web browser, even when ClokeOS itself does not start.",
+   "icons/search.svg"},
+  {"Disk Utility", "View disks and their partitions, and erase disks.", "icons/hd.svg"},
+  {"Terminal", "Use the command line as the system administrator (root).", "icons/terminal.svg"},
 };
 
 /* Platten, auf die installiert werden kann: alle außer dem Installationsmedium */
@@ -198,22 +200,22 @@ static int rec_buttons(Client *c, RecBtn *b) {
   int n = 0;
   int t[16];
   switch (rp) {
-  case RP_CHOOSE: b[n++] = (RecBtn){"Fortfahren", A_CONT, true, rsel >= 0}; break;
+  case RP_CHOOSE: b[n++] = (RecBtn){L("Continue"), A_CONT, true, rsel >= 0}; break;
   case RP_INTRO:
-    b[n++] = (RecBtn){"Zurück", A_HOME, false, true};
-    b[n++] = (RecBtn){"Fortfahren", A_CONT, true, true};
+    b[n++] = (RecBtn){L("Back"), A_HOME, false, true};
+    b[n++] = (RecBtn){L("Continue"), A_CONT, true, true};
     break;
   case RP_DISK:
-    b[n++] = (RecBtn){"Zurück", A_BACK, false, true};
-    b[n++] = (RecBtn){"Installieren", A_INSTALL, true, rdsel >= 0 && rec_targets(t) > 0};
+    b[n++] = (RecBtn){L("Back"), A_BACK, false, true};
+    b[n++] = (RecBtn){L("Install"), A_INSTALL, true, rdsel >= 0 && rec_targets(t) > 0};
     break;
   case RP_CONFIRM:
-    b[n++] = (RecBtn){"Abbrechen", A_CANCEL, false, true};
-    b[n++] = (RecBtn){rdsel >= 0 && rdisks[rdsel].root ? "Neu installieren" : "Löschen und installieren", A_GO, true, true,
+    b[n++] = (RecBtn){L("Cancel"), A_CANCEL, false, true};
+    b[n++] = (RecBtn){rdsel >= 0 && rdisks[rdsel].root ? L("Reinstall") : L("Erase and Install"), A_GO, true, true,
                       .danger = true};
     break;
-  case RP_DONE: b[n++] = (RecBtn){"Neu starten", A_REBOOT, true, true}; break;
-  case RP_ERROR: b[n++] = (RecBtn){"Zurück", A_HOME, false, true}; break;
+  case RP_DONE: b[n++] = (RecBtn){L("Restart"), A_REBOOT, true, true}; break;
+  case RP_ERROR: b[n++] = (RecBtn){L("Back"), A_HOME, false, true}; break;
   }
   return layout_btns(c, b, n);
 }
@@ -225,7 +227,7 @@ static void rec_paint(Client *c, cairo_t *cr) {
   char buf[512], size[32];
   switch (rp) {
   case RP_CHOOSE: {
-    text(cr, w / 2.0, 34, "ClokeOS-Wiederherstellung", 15, true, T->fg, 0, 1);
+    text(cr, w / 2.0, 34, L("ClokeOS Recovery"), 15, true, T->fg, 0, 1);
     for (int i = 0; i < 4; i++) {
       double y = 62 + i * 76;
       bool sel = i == rsel;
@@ -236,29 +238,29 @@ static void rec_paint(Client *c, cairo_t *cr) {
       }
       icon_at(cr, ROPT[i][2], 32, y + 12, 44);
       RGBA fg = sel ? (RGBA){1, 1, 1, 1} : T->fg, fg2 = sel ? (RGBA){1, 1, 1, .85} : T->fg2;
-      text(cr, 92, y + 22, ROPT[i][0], 13.5, true, fg, w - 120, 0);
-      para(cr, 92, y + 34, w - 130, ROPT[i][1], 11.5, fg2, false);
+      text(cr, 92, y + 22, L(ROPT[i][0]), 13.5, true, fg, w - 120, 0);
+      para(cr, 92, y + 34, w - 130, L(ROPT[i][1]), 11.5, fg2, false);
     }
     break;
   }
   case RP_INTRO: {
     icon_at(cr, "logo-gradient.svg", (w - 80) / 2.0, 28, 80);
-    text(cr, w / 2.0, 134, "ClokeOS installieren", 18, true, T->fg, 0, 1);
+    text(cr, w / 2.0, 134, L("Install ClokeOS"), 18, true, T->fg, 0, 1);
     int y = 160;
     y += para(cr, 60, y, w - 120,
-              "Die Wiederherstellung lädt die aktuelle Version von ClokeOS aus dem Internet und installiert sie "
-              "auf einer Festplatte. Dort entstehen drei Partitionen: das Startvolume, ClokeOS und eine "
-              "Wiederherstellung wie diese, mit der sich ClokeOS später wieder installieren lässt.",
+              L("Recovery downloads the current version of ClokeOS from the internet and installs it on a disk. "
+                "Three partitions are created there: the startup volume, ClokeOS and a recovery like this one, "
+                "which you can use to reinstall ClokeOS later."),
               12.5, T->fg, true) + 14;
-    para(cr, 60, y, w - 120, "Alle Daten auf der gewählten Festplatte werden gelöscht.", 12.5, T->fg, true);
-    snprintf(buf, sizeof buf, "Quelle: %s", rec_releases);
+    para(cr, 60, y, w - 120, L("All data on the selected disk will be erased."), 12.5, T->fg, true);
+    snprintf(buf, sizeof buf, L("Source: %s"), rec_releases);
     para(cr, 40, c->h - 86, w - 80, buf, 10.5, T->fg3, true);
     break;
   }
   case RP_DISK: {
-    text(cr, w / 2.0, 34, "Wähle die Festplatte für ClokeOS", 15, true, T->fg, 0, 1);
+    text(cr, w / 2.0, 34, L("Select the disk where you want to install ClokeOS"), 15, true, T->fg, 0, 1);
     int t[16], nt = rec_targets(t);
-    if (!nt) para(cr, 60, 120, w - 120, "Keine Festplatte gefunden, auf die sich ClokeOS installieren lässt.", 12.5,
+    if (!nt) para(cr, 60, 120, w - 120, L("No disk was found that ClokeOS can be installed on."), 12.5,
                   T->fg2, true);
     for (int k = 0; k < nt && k < 4; k++) {
       RecDisk *d = &rdisks[t[k]];
@@ -274,11 +276,11 @@ static void rec_paint(Client *c, cairo_t *cr) {
       fmt_size(size, sizeof size, d->bytes);
       snprintf(buf, sizeof buf, "%s · %s", d->label, size);
       text(cr, 88, y + 21, buf, 13.5, true, fg, w - 120, 0);
-      const char *sub = d->root ? "Hier läuft diese Wiederherstellung: ClokeOS wird ersetzt, die Wiederherstellung bleibt."
-                        : d->clokeos ? "Enthält schon ClokeOS. Es wird mit allen Daten ersetzt."
-                        : d->nparts ? "Enthält Partitionen, die gelöscht werden."
-                                    : "Leer";
-      text(cr, 88, y + 42, sub, 11.5, false, fg2, w - 120, 0);
+      const char *sub = d->root ? "This recovery runs from this disk: ClokeOS is replaced, the recovery stays."
+                        : d->clokeos ? "Already contains ClokeOS. It will be replaced along with all data."
+                        : d->nparts ? "Contains partitions that will be erased."
+                                    : "Empty";
+      text(cr, 88, y + 42, L(sub), 11.5, false, fg2, w - 120, 0);
     }
     break;
   }
@@ -286,20 +288,20 @@ static void rec_paint(Client *c, cairo_t *cr) {
     RecDisk *d = &rdisks[rdsel];
     icon_at(cr, "icons/hd.svg", (w - 64) / 2.0, 40, 64);
     fmt_size(size, sizeof size, d->bytes);
-    if (d->root) snprintf(buf, sizeof buf, "ClokeOS auf „%s“ neu installieren?", d->label);
-    else snprintf(buf, sizeof buf, "„%s“ (%s) löschen und ClokeOS installieren?", d->label, size);
+    if (d->root) snprintf(buf, sizeof buf, L("Reinstall ClokeOS on “%s”?"), d->label);
+    else snprintf(buf, sizeof buf, L("Erase “%s” (%s) and install ClokeOS?"), d->label, size);
     para(cr, 50, 130, w - 100, buf, 15, T->fg, true);
     para(cr, 60, 186, w - 120,
-         d->root ? "Das System auf dieser Festplatte wird durch die aktuelle Version ersetzt; Dateien darin gehen "
-                   "verloren. Die Wiederherstellung bleibt."
-                 : "Alle Daten auf dieser Festplatte gehen verloren. Das lässt sich nicht rückgängig machen.",
+         d->root ? L("The system on this disk will be replaced by the current version; files in it will be lost. "
+                     "The recovery stays.")
+                 : L("All data on this disk will be lost. This cannot be undone."),
          12.5, T->fg2, true);
     break;
   }
   case RP_RUN: {
     icon_at(cr, "logo-gradient.svg", (w - 72) / 2.0, 56, 72);
-    text(cr, w / 2.0, 160, "ClokeOS wird installiert", 18, true, T->fg, 0, 1);
-    text(cr, w / 2.0, 196, rstep[0] ? rstep : "Vorbereitung …", 12.5, false, T->fg2, w - 80, 1);
+    text(cr, w / 2.0, 160, L("Installing ClokeOS"), 18, true, T->fg, 0, 1);
+    text(cr, w / 2.0, 196, rstep[0] ? rstep : L("Preparing…"), 12.5, false, T->fg2, w - 80, 1);
     double bw = w - 160, bx = 80, by = 222, frac = rtotal ? (double)rdone / rtotal : 0;
     rrect(cr, bx, by, bw, 8, 4);
     set(cr, dark ? (RGBA){1, 1, 1, .14} : (RGBA){0, 0, 0, .1});
@@ -316,31 +318,33 @@ static void rec_paint(Client *c, cairo_t *cr) {
       double el = now_s() - rt0;
       if (rdone > 0 && el > 3) {
         double left = (rtotal - rdone) / (rdone / el);
-        if (left < 60) snprintf(eta, sizeof eta, " · Noch weniger als eine Minute");
-        else snprintf(eta, sizeof eta, " · Noch etwa %d Minute%s", (int)(left / 60 + .5), left >= 90 ? "n" : "");
+        int m = (int)(left / 60 + .5);
+        if (left < 60) snprintf(eta, sizeof eta, "%s", L(" · Less than a minute remaining"));
+        else if (m == 1) snprintf(eta, sizeof eta, "%s", L(" · About 1 minute remaining"));
+        else snprintf(eta, sizeof eta, L(" · About %d minutes remaining"), m);
       }
-      snprintf(buf, sizeof buf, "%s von %s geladen%s", a, z, eta);
+      snprintf(buf, sizeof buf, L("%s of %s downloaded%s"), a, z, eta);
       text(cr, w / 2.0, 252, buf, 11.5, false, T->fg3, 0, 1);
     }
     break;
   }
   case RP_DONE: {
     icon_at(cr, "logo-gradient.svg", (w - 80) / 2.0, 56, 80);
-    snprintf(buf, sizeof buf, "ClokeOS %s ist installiert.", rversion);
+    snprintf(buf, sizeof buf, L("ClokeOS %s is installed."), rversion);
     text(cr, w / 2.0, 168, buf, 18, true, T->fg, 0, 1);
     para(cr, 60, 196, w - 120,
          rdsel >= 0 && rdisks[rdsel].root
-           ? "Starte den Rechner neu, er startet dann wieder ClokeOS. Die Wiederherstellung bleibt auf der "
-             "Festplatte und startet über „Neustart in Wiederherstellung …“ im ClokeOS-Menü."
-           : "Starte den Rechner neu. Ist das Installationsmedium noch angeschlossen, entferne es oder wähle beim "
-             "Start im Menü der Firmware die Festplatte. Die Wiederherstellung startest du später über „Neustart "
-             "in Wiederherstellung …“ im ClokeOS-Menü.",
+           ? L("Restart your computer and it starts ClokeOS again. The recovery stays on the disk; you start it "
+               "with “Restart in Recovery…” in the ClokeOS menu.")
+           : L("Restart your computer. If the installer is still connected, remove it or choose the disk in the "
+               "firmware’s boot menu. Later you start the recovery with “Restart in Recovery…” in the ClokeOS "
+               "menu."),
          12.5, T->fg2, true);
     break;
   }
   case RP_ERROR: {
     icon_at(cr, "icons/info.svg", (w - 64) / 2.0, 52, 64);
-    text(cr, w / 2.0, 150, "Die Installation ist fehlgeschlagen.", 17, true, T->fg, 0, 1);
+    text(cr, w / 2.0, 150, L("The installation failed."), 17, true, T->fg, 0, 1);
     para(cr, 60, 178, w - 120, rerror, 12.5, T->fg2, true);
     break;
   }
@@ -385,7 +389,7 @@ static void rec_read(void) {
     if (k == 0) { /* Installer beendet */
       rec_finish();
       if (rp == RP_RUN) {
-        snprintf(rerror, sizeof rerror, "Der Installer hat sich unerwartet beendet.");
+        snprintf(rerror, sizeof rerror, "%s", L("The installer quit unexpectedly."));
         rp = RP_ERROR;
       }
       break;
@@ -416,7 +420,7 @@ static void rec_start_install(void) {
     dup2(fd[1], 1);
     if (fd[1] != 1) close(fd[1]);
     execl(INSTALLER, "clokeos-installer", "install", rdisks[rdsel].name, rec_releases, (char *)NULL);
-    printf("ERROR Der Installer fehlt (%s).\n", INSTALLER);
+    printf("ERROR %s (%s).\n", L("The installer is missing"), INSTALLER);
     _exit(127);
   }
   close(fd[1]);
@@ -509,7 +513,7 @@ static void rec_click(Client *c, int x, int y) {
 static void rec_show(long page) {
   if (rp == RP_RUN) page = RP_RUN; /* eine laufende Installation nicht verlassen */
   rp = (int)page;
-  rwin = own_window(RW, RH, "Wiederherstellung", rec_paint, rec_click, 0);
+  rwin = own_window(RW, RH, "Recovery", rec_paint, rec_click, 0);
 }
 
 /* ---- Festplattendienstprogramm ------------------------------------------------------------ */
@@ -521,11 +525,11 @@ static int du_buttons(Client *c, RecBtn *b) {
   int n = 0;
   RecDisk *d = dsel >= 0 && dsel < nrdisks ? &rdisks[dsel] : NULL;
   if (dconfirm) {
-    b[n++] = (RecBtn){"Abbrechen", A_CANCEL, false, true};
-    b[n++] = (RecBtn){"Löschen", A_GO, true, true, .danger = true};
+    b[n++] = (RecBtn){L("Cancel"), A_CANCEL, false, true};
+    b[n++] = (RecBtn){L("Erase"), A_GO, true, true, .danger = true};
   } else {
-    b[n++] = (RecBtn){"Aktualisieren", A_HOME, false, true};
-    b[n++] = (RecBtn){"Löschen …", A_CONT, true, d && !d->root && !d->installer};
+    b[n++] = (RecBtn){L("Refresh"), A_HOME, false, true};
+    b[n++] = (RecBtn){L("Erase…"), A_CONT, true, d && !d->root && !d->installer};
   }
   return layout_btns(c, b, n);
 }
@@ -546,20 +550,20 @@ static void du_paint(Client *c, cairo_t *cr) {
     icon_at(cr, "icons/hd.svg", 22, y, 22);
     fmt_size(size, sizeof size, d->bytes);
     snprintf(buf, sizeof buf, "%s · %s%s", d->label, size,
-             d->root ? " · Startvolume" : d->installer ? " · Installationsmedium" : "");
+             d->root ? L(" · Startup disk") : d->installer ? L(" · Installer") : "");
     text(cr, 52, y + 11, buf, 12.5, true, T->fg, w - 80, 0);
     y += 26;
     for (int k = 0; k < d->nparts; k++, y += 26) {
       fmt_size(size, sizeof size, d->part[k].bytes);
-      snprintf(buf, sizeof buf, "%s · %s", strcmp(d->part[k].name, "-") ? d->part[k].name : "Partition", size);
+      snprintf(buf, sizeof buf, "%s · %s", strcmp(d->part[k].name, "-") ? L(d->part[k].name) : "Partition", size);
       text(cr, 72, y + 11, buf, 12, false, T->fg2, w - 100, 0);
     }
     y += 12;
   }
-  if (!nrdisks) text(cr, w / 2.0, 80, "Keine Festplatten gefunden.", 12.5, false, T->fg2, 0, 1);
+  if (!nrdisks) text(cr, w / 2.0, 80, L("No disks found."), 12.5, false, T->fg2, 0, 1);
   if (dconfirm && dsel >= 0) {
     fmt_size(size, sizeof size, rdisks[dsel].bytes);
-    snprintf(buf, sizeof buf, "„%s“ (%s) löschen? Alle Daten darauf gehen verloren.", rdisks[dsel].label, size);
+    snprintf(buf, sizeof buf, L("Erase “%s” (%s)? All data on it will be lost."), rdisks[dsel].label, size);
     para(cr, 20, c->h - 96, w - 40, buf, 12.5, T->fg, false);
   } else if (dmsg[0]) {
     para(cr, 20, c->h - 96, w - 40, dmsg, 12, T->fg2, false);
@@ -605,7 +609,7 @@ static void du_click(Client *c, int x, int y) {
       pclose(p);
     }
     child_wait_end();
-    if (ok) snprintf(dmsg, sizeof dmsg, "„%s“ wurde gelöscht.", rdisks[dsel].label);
+    if (ok) snprintf(dmsg, sizeof dmsg, L("“%s” was erased."), rdisks[dsel].label);
     dconfirm = false;
     rec_load_disks();
   }
@@ -618,7 +622,7 @@ static void show_disk_utility(long unused) {
   dsel = -1;
   dconfirm = false;
   dmsg[0] = 0;
-  dwin = own_window(DW, DH, "Festplattendienstprogramm", du_paint, du_click, 0);
+  dwin = own_window(DW, DH, "Disk Utility", du_paint, du_click, 0);
 }
 
 /* ---- Menüs ---------------------------------------------------------------------------------- */

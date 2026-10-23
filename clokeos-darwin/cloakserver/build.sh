@@ -90,7 +90,7 @@ inc=(-I"$sysroot/include" -I"$sysroot/include/cairo" -I"$sysroot/include/pango-1
 clang -target "$target" -isysroot "$sysroot" -DPLATFORM_MacOSX=1 -fno-stack-check -std=gnu11 -O2 -Wall -Wextra -Wno-unused-parameter \
   -Wno-nullability-completeness -Wno-missing-field-initializers "${inc[@]}" \
   -nostdlib -L"$sysroot/libs" -Wl,-platform_version,macos,11.0,11.5 -Wl,-no_fixup_chains -Wl,-dead_strip \
-  -o "$out/CloakServer" "$src/cloakserver.c" "$src/comp.c" "$src/wall.c" "$src/apps.c" \
+  -o "$out/CloakServer" "$src/cloakserver.c" "$src/comp.c" "$src/wall.c" "$src/apps.c" "$src/l10n.c" \
   -lSystem "${xlibs[@]}" -lcairo -lpango-1.0 -lpangocairo-1.0 -lgobject-2.0 -lglib-2.0 -lrsvg-2
 echo "Fertig: $out/CloakServer"
 # Testwerkzeug: echte Maus- und Tastenereignisse über XTest (vmctl.py click/key/type), siehe xtest.c

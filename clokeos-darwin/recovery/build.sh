@@ -9,7 +9,8 @@
 #                    und boot-args-recovery.txt. Ihr boot-uuid= ist ein Platzhalter: Der Loader startet
 #                    damit die GPT-Partition dieser Kennung, und clokeos-installer setzt beim
 #                    Installieren die Kennungen der neuen Partitionen ein (bootnext tauscht die Dateien)
-#   system.ext4      Wurzel des vollen Systems, auf belegt + SYSTEM_FREE_MB gebracht (resize2fs)
+#   system.ext4      Wurzel des vollen Systems, auf belegt + SYSTEM_FREE_MB gebracht (resize2fs), mit
+#                    /var/db/.RunClokeOSSetup: beim ersten Start läuft der Einrichtungsassistent
 #   recovery.ext4    Wurzel der Wiederherstellung: das System ohne Wine, Compiler und Entwickler-
 #                    dateien (imagetool.py prune), dazu recovery/overlay und /etc/clokeos-recovery
 #   installer.img    startfähiges Installationsmedium: EFI-Partition + Wiederherstellung unter dem
@@ -50,6 +51,12 @@ fit() { "$E2FSCK" -fy "$1" >/dev/null 2>&1 || true; "$E2FSCK" -fn "$1" >/dev/nul
 sys_mb=$(( ($(used_mb "$out/system.ext4") + SYSTEM_FREE_MB + 63) / 64 * 64 ))
 fit "$out/system.ext4" "$sys_mb"
 "$TUNE2FS" -U random "$out/system.ext4" >/dev/null
+# Beim ersten Start nach der Installation läuft der Einrichtungsassistent wie bei macOS
+# (cloakserver/setup.c): Sprache, Region, eigenes Konto, Erscheinungsbild
+: > "$tmp/run-setup"
+"$DEBUGFS" -w -R "write $tmp/run-setup /var/db/.RunClokeOSSetup" "$out/system.ext4" >/dev/null 2>&1
+"$DEBUGFS" -R 'stat /var/db/.RunClokeOSSetup' "$out/system.ext4" 2>/dev/null | grep -q '^Inode' ||
+  { echo "Markierung für den Einrichtungsassistenten fehlt" >&2; exit 1; }
 sys_uuid=$(fsuuid "$out/system.ext4")
 echo "System: $sys_mb MB, UUID $sys_uuid"
 

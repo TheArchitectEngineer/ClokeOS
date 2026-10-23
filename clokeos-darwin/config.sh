@@ -108,8 +108,11 @@ CLOKE_TZ="CET-1CEST,M3.5.0,M10.5.0/3"
 # Desktop: Anmeldebildschirm wie in clokeos.html vor dem Desktop ("ja") oder direkt zum Desktop ("nein")
 CLOKE_LOGIN="ja"
 # Desktop: Benutzerkonto wie im Prototyp, ohne Passwort, Ordner /Users/<name>; leer = nur root
-CLOKE_USER="gast"
-CLOKE_USER_NAME="Gast"
+# Sprache von ClokeOS: en (Standard, wie bei macOS) oder de; landet in /etc/clokeos-language.
+# Installierte Systeme fragen im Einrichtungsassistenten danach.
+CLOKE_LANGUAGE="${CLOKEOS_LANGUAGE:-en}"
+CLOKE_USER="guest"
+CLOKE_USER_NAME="Guest"   # CloakServer zeigt ihn auf Deutsch als „Gast“
 CLOKE_USER_UID=501
 # Online-Releases für Installer und Wiederherstellung (öffentliches Repo, recovery/release.sh):
 # die Wiederherstellung lädt von dort clokeos-<arch>.txt und die Partitionsabbilder.

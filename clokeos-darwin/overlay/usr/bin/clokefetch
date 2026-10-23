@@ -36,12 +36,12 @@ info=(
   "${(l:$(( ${#user} + ${#host} + 1 ))::-:)}"
   "${b}OS$r: $NAME $VERSION $CODENAME $(uname -m)"
   "${b}Kernel$r: Darwin $(uname -r) (XNU)"
-  "${b}Basis$r: $BASE"
+  "${b}Base$r: $BASE"
   "${b}Uptime$r: $up"
   "${b}Shell$r: zsh $ZSH_VERSION"
   "${b}CPU$r: $(sysctl -n machdep.cpu.brand_string 2>/dev/null)"
-  "${b}Speicher$r: $mem"
-  "${b}Volume$r: $(df -h / 2>/dev/null | awk 'NR==2 {print $3 " von " $2 " belegt"}')"
+  "${b}Memory$r: $mem"
+  "${b}Volume$r: $(df -h / 2>/dev/null | awk 'NR==2 {print $3 " of " $2 " used"}')"
   "$(for i in {1..7}; do printf '\e[4%dm   ' $i; done)$r"
 )
 

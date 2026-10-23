@@ -1,0 +1,17 @@
+/* ClokeOS: GTK-Thema im Stil von CloakServer (hell). Grundlage ist GTKs eingebautes Adwaita,
+ * common.css passt Farben und Formen an macOS an. CloakServer wählt es über XSETTINGS. */
+@import url("resource:///org/gtk/libgtk/theme/Adwaita/gtk-contained.css");
+
+@define-color cl_accent #7c5cff;
+@define-color cl_bg #f6f5f9;
+@define-color cl_base #ffffff;
+@define-color cl_fg #1e1a27;
+@define-color cl_fg2 #6d6779;
+@define-color cl_line rgba(40, 25, 70, 0.14);
+@define-color cl_header #efedf4;
+@define-color cl_sidebar #ebe8f1;
+@define-color cl_button #ffffff;
+@define-color cl_button_hover #f9f8fc;
+@define-color cl_hover rgba(40, 25, 70, 0.07);
+
+@import url("common.css");

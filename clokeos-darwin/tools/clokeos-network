@@ -17,7 +17,7 @@ DNS=10.0.2.3
 TIME_HOST=example.com
 test -r /etc/clokeos-network && . /etc/clokeos-network
 
-/usr/libexec/clokeos-netup || echo "clokeos-network: Netzwerkstapel belegt, die Karten benennt configd"
+/usr/libexec/clokeos-netup || echo "clokeos-network: network stack busy, configd names the interfaces"
 /bin/netsetup --wait 20 "$IFACE" "$ADDR" "$MASK" "$ROUTER" "$DNS" || exit 1
 
 if [ -n "$TIME_HOST" ] && [ "$(date -u +%Y)" -lt 2020 ]; then
@@ -32,8 +32,8 @@ if [ -n "$TIME_HOST" ] && [ "$(date -u +%Y)" -lt 2020 ]; then
     sleep 2
   done
   if [ -n "$t" ] && date -u "$t" >/dev/null; then
-    echo "ClokeOS: Uhr gestellt nach $TIME_HOST: $(date)"
+    echo "ClokeOS: clock set from $TIME_HOST: $(date)"
   else
-    echo "ClokeOS: Uhrzeit von $TIME_HOST nicht bekommen"
+    echo "ClokeOS: could not get the time from $TIME_HOST"
   fi
 fi

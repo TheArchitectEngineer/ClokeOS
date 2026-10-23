@@ -1,0 +1,16 @@
+/* ClokeOS: GTK-Thema im Stil von CloakServer (dunkel), wie ClokeOS/gtk-3.0/gtk.css */
+@import url("resource:///org/gtk/libgtk/theme/Adwaita/gtk-contained-dark.css");
+
+@define-color cl_accent #8b6dff;
+@define-color cl_bg #23212b;
+@define-color cl_base #1c1a23;
+@define-color cl_fg #f1eef6;
+@define-color cl_fg2 #aaa4b6;
+@define-color cl_line rgba(255, 255, 255, 0.11);
+@define-color cl_header #2b2834;
+@define-color cl_sidebar #282531;
+@define-color cl_button #36333f;
+@define-color cl_button_hover #3d3a47;
+@define-color cl_hover rgba(255, 255, 255, 0.08);
+
+@import url("../../ClokeOS/gtk-3.0/common.css");

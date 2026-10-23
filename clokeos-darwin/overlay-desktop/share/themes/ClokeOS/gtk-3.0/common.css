@@ -1,0 +1,129 @@
+/* ClokeOS: gemeinsame Regeln für ClokeOS und ClokeOS-dark. Die Farben (cl_…) setzt die jeweilige
+ * gtk.css vorher; Formen wie bei macOS: runde Knöpfe und Felder, Fokusring in der Akzentfarbe,
+ * flache Werkzeugleisten, schmale Bildlaufleisten. */
+
+window, .background {
+  background-color: @cl_bg;
+  color: @cl_fg;
+}
+
+/* Kopf- und Werkzeugleisten flach in der Fensterfarbe, nur eine feine Linie darunter */
+headerbar, toolbar, .toolbar, .primary-toolbar, .inline-toolbar {
+  background: @cl_header;
+  border-color: @cl_line;
+  border-style: solid;
+  border-width: 0 0 1px 0;
+  box-shadow: none;
+}
+
+/* Knöpfe */
+button {
+  border-radius: 6px;
+  border: 1px solid @cl_line;
+  background: @cl_button;
+  box-shadow: 0 1px 1px rgba(0, 0, 0, 0.06);
+  text-shadow: none;
+  -gtk-icon-shadow: none;
+  padding: 4px 10px;
+}
+button:hover { background: @cl_button_hover; }
+button:active, button:checked { background: alpha(@cl_accent, 0.2); border-color: alpha(@cl_accent, 0.5); }
+button:disabled { opacity: 0.55; }
+button.flat, toolbar button, .toolbar button, headerbar button {
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+}
+button.flat:hover, toolbar button:hover, .toolbar button:hover, headerbar button:hover { background: @cl_hover; }
+button.suggested-action, button.default {
+  background: @cl_accent;
+  color: #ffffff;
+  border-color: shade(@cl_accent, 0.85);
+}
+button.destructive-action { background: #e5484d; color: #ffffff; border-color: #c43b40; }
+
+/* Eingabefelder mit Fokusring wie bei macOS */
+entry, spinbutton:not(.vertical), searchbar entry {
+  border-radius: 6px;
+  border: 1px solid @cl_line;
+  background: @cl_base;
+  color: @cl_fg;
+  box-shadow: inset 0 1px 1px rgba(0, 0, 0, 0.04);
+}
+entry:focus, spinbutton:focus {
+  border-color: @cl_accent;
+  box-shadow: 0 0 0 3px alpha(@cl_accent, 0.3);
+}
+
+/* Auswahl in Listen, Symbolansichten und Text */
+*:selected, row:selected, .view:selected, iconview:selected, treeview.view:selected,
+flowboxchild:selected, .view:selected:focus, treeview.view:selected:focus {
+  background-color: @cl_accent;
+  color: #ffffff;
+}
+text selection, .view text selection, entry selection, label selection {
+  background-color: alpha(@cl_accent, 0.35);
+  color: @cl_fg;
+}
+.view, treeview.view, iconview { background-color: @cl_base; color: @cl_fg; }
+treeview.view:hover, row:hover { background-color: @cl_hover; }
+
+/* Seitenleisten (Fundus/Thunar, Dateidialoge, Einstellungen) */
+.sidebar, .sidebar .view, .sidebar treeview.view, placessidebar, placessidebar list,
+stacksidebar list, .navigation-sidebar {
+  background-color: @cl_sidebar;
+  color: @cl_fg;
+  border-color: @cl_line;
+}
+.sidebar .view:selected, placessidebar row:selected, stacksidebar row:selected {
+  background-color: alpha(@cl_accent, 0.85);
+  color: #ffffff;
+}
+
+/* Schmale, runde Bildlaufleisten */
+scrollbar { background: transparent; border: none; }
+scrollbar slider {
+  min-width: 7px;
+  min-height: 7px;
+  border-radius: 10px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+  background-color: alpha(@cl_fg, 0.32);
+}
+scrollbar slider:hover { background-color: alpha(@cl_fg, 0.5); }
+
+/* Menüs und Popover */
+menu, .menu, .context-menu {
+  border-radius: 8px;
+  padding: 5px 0;
+  background-color: @cl_base;
+  border: 1px solid @cl_line;
+}
+menuitem { padding: 4px 14px; }
+menuitem:hover { background-color: @cl_accent; color: #ffffff; }
+menuitem:hover accelerator { color: alpha(#ffffff, 0.75); }
+popover, popover.background { border-radius: 10px; }
+popover modelbutton:hover { background-color: @cl_accent; color: #ffffff; }
+
+/* Auswahlboxen, Schalter, Regler, Fortschritt in der Akzentfarbe */
+check:checked, radio:checked, check:indeterminate {
+  background-image: none;
+  background-color: @cl_accent;
+  border-color: shade(@cl_accent, 0.85);
+  color: #ffffff;
+}
+switch:checked { background-color: @cl_accent; border-color: shade(@cl_accent, 0.85); }
+progressbar progress, scale highlight, levelbar block.filled, scale trough highlight {
+  background-color: @cl_accent;
+  border-color: @cl_accent;
+}
+
+/* Reiter */
+notebook header { background-color: @cl_header; border-color: @cl_line; }
+notebook header tab:checked { box-shadow: inset 0 -2px @cl_accent; }
+
+/* Tooltips */
+tooltip, tooltip.background { border-radius: 6px; }
+
+/* Terminal: Innenabstand wie im Prototyp (clokeos.html) */
+vte-terminal { padding: 8px 12px; }

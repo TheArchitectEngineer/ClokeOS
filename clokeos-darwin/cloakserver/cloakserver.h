@@ -5,6 +5,7 @@
 #include <X11/Xlib.h>
 #include <cairo.h>
 #include <stdbool.h>
+#include <stddef.h>
 
 /* wall.c: Hintergrundbild "Goldenes Tor" aus clokeos.html */
 void wall_draw(cairo_t *cr, double W, double H, bool dark);
@@ -61,6 +62,20 @@ bool plist_write(const char *path, const PlistItem *items, int n);
 bool bundle_read(const char *path, Bundle *b);
 long bundle_mtime(const char *path);
 unsigned char *icns_png(const char *path, int min, size_t *len);
+
+/* l10n.c: Sprache. Texte stehen englisch im Code, L() übersetzt in die eingestellte Sprache */
+#define LANGUAGE_FILE "/etc/clokeos-language"
+struct tm;
+void l10n_init(void);
+const char *L(const char *en);
+const char *l10n_lang(void);            /* "en" oder "de" */
+bool l10n_set_lang(const char *code);   /* schreibt LANGUAGE_FILE (root) */
+const char *l10n_locale(void);          /* LANG für die Programme der Sitzung */
+const char *l10n_month(int m);
+const char *l10n_month_short(int m);
+void l10n_date_long(char *out, size_t n, const struct tm *t);
+void l10n_menubar_clock(char *out, size_t n, const struct tm *t);
+void l10n_big_clock(char *out, size_t n, const struct tm *t);
 
 /* comp.c: Compositor (Composite, Damage, XFixes) */
 extern bool comp_on;

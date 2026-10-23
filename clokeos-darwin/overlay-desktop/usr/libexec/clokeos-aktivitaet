@@ -1,9 +1,11 @@
 #!/bin/zsh
-# Aktivitätsanzeige aus dem Dock: Prozesse nach Rechenzeit, alle zwei Sekunden neu.
+# Aktivitätsanzeige (Activity Monitor) aus dem Dock: Prozesse nach Rechenzeit, alle zwei Sekunden neu.
 trap 'exit 0' INT
+title='Activity Monitor' cores='core(s)'
+[[ $(cat /etc/clokeos-language 2>/dev/null) == de* ]] && title='Aktivitätsanzeige' cores='Kern(e)'
 while true; do
   print -n '\033[H\033[2J'
-  print -P "%B Aktivitätsanzeige%b   $(hostname)   $(date +%H:%M:%S)   $(sysctl -n hw.ncpu) Kern(e)"
+  print -P "%B $title%b   $(hostname)   $(date +%H:%M:%S)   $(sysctl -n hw.ncpu) $cores"
   print
   ps -axo pid,pcpu,pmem,rss,comm -r | head -n 28
   sleep 2

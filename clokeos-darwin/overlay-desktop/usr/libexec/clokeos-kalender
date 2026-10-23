@@ -1,48 +1,68 @@
 #!/usr/bin/python3
-"""Kalender aus dem Dock: voriger, dieser und nächster Monat, heute hervorgehoben."""
+"""Kalender aus dem Dock: voriger, dieser und nächster Monat, heute hervorgehoben. Englisch mit
+Wochenbeginn Sonntag, mit /etc/clokeos-language = de deutsch mit Wochenbeginn Montag."""
 import calendar
 import datetime
 
-MONATE = ['Januar', 'Februar', 'März', 'April', 'Mai', 'Juni', 'Juli', 'August', 'September',
-          'Oktober', 'November', 'Dezember']
-TAGE = 'Mo Di Mi Do Fr Sa So'
-HEUTE = '\033[7m%2d\033[0m'
-BREITE = 20
+try:
+    with open('/etc/clokeos-language') as f:
+        DE = f.read().strip().startswith('de')
+except OSError:
+    DE = False
+
+if DE:
+    MONTHS = ['Januar', 'Februar', 'März', 'April', 'Mai', 'Juni', 'Juli', 'August', 'September',
+              'Oktober', 'November', 'Dezember']
+    DAYS, FIRST = 'Mo Di Mi Do Fr Sa So', 0
+    WEEKDAYS = ['Montag', 'Dienstag', 'Mittwoch', 'Donnerstag', 'Freitag', 'Samstag', 'Sonntag']
+    CLOSE = 'Eingabetaste schließt den Kalender. '
+else:
+    MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September',
+              'October', 'November', 'December']
+    DAYS, FIRST = 'Su Mo Tu We Th Fr Sa', 6
+    WEEKDAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
+    CLOSE = 'Press Return to close the calendar. '
+TODAY = '\033[7m%2d\033[0m'
+WIDTH = 20
 
 
-def monat(jahr, mon, heute):
-    zeilen = [('%s %d' % (MONATE[mon - 1], jahr)).center(BREITE), TAGE]
-    for woche in calendar.Calendar(0).monthdayscalendar(jahr, mon):
-        zelle = []
-        for tag in woche:
-            if not tag:
-                zelle.append('  ')
-            elif (jahr, mon, tag) == heute:
-                zelle.append(HEUTE % tag)
+def month(year, mon, today):
+    lines = [('%s %d' % (MONTHS[mon - 1], year)).center(WIDTH), DAYS]
+    for week in calendar.Calendar(FIRST).monthdayscalendar(year, mon):
+        cells = []
+        for day in week:
+            if not day:
+                cells.append('  ')
+            elif (year, mon, day) == today:
+                cells.append(TODAY % day)
             else:
-                zelle.append('%2d' % tag)
-        zeilen.append(' '.join(zelle))
-    while len(zeilen) < 8:
-        zeilen.append('')
-    return zeilen
+                cells.append('%2d' % day)
+        lines.append(' '.join(cells))
+    while len(lines) < 8:
+        lines.append('')
+    return lines
 
 
-def sichtbar(s):
+def visible(s):
     return len(s.replace('\033[7m', '').replace('\033[0m', ''))
 
 
 d = datetime.date.today()
-heute = (d.year, d.month, d.day)
-monate = []
+today = (d.year, d.month, d.day)
+months = []
 for delta in (-1, 0, 1):
     m = d.month + delta
-    j = d.year + (m - 1) // 12
-    monate.append(monat(j, (m - 1) % 12 + 1, heute))
-wt = ['Montag', 'Dienstag', 'Mittwoch', 'Donnerstag', 'Freitag', 'Samstag', 'Sonntag'][d.weekday()]
-print('\n  \033[1m%s, %d. %s %d\033[0m\n' % (wt, d.day, MONATE[d.month - 1], d.year))
-for zeile in zip(*monate):
-    print('  ' + '   '.join(z + ' ' * (BREITE - sichtbar(z)) for z in zeile))
+    y = d.year + (m - 1) // 12
+    months.append(month(y, (m - 1) % 12 + 1, today))
+wd = WEEKDAYS[d.weekday()]
+if DE:
+    head = '%s, %d. %s %d' % (wd, d.day, MONTHS[d.month - 1], d.year)
+else:
+    head = '%s, %s %d, %d' % (wd, MONTHS[d.month - 1], d.day, d.year)
+print('\n  \033[1m%s\033[0m\n' % head)
+for line in zip(*months):
+    print('  ' + '   '.join(z + ' ' * (WIDTH - visible(z)) for z in line))
 try:
-    input('\n  Eingabetaste schließt den Kalender. ')
+    input('\n  ' + CLOSE)
 except EOFError:
     pass

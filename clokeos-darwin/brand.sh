@@ -102,6 +102,7 @@ TIMEZONE="$CLOKE_TZ"
 LOGIN="$CLOKE_LOGIN"
 BASE="PureDarwin $PD_VERSION"
 EOF
+printf '%s\n' "$CLOKE_LANGUAGE" > "$tmp/stage/etc/clokeos-language"
 
 "$DEBUGFS" -R 'cat /etc/zshrc' "$root" 2>/dev/null > "$tmp/stage/etc/zshrc"
 grep -q 'interactive' "$tmp/stage/etc/zshrc" || { echo "/etc/zshrc im Basisimage nicht gefunden" >&2; exit 1; }
@@ -150,24 +151,26 @@ if [ "$CLOKE_FLAVOR" = desktop ] && [ -n "$CLOKE_USER" ]; then
   chmod 600 "$tmp/stage/etc/master.passwd"
 
   h="$tmp/stage$home"
-  mkdir -p "$h"/{Desktop,Dokumente,Downloads,Bilder,Musik,.Trash,.config/gtk-3.0}
+  # Ordner wie bei macOS mit englischen Namen
+  mkdir -p "$h"/{Desktop,Documents,Downloads,Pictures,Music,Movies,.Trash,.config/gtk-3.0}
   cp "$HERE/overlay-desktop/var/root/.config/gtk-3.0/gtk.css" "$h/.config/gtk-3.0/"
   for f in profile zprofile zshrc; do printf 'test -r /etc/%s && . /etc/%s\n' $f $f > "$h/.$f"; done
   printf "alias ll='ls -la'\n" >> "$h/.zshrc"
-  cat > "$h/Desktop/Willkommen.txt" <<EOF
-Willkommen bei ClokeOS $CLOKE_VERSION „$CLOKE_CODENAME“
+  cat > "$h/Desktop/Welcome.txt" <<EOF
+Welcome to ClokeOS $CLOKE_VERSION "$CLOKE_CODENAME"
 
-ClokeOS ist eine macOS-ähnliche Oberfläche auf Darwin-Basis: der Kernel XNU,
-darunter PureDarwin $PD_VERSION, darüber CloakServer als Fensterserver.
-Ein paar Dinge zum Ausprobieren:
+ClokeOS is a macOS-like desktop on Darwin: the XNU kernel with PureDarwin
+$PD_VERSION underneath and CloakServer as its window server.
+A few things to try:
 
-• Im Terminal: clokefetch, uname -a, sw_vers
-• Fenster ziehen, an der Ecke vergrößern, gelb = ins Dock
-• Erscheinungsbild in der Menüleiste: automatisch, hell oder dunkel
-• Abmelden im ClokeOS-Menü
+• In Terminal: clokefetch, uname -a, sw_vers
+• Drag windows, resize them at the corner, yellow = minimize to the Dock
+• Appearance in the menu bar: auto, light or dark
+• System Settings > Language & Region: English or Deutsch
+• Log out in the ClokeOS menu
 
-Dieses Konto hat kein Passwort. Für Verwaltungsaufgaben meldest du dich als
-System Administrator an; su und sudo gibt es in ClokeOS noch nicht.
+This account has no password. For administration, log in as
+System Administrator; ClokeOS does not have su or sudo yet.
 EOF
   # Besitzer und Rechte im Image: alles unter $home gehört dem Konto
   {
