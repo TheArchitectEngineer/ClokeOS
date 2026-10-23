@@ -439,8 +439,24 @@ static void curl_common(CURL *c, const char *url) {
   curl_easy_setopt(c, CURLOPT_USERAGENT, "ClokeOS-Installer");
   if (!access(CA_FILE, R_OK)) curl_easy_setopt(c, CURLOPT_CAINFO, CA_FILE);
   curl_easy_setopt(c, CURLOPT_CONNECTTIMEOUT, 30L);
-  curl_easy_setopt(c, CURLOPT_LOW_SPEED_LIMIT, 1024L); /* steht der Download eine Minute, Abbruch */
-  curl_easy_setopt(c, CURLOPT_LOW_SPEED_TIME, 60L);
+  if (strncmp(url, "file:", 5)) { /* steht ein Download eine Minute, Abbruch; vom Stick (file:) nie: */
+    curl_easy_setopt(c, CURLOPT_LOW_SPEED_LIMIT, 1024L); /* dort bremst nur das Entpacken und Schreiben */
+    curl_easy_setopt(c, CURLOPT_LOW_SPEED_TIME, 60L);
+  }
+}
+
+/* Gibt es <base>/<file>? Kurze HEAD-Anfrage, ohne abzubrechen */
+static bool url_reachable(const char *base, const char *file) {
+  char url[1024];
+  snprintf(url, sizeof url, "%s/%s", base, file);
+  CURL *c = curl_easy_init();
+  if (!c) return false;
+  curl_common(c, url);
+  curl_easy_setopt(c, CURLOPT_NOBODY, 1L);
+  curl_easy_setopt(c, CURLOPT_CONNECTTIMEOUT, 10L);
+  bool ok = curl_easy_perform(c) == CURLE_OK;
+  curl_easy_cleanup(c);
+  return ok;
 }
 
 static bool parse_asset(const char *v, Asset *a) {
@@ -594,7 +610,7 @@ static void install_asset(const char *base, const Asset *a, int fd, uint64_t off
   out("PROGRESS %llu %llu", (unsigned long long)(done_before + a->xz), (unsigned long long)total);
 }
 
-static void patch_esp(int fd, uint32_t dbs, uint64_t esp_off, const uint8_t sys[16], const uint8_t rec[16]);
+static void patch_esp(int fd, uint32_t dbs, uint64_t esp_off, const uint8_t sys[16], const uint8_t rec[16], bool have_rec);
 
 static const char *machine_arch(void) {
   struct utsname u;
@@ -663,9 +679,26 @@ static void cmd_install(const char *disk, const char *base) {
   out("STEP %s", step);
   install_asset(base, &m.system, fd[1], off[1], p[1].count * bs, done, total);
   done += m.system.xz;
+  bool have_rec = true;
   if (!keep) {
     out("STEP %s", L("Setting up the recovery"));
-    install_asset(base, &m.recovery, fd[0], p[2].first * bs, p[2].count * bs, done, total);
+    /* Der USB-Stick bringt die Wiederherstellung nicht mit (zu groß für die RAM-Disk): dann genau
+     * diese Version aus dem Netz; ohne Internet bleibt die Partition leer */
+    const char *rbase = base;
+    char online[512];
+    if (!strncmp(base, "file://", 7)) {
+      char local[700];
+      snprintf(local, sizeof local, "%s/%s", base + 7, m.recovery.file);
+      if (access(local, R_OK)) {
+        snprintf(online, sizeof online, "https://github.com/%s/releases/download/v%s", RELEASES_REPO, m.version);
+        rbase = url_reachable(online, m.recovery.file) ? online : NULL;
+      }
+    }
+    if (rbase) install_asset(rbase, &m.recovery, fd[0], p[2].first * bs, p[2].count * bs, done, total);
+    else {
+      have_rec = false;
+      out("STEP %s", L("No internet connection: ClokeOS is installed without a recovery partition"));
+    }
     done += m.recovery.xz;
   }
   out("STEP %s", L("Setting up the startup volume"));
@@ -675,7 +708,7 @@ static void cmd_install(const char *disk, const char *base) {
     memcpy(p[1].guid, d.part[1].guid, 16);
     memcpy(p[2].guid, d.part[2].guid, 16);
   }
-  patch_esp(fd[0], bs, off[0], p[1].guid, p[2].guid);
+  patch_esp(fd[0], bs, off[0], p[1].guid, p[2].guid, keep || have_rec);
   fsync(fd[0]);
   close(fd[0]);
   if (fd[1] != fd[0]) close(fd[1]);
@@ -840,14 +873,17 @@ static bool set_boot_uuid(Fat *f, const char *name, const char *guid) {
 }
 
 /* Nach dem Schreiben der EFI-Partition: Kennungen von System und Wiederherstellung einsetzen */
-static void patch_esp(int fd, uint32_t dbs, uint64_t esp_off, const uint8_t sys[16], const uint8_t rec[16]) {
+/* have_rec false: die Wiederherstellung fehlt (USB-Stick ohne Internet). boot-args-recovery.txt
+ * beginnt dann mit #, bootnext und die Taste R im Loader lassen es stehen. */
+static void patch_esp(int fd, uint32_t dbs, uint64_t esp_off, const uint8_t sys[16], const uint8_t rec[16], bool have_rec) {
   Fat f;
   char sg[37], rg[37];
   guid_str(sys, sg);
   guid_str(rec, rg);
   if (!fat_init(&f, fd, dbs, esp_off)) fail("The EFI partition is not FAT32.");
-  if (!set_boot_uuid(&f, "boot-args-system.txt", sg) || !set_boot_uuid(&f, "boot-args-recovery.txt", rg) ||
-      !set_boot_uuid(&f, "boot-args.txt", sg))
+  bool rec_ok = have_rec ? set_boot_uuid(&f, "boot-args-recovery.txt", rg)
+                         : fat_write(&f, "boot-args-recovery.txt", "# no recovery partition\n");
+  if (!set_boot_uuid(&f, "boot-args-system.txt", sg) || !rec_ok || !set_boot_uuid(&f, "boot-args.txt", sg))
     fail("Could not set the boot arguments in the EFI partition.");
 }
 
@@ -875,6 +911,7 @@ static void cmd_bootnext(const char *which) {
   char src[64], args[1024];
   snprintf(src, sizeof src, "boot-args-%s.txt", which);
   if (!fat_read(&f, src, args, sizeof args)) fail("%s is missing from the EFI partition", src);
+  if (args[0] == '#') fail("This disk has no recovery partition.");
   if (!fat_write(&f, "boot-args.txt", args)) fail("Could not write boot-args.txt");
   fsync(fd);
   close(fd);

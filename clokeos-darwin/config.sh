@@ -98,9 +98,9 @@ CLOKE_BOOT_ARGS=""
 
 # ClokeOS-Version, passend zur Oberfläche in clokeos.html (OS-Objekt).
 CLOKE_NAME="ClokeOS"
-CLOKE_VERSION="2.1"
+CLOKE_VERSION="2.2"
 CLOKE_CODENAME="Presidio"
-CLOKE_BUILD="2B1"
+CLOKE_BUILD="2C1"
 CLOKE_HOST="clokeos"
 # Zeitzone als POSIX-TZ-Regel: PureDarwin hat keine Zeitzonen-Datenbank, die Uhr der VM läuft in UTC.
 # Gilt für Shell und Desktop (Uhr in der Menüleiste). Mitteleuropa mit Sommerzeit:
@@ -130,6 +130,7 @@ BREW="$(brew --prefix 2>/dev/null || echo /opt/homebrew)"
 DEBUGFS="$BREW/opt/e2fsprogs/sbin/debugfs"
 E2FSCK="$BREW/opt/e2fsprogs/sbin/e2fsck"
 TUNE2FS="$BREW/opt/e2fsprogs/sbin/tune2fs"
+MKE2FS="$BREW/opt/e2fsprogs/sbin/mke2fs"
 if [ "$CLOKE_ARCH" = arm64 ]; then
   QEMU="$BREW/bin/qemu-system-aarch64"
   FW_CODE="$BREW/share/qemu/edk2-aarch64-code.fd"

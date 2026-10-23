@@ -1,0 +1,12 @@
+#!/bin/sh
+# Entfernte Anmeldung (SSH) wie bei macOS: Systemeinstellungen > Sharing schaltet sie ein und aus.
+# Der Schalter steht in /etc/clokeos-remote-login (on oder off, ohne Datei: on). CloakServer startet
+# den Dienst danach mit "launchctl stop org.puredarwin.sshd" neu, launchd (KeepAlive) ruft dieses
+# Skript wieder auf. Aus heißt: schlafen statt sshd, damit launchd den Dienst nicht ständig neu startet.
+# Grundlage ist PureDarwins /usr/libexec/pd-sshd.
+/bin/mkdir -p /var/run /var/empty
+if [ "$(cat /etc/clokeos-remote-login 2>/dev/null)" = off ]; then
+  exec /bin/sleep 2147483647
+fi
+test -f /etc/ssh/ssh_host_ed25519_key || /bin/ssh-keygen -A
+exec /sbin/sshd -D -e

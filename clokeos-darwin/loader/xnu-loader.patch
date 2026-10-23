@@ -1,6 +1,6 @@
 diff -ruN a/include/boot.h b/include/boot.h
 --- a/include/boot.h	2026-08-17 22:51:23
-+++ b/include/boot.h	2026-10-22 22:09:21
++++ b/include/boot.h	2026-10-23 08:52:31
 @@ -226,6 +226,8 @@
  
  EFI_STATUS boot_build_args(AppContext *ctx, const CHAR8 *cmdline, MachoLoadResult *load_result, BootArgsState *state);
@@ -10,9 +10,28 @@ diff -ruN a/include/boot.h b/include/boot.h
  /* Result of probing the firmware's GOP, in the widest form either boot_args
   * flavour needs. found == FALSE means "no display", which is not an error. */
  typedef struct boot_video_info {
+diff -ruN a/include/common.h b/include/common.h
+--- a/include/common.h	2026-08-17 22:51:23
++++ b/include/common.h	2026-10-23 10:02:11
+@@ -32,6 +32,15 @@
+  * this keeps the boot-info block (and therefore topOfKernelData) aligned too. */
+ #define XNU_BOOTINFO_ALIGN      0x4000ULL
+ 
++/* ClokeOS: RAMDisk for the USB installer (main.c clokeos_load_ramdisk). It
++ * lives in [0, physfree) like the kernel; the runtime-services window follows
++ * it, and both must end below the bootstrap page tables' edge. Room left for
++ * the runtime window when placing the image: the runtime regions of the
++ * memory map plus this margin. */
++#define CLOKEOS_RAMDISK_BASE        0x3400000ULL
++#define CLOKEOS_RAMDISK_LIMIT       0x3E800000ULL
++#define CLOKEOS_RAMDISK_RT_RESERVE  0x800000ULL
++
+ /* Size of one L2 block entry in the kernel's bootstrap page tables, which is
+  * determined by the page granule XNU was built for: 32MB with 16KB pages,
+  * 2MB with 4KB pages. */
 diff -ruN a/include/console.h b/include/console.h
 --- a/include/console.h	2026-08-17 22:51:23
-+++ b/include/console.h	2026-10-22 22:09:21
++++ b/include/console.h	2026-10-23 08:52:31
 @@ -6,4 +6,8 @@
  VOID log_info(CONST CHAR16 *fmt, ...);
  VOID log_error(CONST CHAR16 *fmt, ...);
@@ -26,7 +45,7 @@ diff -ruN a/include/console.h b/include/console.h
 +#endif
 diff -ruN a/include/jump.h b/include/jump.h
 --- a/include/jump.h	2026-08-17 22:51:23
-+++ b/include/jump.h	2026-10-22 22:09:21
++++ b/include/jump.h	2026-10-23 08:52:31
 @@ -3,16 +3,25 @@
  
  #include "common.h"
@@ -59,7 +78,7 @@ diff -ruN a/include/jump.h b/include/jump.h
 +#endif
 diff -ruN a/src/boot.c b/src/boot.c
 --- a/src/boot.c	2026-08-17 22:51:23
-+++ b/src/boot.c	2026-10-22 22:09:21
++++ b/src/boot.c	2026-10-23 09:03:27
 @@ -250,7 +250,7 @@
    return EFI_SUCCESS;
  }
@@ -69,11 +88,10 @@ diff -ruN a/src/boot.c b/src/boot.c
    if (!cmdline || !flag)
      return FALSE;
  
-@@ -613,6 +613,19 @@
-   status = boot_probe_video(ctx, args->CommandLine, &vi);
+@@ -614,6 +614,19 @@
    if (EFI_ERROR(status) || !vi.found)
      return status;
-+
+ 
 +  /* ClokeOS: without -v the boot logo stays on screen until a window server
 +   * draws over it, and the kernel still gets the framebuffer (graphics mode)
 +   * for IOGOPFramebuffer, /dev/fb0 and Xorg. But PureDarwin's kernel paints
@@ -86,12 +104,28 @@ diff -ruN a/src/boot.c b/src/boot.c
 +    vi.depth = 24;
 +    log_info(L"boot_fill_video: no -v, framebuffer handed over as depth 24\r\n");
 +  }
- 
++
    args->Video.v_display  = (UINT32)vi.display;
    args->Video.v_rowBytes = (UINT32)vi.row_bytes;
+   args->Video.v_width    = (UINT32)vi.width;
+@@ -853,6 +866,14 @@
+        */
+       UINT64 kaddr    = 0x100000ULL + ctx->kslide;
+       UINT64 va_base  = XNU_RT_VA_BASE;
++      /* ClokeOS: with a RAMDisk the runtime window starts behind it (main.c
++       * clokeos_load_ramdisk), so physfree covers both */
++      if (ctx->ramdisk_size != 0) {
++        UINT64 rd_end = ((UINT64)ctx->ramdisk_phys + ctx->ramdisk_size + 0x1FFFFFULL) & ~0x1FFFFFULL;
++        if (rd_end > va_base)
++          va_base = rd_end;
++        serial_trace((CONST CHAR8 *)"SVAM ramdisk end", rd_end);
++      }
+ 
+       UINT64 va_cursor   = va_base;
+       UINT32 rmin_virt_pg = 0xFFFFFFFFU;
 diff -ruN a/src/console.c b/src/console.c
 --- a/src/console.c	2026-08-17 22:51:23
-+++ b/src/console.c	2026-10-22 22:09:21
++++ b/src/console.c	2026-10-23 08:52:31
 @@ -2,15 +2,21 @@
  #include "serial.h"
  #include <stdarg.h>
@@ -132,9 +166,44 @@ diff -ruN a/src/console.c b/src/console.c
 +  log_emit(TRUE, fmt, args);
    va_end(args);
  }
+diff -ruN a/src/devtree.c b/src/devtree.c
+--- a/src/devtree.c	2026-08-17 22:51:23
++++ b/src/devtree.c	2026-10-23 08:52:59
+@@ -1116,18 +1116,19 @@
+   }
+ #endif
+ 
+-  //if (ctx->ramdisk_size != 0) {
+-  //  if (memory_map == NULL) {
+-  //    memory_map = dt_create_node(ctx);
+-  //    dt_prop_str(ctx, memory_map, "name", "memory-map");
+-  //  }
+-  //  MemoryMapFileInfo ramdisk_info;
+-  //  ramdisk_info.paddr = (UINT64)ctx->ramdisk_phys;
+-  //  ramdisk_info.length = ctx->ramdisk_size;
+-  //  dt_prop(ctx, memory_map, "RAMDisk", &ramdisk_info, sizeof(ramdisk_info));
+-  //  log_info(L"DT: RAMDisk at 0x%lx size=0x%lx\r\n",
+-  //           (UINT64)ctx->ramdisk_phys, ctx->ramdisk_size);
+-  //}
++  /* ClokeOS: enabled for the USB installer (clokeos_load_ramdisk in main.c) */
++  if (ctx->ramdisk_size != 0) {
++    if (memory_map == NULL) {
++      memory_map = dt_create_node(ctx);
++      dt_prop_str(ctx, memory_map, "name", "memory-map");
++    }
++    MemoryMapFileInfo ramdisk_info;
++    ramdisk_info.paddr = (UINT64)ctx->ramdisk_phys;
++    ramdisk_info.length = ctx->ramdisk_size;
++    dt_prop(ctx, memory_map, "RAMDisk", &ramdisk_info, sizeof(ramdisk_info));
++    log_info(L"DT: RAMDisk at 0x%lx size=0x%lx\r\n",
++             (UINT64)ctx->ramdisk_phys, ctx->ramdisk_size);
++  }
+ 
+   if (memory_map != NULL)
+     dt_add_child(ctx, chosen, memory_map);
 diff -ruN a/src/jump.S b/src/jump.S
 --- a/src/jump.S	2026-08-17 22:51:23
-+++ b/src/jump.S	2026-10-22 22:09:21
++++ b/src/jump.S	2026-10-23 08:52:31
 @@ -90,7 +90,9 @@
  .text
  .code64
@@ -167,7 +236,7 @@ diff -ruN a/src/jump.S b/src/jump.S
 \ No newline at end of file
 diff -ruN a/src/main.c b/src/main.c
 --- a/src/main.c	2026-08-17 22:51:23
-+++ b/src/main.c	2026-10-22 22:09:22
++++ b/src/main.c	2026-10-23 12:59:49
 @@ -6,6 +6,7 @@
  #include "macho.h"
  #include "jump.h"
@@ -176,7 +245,16 @@ diff -ruN a/src/main.c b/src/main.c
  
  static VOID   *g_jump_entry;
  static UINT64  g_jump_args;
-@@ -51,6 +52,120 @@
+@@ -26,7 +27,7 @@
+ 
+ static EFI_STATUS append_ramdisk_boot_arg(
+     AppContext *ctx, const CHAR8 **cmdline, BOOLEAN *owned) {
+-  const CHAR8 suffix[] = " ";
++  const CHAR8 suffix[] = " rd=md0";
+   UINTN len = 0;
+   CHAR8 *copy = NULL;
+ 
+@@ -51,6 +52,267 @@
    return EFI_SUCCESS;
  }
  
@@ -234,6 +312,11 @@ diff -ruN a/src/main.c b/src/main.c
 +  }
 +  UINTN len = file.size;
 +  CHAR8 *bytes = (CHAR8 *)file.data;
++  if (bytes[0] == '#') { /* the installer had no recovery to put on this disk */
++    log_info(L"key R: this disk has no recovery partition\r\n");
++    file_free(ctx, &file);
++    return EFI_SUCCESS;
++  }
 +  while (len > 0 && (bytes[len - 1] == '\n' || bytes[len - 1] == '\r' || bytes[len - 1] == ' ' || bytes[len - 1] == '\t'))
 +    len--;
 +  CHAR8 *copy = NULL;
@@ -294,10 +377,152 @@ diff -ruN a/src/main.c b/src/main.c
 +  return EFI_SUCCESS;
 +}
 +
++/*
++ * ClokeOS: RAMDisk from the boot volume (\ramdisk.img, an ext4 root) for the
++ * USB installer. The kernel has no USB mass storage driver, so it cannot
++ * mount a root on the stick; the firmware can read it, though.
++ *
++ * IOFindBSDRoot reaches the RAMDisk through ml_static_ptovirt, which only
++ * works for [0, physfree): the range XNU's bootstrap page tables map and
++ * never hands out as free memory. physfree = kaddr + ksize, and boot.c grows
++ * ksize over the runtime-services window anyway. So the image goes to a fixed
++ * low address right above the boot-info block (loader data is fine there),
++ * boot.c starts the runtime window behind it, and everything has to end below
++ * the edge of the bootstrap page tables (CLOKEOS_RAMDISK_LIMIT, NKPT). That
++ * caps the image at roughly 900 MB.
++ *
++ * The device tree gets /chosen/memory-map/RAMDisk and the boot-args rd=md0;
++ * IOFindBSDRoot then mounts md0 as the root.
++ */
++/* Largest free stretch found and size needed, for the message when nothing fits */
++static UINT64 g_rd_largest, g_rd_needed;
++
++/* The lowest free stretch of the firmware's memory map that starts above the
++ * boot-info block and ends early enough to leave room for the runtime window
++ * below the limit. Every firmware lays out low memory differently. */
++static EFI_STATUS clokeos_place_ramdisk(AppContext *ctx, UINTN pages, EFI_PHYSICAL_ADDRESS *out) {
++  UINT64 bytes = (UINT64)pages << EFI_PAGE_SHIFT;
++  EFI_STATUS status = EFI_OUT_OF_RESOURCES;
++  UINTN map_size = 0, key = 0, desc_size = 0;
++  UINT32 desc_ver = 0;
++  UINT8 *map = NULL;
++  uefi_call_wrapper(ctx->bs->GetMemoryMap, 5, &map_size, NULL, &key, &desc_size, &desc_ver);
++  map_size += 16 * desc_size;
++  if (EFI_ERROR(app_alloc_pool(ctx, map_size, (VOID **)&map)))
++    return status;
++  if (!EFI_ERROR(uefi_call_wrapper(ctx->bs->GetMemoryMap, 5, &map_size, (EFI_MEMORY_DESCRIPTOR *)map, &key,
++                                   &desc_size, &desc_ver))) {
++    /* the runtime window behind the image needs room for every runtime region */
++    UINT64 rt_bytes = 0;
++    for (UINTN off = 0; off + desc_size <= map_size; off += desc_size) {
++      EFI_MEMORY_DESCRIPTOR *d = (EFI_MEMORY_DESCRIPTOR *)(map + off);
++      if (d->Attribute & EFI_MEMORY_RUNTIME)
++        rt_bytes += (UINT64)d->NumberOfPages << EFI_PAGE_SHIFT;
++    }
++    UINT64 top = CLOKEOS_RAMDISK_LIMIT - ((rt_bytes + CLOKEOS_RAMDISK_RT_RESERVE + 0x1FFFFFULL) & ~0x1FFFFFULL);
++    log_info(L"ramdisk: runtime regions 0x%lx bytes, image must end below 0x%lx\r\n", rt_bytes, top);
++    UINT64 best = 0;
++    for (UINTN off = 0; off + desc_size <= map_size; off += desc_size) {
++      EFI_MEMORY_DESCRIPTOR *d = (EFI_MEMORY_DESCRIPTOR *)(map + off);
++      if (d->Type != EfiConventionalMemory)
++        continue;
++      UINT64 start = d->PhysicalStart, end = start + ((UINT64)d->NumberOfPages << EFI_PAGE_SHIFT);
++      if (start < CLOKEOS_RAMDISK_BASE)
++        start = CLOKEOS_RAMDISK_BASE;
++      start = (start + EFI_PAGE_SIZE - 1) & ~(UINT64)(EFI_PAGE_SIZE - 1);
++      if (end > top)
++        end = top;
++      if (end > start && end - start > g_rd_largest)
++        g_rd_largest = end - start;
++      if (end > start && end - start >= bytes && (best == 0 || start < best))
++        best = start;
++      if (d->PhysicalStart < 0x40000000ULL && d->NumberOfPages >= 256)
++        log_info(L"ramdisk: free 0x%lx-0x%lx\r\n", d->PhysicalStart,
++                 d->PhysicalStart + ((UINT64)d->NumberOfPages << EFI_PAGE_SHIFT));
++    }
++    if (best != 0) {
++      *out = best;
++      status = uefi_call_wrapper(ctx->bs->AllocatePages, 4, AllocateAddress, EfiLoaderData, pages, out);
++    }
++  }
++  app_free_pool(ctx, map);
++  return status;
++}
++
++/* One image: EFI_NOT_FOUND without the file, EFI_OUT_OF_RESOURCES when it does
++ * not fit, EFI_SUCCESS when loaded (ctx->ramdisk_*) */
++static EFI_STATUS clokeos_try_ramdisk(AppContext *ctx, EFI_FILE_PROTOCOL *root, CONST CHAR16 *name) {
++  EFI_FILE_PROTOCOL *file = NULL;
++  UINTN size = 0;
++  EFI_STATUS status = file_open(root, name, EFI_FILE_MODE_READ, 0, &file);
++  if (EFI_ERROR(status))
++    return EFI_NOT_FOUND;
++  status = file_get_size(file, &size);
++  if (EFI_ERROR(status) || size == 0) {
++    uefi_call_wrapper(file->Close, 1, file);
++    return EFI_NOT_FOUND;
++  }
++  UINTN pages = (size + EFI_PAGE_SIZE - 1) >> EFI_PAGE_SHIFT;
++  if (g_rd_needed == 0 || (UINT64)size < g_rd_needed)
++    g_rd_needed = size;
++  EFI_PHYSICAL_ADDRESS addr = 0;
++  status = clokeos_place_ramdisk(ctx, pages, &addr);
++  if (EFI_ERROR(status)) {
++    log_info(L"%s: no room for %lu MiB below 0x%lx\r\n", name, (UINT64)(size >> 20), (UINT64)CLOKEOS_RAMDISK_LIMIT);
++    uefi_call_wrapper(file->Close, 1, file);
++    return EFI_OUT_OF_RESOURCES;
++  }
++  log_info(L"%s: reading %lu MiB to 0x%lx\r\n", name, (UINT64)(size >> 20), (UINT64)addr);
++  UINT8 *dst = (UINT8 *)(UINTN)addr;
++  UINTN done_bytes = 0, step = 16u << 20;
++  while (done_bytes < size) {
++    UINTN n = size - done_bytes < step ? size - done_bytes : step;
++    status = uefi_call_wrapper(file->Read, 3, file, &n, dst + done_bytes);
++    if (EFI_ERROR(status) || n == 0)
++      break;
++    done_bytes += n;
++    if ((done_bytes & ((256u << 20) - 1)) < step)
++      log_info(L"%s: %lu MiB\r\n", name, (UINT64)(done_bytes >> 20));
++  }
++  uefi_call_wrapper(file->Close, 1, file);
++  if (done_bytes != size) {
++    log_error(L"%s: read %lu of %lu bytes (%r)\r\n", name, (UINT64)done_bytes, (UINT64)size, status);
++    uefi_call_wrapper(ctx->bs->FreePages, 2, addr, pages);
++    return EFI_DEVICE_ERROR;
++  }
++  ctx->ramdisk_phys = addr;
++  ctx->ramdisk_size = (UINT64)pages << EFI_PAGE_SHIFT;
++  log_info(L"%s: RAMDisk phys=0x%lx size=0x%lx\r\n", name, (UINT64)addr, ctx->ramdisk_size);
++  return EFI_SUCCESS;
++}
++
++/* \ramdisk.img brings the system along (install without internet); when it
++ * does not fit (computers with 1 GB RAM), \ramdisk-lite.img has only the
++ * recovery, which then downloads the system. Neither file: no RAMDisk. */
++static EFI_STATUS clokeos_load_ramdisk(AppContext *ctx) {
++  EFI_FILE_PROTOCOL *root = NULL;
++  if (EFI_ERROR(app_open_self_volume(ctx, &root)))
++    return EFI_SUCCESS;
++  static CONST CHAR16 *const names[] = {L"\\ramdisk.img", L"\\ramdisk-lite.img"};
++  BOOLEAN any = FALSE;
++  EFI_STATUS status = EFI_NOT_FOUND;
++  for (UINTN i = 0; i < sizeof names / sizeof names[0]; i++) {
++    status = clokeos_try_ramdisk(ctx, root, names[i]);
++    if (status != EFI_NOT_FOUND)
++      any = TRUE;
++    if (!EFI_ERROR(status))
++      break;
++  }
++  uefi_call_wrapper(root->Close, 1, root);
++  if (!any)
++    return EFI_SUCCESS; /* the usual case: no RAMDisk */
++  return EFI_ERROR(status) ? EFI_OUT_OF_RESOURCES : EFI_SUCCESS;
++}
++
  static EFI_STATUS load_ramdisk(AppContext *ctx) {
    EFI_FILE_PROTOCOL *root = NULL;
    FileBuffer image = {0};
-@@ -96,7 +211,7 @@
+@@ -96,7 +358,7 @@
  }
  
  #if defined(__x86_64__)
@@ -306,7 +531,7 @@ diff -ruN a/src/main.c b/src/main.c
    UINT64 *src64 = (UINT64 *)(UINTN)g_copy_src;
    UINT64 *dst64 = (UINT64 *)(UINTN)g_copy_dst;
    UINTN   words = (UINTN)((g_copy_bytes + 7) >> 3);
-@@ -246,6 +361,61 @@
+@@ -246,6 +508,61 @@
    if (EFI_ERROR(status))
      return status;
  
@@ -368,10 +593,13 @@ diff -ruN a/src/main.c b/src/main.c
    log_info(L"XNU EFI loader start\r\n");
  
    {
-@@ -440,6 +610,17 @@
+@@ -440,10 +757,45 @@
  
    log_info(L"entry vm=0x%lx -> host=0x%lx\r\n", entry_vmaddr, (UINT64)(UINTN)host_entry);
  
+-  //status = load_ramdisk(&ctx);
+-  //if (EFI_ERROR(status))
+-  //  return status;
 +  /* ClokeOS: look for V once more, now that reading and loading the kernel
 +   * is done. From here to boot_build_args nothing takes long. Still before
 +   * the boot-info guard is released, so the longer cmdline cannot be
@@ -382,11 +610,39 @@ diff -ruN a/src/main.c b/src/main.c
 +  status = verbose_boot_on_key(&ctx, &cmdline, &cmdline_owned);
 +  if (EFI_ERROR(status))
 +    log_error(L"key V: no verbose boot: %r\r\n", status);
+ 
++  /* ClokeOS: RAMDisk for the USB installer, and rd=md0 for it, still before the
++   * boot-info guard is released (see above). */
++  status = clokeos_load_ramdisk(&ctx);
++  if (EFI_ERROR(status)) {
++    /* Without its RAMDisk the USB installer cannot boot; the kernel would only
++     * panic out of sight. Say so on the screen and go back to the firmware. */
++    console_set_quiet(FALSE);
++    log_error(L"\r\nClokeOS: the installer did not fit into this computer's memory below 1 GB.\r\n"
++              L"It needs %lu MB in one piece; the largest free piece is %lu MB.\r\n"
++              L"Please report this, with a photo of this screen. Press any key.\r\n",
++              g_rd_needed >> 20, g_rd_largest >> 20);
++    EFI_INPUT_KEY k;
++    UINTN idx;
++    if (ctx.st->ConIn) {
++      uefi_call_wrapper(ctx.bs->WaitForEvent, 3, 1, &ctx.st->ConIn->WaitForKey, &idx);
++      uefi_call_wrapper(ctx.st->ConIn->ReadKeyStroke, 2, ctx.st->ConIn, &k);
++    }
++    file_free(&ctx, &kernel);
++    return status;
++  }
++  if (ctx.ramdisk_size != 0) {
++    status = append_ramdisk_boot_arg(&ctx, &cmdline, &cmdline_owned);
++    if (EFI_ERROR(status))
++      log_error(L"failed to append rd=md0: %r\r\n", status);
++    else
++      log_info(L"RAMDisk boot, using \"%a\"\r\n", cmdline);
++  }
 +
-   //status = load_ramdisk(&ctx);
-   //if (EFI_ERROR(status))
-   //  return status;
-@@ -456,42 +637,6 @@
+   BootArgsState boot_state = {0};
+ 
+   ReleaseBootInfoGuard(&ctx, &bootinfo_guard_base, &bootinfo_guard_pages);
+@@ -456,42 +808,6 @@
    if (EFI_ERROR(status)) {
      log_error(L"failed to collect memory map: %r\r\n", status);
      return status;

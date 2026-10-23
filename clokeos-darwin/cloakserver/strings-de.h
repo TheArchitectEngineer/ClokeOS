@@ -232,3 +232,24 @@
 {"Start Using ClokeOS", "ClokeOS verwenden"},
 {"Welcome.txt", "Willkommen.txt"},
 {"Welcome to ClokeOS %s, %s!\n\nThis is your home folder. Documents, Downloads, Pictures and Music are\nhere, the Trash is in the Dock.\n\n• In Terminal: clokefetch, uname -a, sw_vers\n• System Settings: appearance, Dock, language\n• Restart in Recovery in the ClokeOS menu reinstalls ClokeOS\n", "Willkommen bei ClokeOS %s, %s!\n\nDas ist dein Benutzerordner. Hier liegen Documents (Dokumente), Downloads,\nPictures (Bilder) und Music (Musik), der Papierkorb ist im Dock.\n\n• Im Terminal: clokefetch, uname -a, sw_vers\n• Systemeinstellungen: Erscheinungsbild, Dock, Sprache\n• Neustart in Wiederherstellung im ClokeOS-Menü installiert ClokeOS neu\n"},
+
+/* Freigaben (cloakserver.c) */
+{"Sharing", "Freigaben"},
+{"Remote Login", "Entfernte Anmeldung"},
+{"On", "Ein"},
+{"Off", "Aus"},
+{"Lets users with a password log in to this computer over the network with SSH (port 22), for example from Terminal on a Mac. Accounts without a password cannot log in.", "Benutzer mit Passwort können sich über das Netzwerk per SSH (Port 22) an diesem Computer anmelden, zum Beispiel aus dem Terminal eines Macs. Accounts ohne Passwort können das nicht."},
+{"To log in from another computer:", "Anmelden von einem anderen Computer:"},
+{"No network connection. ClokeOS supports Realtek RTL8111/8168 and Intel 82545EM network cards and the virtual cards of QEMU.", "Keine Netzwerkverbindung. ClokeOS unterstützt Netzwerkkarten von Realtek (RTL8111/8168), Intel 82545EM und die virtuellen Karten von QEMU."},
+
+/* USB-Installationsmedium (recovery.c) */
+{"Source: this installer (no internet needed)", "Quelle: dieses Installationsmedium (ohne Internet)"},
+
+/* Installer ohne Wiederherstellung (installer.c) */
+{"No internet connection: ClokeOS is installed without a recovery partition", "Keine Internetverbindung: ClokeOS wird ohne Wiederherstellungspartition installiert"},
+{"This disk has no recovery partition.", "Diese Festplatte hat keine Wiederherstellungspartition."},
+
+/* USB-Stick ohne Internet (recovery.c) */
+{"Install ClokeOS from this installer on a disk. No internet connection is needed.", "Installiert ClokeOS von diesem Installationsmedium auf eine Festplatte. Internet ist dafür nicht nötig."},
+{"The installer copies ClokeOS to a disk; no internet connection is needed. Three partitions are created there: the startup volume, ClokeOS and a recovery, which you can use to reinstall ClokeOS later. The recovery comes from the internet if there is a connection.", "Das Installationsmedium kopiert ClokeOS auf eine Festplatte, Internet ist dafür nicht nötig. Dort entstehen drei Partitionen: das Startvolume, ClokeOS und eine Wiederherstellung, mit der sich ClokeOS später wieder installieren lässt. Die Wiederherstellung kommt aus dem Internet, wenn es eine Verbindung gibt."},
+{"%s of %s copied%s", "%s von %s kopiert%s"},

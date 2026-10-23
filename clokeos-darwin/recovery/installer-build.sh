@@ -26,7 +26,9 @@ done
 target=x86_64-apple-macos11.0
 [ "$CLOKE_ARCH" = arm64 ] && target=arm64-apple-macos11.0
 mkdir -p "$stage/usr/libexec"
-clang -target "$target" -isysroot "$sysroot" -DPLATFORM_MacOSX=1 -fno-stack-check -std=gnu11 -O2 -Wall -Wextra \
+# RELEASES_REPO: woher der USB-Stick die Wiederherstellung derselben Version nachlädt
+clang -target "$target" -isysroot "$sysroot" -DPLATFORM_MacOSX=1 -DRELEASES_REPO="\"$CLOKE_RELEASES_REPO\"" \
+  -fno-stack-check -std=gnu11 -O2 -Wall -Wextra \
   -Wno-nullability-completeness -I"$sysroot/include" -nostdlib -L"$sysroot/libs" \
   -Wl,-platform_version,macos,11.0,11.5 -Wl,-no_fixup_chains -Wl,-dead_strip \
   -o "$stage/usr/libexec/clokeos-installer" "$HERE/recovery/installer.c" -lcurl "$sysroot/libs/liblzma.a" -lSystem

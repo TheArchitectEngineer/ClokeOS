@@ -3417,6 +3417,25 @@ static void set_dock_pos(long pos) {
   save_prefs();
 }
 
+/* Entfernte Anmeldung (SSH), wie bei macOS unter Freigaben. sshd startet launchd über
+ * /usr/libexec/clokeos-sshd, das /etc/clokeos-remote-login liest; launchctl stop startet es neu. */
+#define REMOTE_LOGIN_FILE "/etc/clokeos-remote-login"
+static bool remote_login_on(void) {
+  char *s = read_file(REMOTE_LOGIN_FILE);
+  bool on = !s || strncmp(s, "off", 3);
+  free(s);
+  return on;
+}
+
+static void set_remote_login(bool on) {
+  FILE *f = fopen(REMOTE_LOGIN_FILE, "w");
+  if (f) {
+    fputs(on ? "on\n" : "off\n", f);
+    fclose(f);
+  }
+  run_wait("/bin/launchctl stop org.puredarwin.sshd >/dev/null 2>&1");
+}
+
 /* Sprache umstellen (Systemeinstellungen, Einrichtungsassistent): CloakServer wechselt sofort,
  * die Namen der Programme kommen neu aus ihren Paketen, neue Programme starten mit dem neuen LANG */
 static void set_language(const char *code) {
@@ -3693,11 +3712,11 @@ static void lp_key(XKeyEvent *e) {
 /* Erscheinungsbild (Hell, Dunkel, Automatisch), Schreibtisch & Dock (Lage, Größe), Programme   */
 /* (wie man installiert). Alles Übrige bleibt in den Xfce-Einstellungen.                        */
 
-enum { ST_SECTION, ST_THEME, ST_DOCKPOS, ST_DOCKSIZE, ST_XFCE, ST_OPENAPPS, ST_LANG };
+enum { ST_SECTION, ST_THEME, ST_DOCKPOS, ST_DOCKSIZE, ST_XFCE, ST_OPENAPPS, ST_LANG, ST_SSH };
 static struct { int x, y, w, h, act; long arg; } st_hit[24];
 static int nst_hit;
-static const char *const ST_NAMES[] = {"Appearance", "Desktop & Dock", "Applications", "Language & Region"};
-#define ST_N 4
+static const char *const ST_NAMES[] = {"Appearance", "Desktop & Dock", "Applications", "Language & Region", "Sharing"};
+#define ST_N 5
 static const int DOCK_SIZES[3] = {40, 50, 64};
 
 static void st_add(double x, double y, double w, double h, int act, long arg) {
@@ -3775,7 +3794,7 @@ static void paint_settings(Client *c, cairo_t *cr) {
   cairo_rectangle(cr, 196, 0, 1, h);
   set(cr, T->line);
   cairo_fill(cr);
-  static const RGBA ICO[ST_N] = {{.49, .36, 1, 1}, {.2, .55, .95, 1}, {.2, .72, .45, 1}, {.95, .55, .2, 1}};
+  static const RGBA ICO[ST_N] = {{.49, .36, 1, 1}, {.2, .55, .95, 1}, {.2, .72, .45, 1}, {.95, .55, .2, 1}, {.45, .47, .55, 1}};
   for (int i = 0; i < ST_N; i++) {
     double y = 16 + i * 32;
     if (i == sec) {
@@ -3859,6 +3878,42 @@ static void paint_settings(Client *c, cairo_t *cr) {
     text_block(cr, x0, 268, L("The region follows the language: English uses the US format with AM and PM, Deutsch the "
                               "German format with a 24-hour clock."),
                11.5, false, T->fg3, w - x0 - 24);
+  } else if (sec == 4) {
+    bool on = remote_login_on();
+    text(cr, x0, 66, L("Remote Login"), 12.5, true, T->fg, 0, 0);
+    button(cr, x0, 82, 90, L("On"), on);
+    st_add(x0, 82, 90, 28, ST_SSH, 1);
+    button(cr, x0 + 100, 82, 90, L("Off"), !on);
+    st_add(x0 + 100, 82, 90, 28, ST_SSH, 0);
+    int y = 128;
+    y += text_block(cr, x0, y,
+                    L("Lets users with a password log in to this computer over the network with SSH (port 22), for "
+                      "example from Terminal on a Mac. Accounts without a password cannot log in."),
+                    11.5, false, T->fg2, w - x0 - 24) + 18;
+    if (on) {
+      text(cr, x0, y + 8, L("To log in from another computer:"), 12.5, true, T->fg, 0, 0);
+      y += 26;
+      const char *user = session && session->uid ? session->name : "<account>";
+      struct ifaddrs *ifa = NULL;
+      bool any = false;
+      if (!getifaddrs(&ifa)) {
+        for (struct ifaddrs *i = ifa; i && y < h - 40; i = i->ifa_next) {
+          if (!i->ifa_addr || i->ifa_addr->sa_family != AF_INET || !strcmp(i->ifa_name, "lo0")) continue;
+          char ip[64], buf[160];
+          inet_ntop(AF_INET, &((struct sockaddr_in *)i->ifa_addr)->sin_addr, ip, sizeof ip);
+          snprintf(buf, sizeof buf, "ssh %s@%s", user, ip);
+          text(cr, x0, y + 8, buf, 12.5, false, ACCENT, w - x0 - 24, 0);
+          y += 22;
+          any = true;
+        }
+        freeifaddrs(ifa);
+      }
+      if (!any)
+        text_block(cr, x0, y,
+                   L("No network connection. ClokeOS supports Realtek RTL8111/8168 and Intel 82545EM network cards "
+                     "and the virtual cards of QEMU."),
+                   11.5, false, T->fg3, w - x0 - 24);
+    }
   }
 }
 
@@ -3874,6 +3929,7 @@ static void click_settings(Client *c, int x, int y) {
     case ST_XFCE: launch_ident("org.xfce.settings.manager"); break;
     case ST_OPENAPPS: spawn("exec thunar /Applications"); break;
     case ST_LANG: set_language(arg ? "de" : "en"); break;
+    case ST_SSH: set_remote_login(arg != 0); break;
     }
     draw_own(c);
     return;

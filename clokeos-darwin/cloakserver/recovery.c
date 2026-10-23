@@ -13,7 +13,10 @@
 #define INSTALLER "/usr/libexec/clokeos-installer"
 #define RECOVERY_MARK "/etc/clokeos-recovery"
 
-static char rec_releases[512] = "https://github.com/Karl-Lauterbach24/ClokeOS-Releases/releases/latest/download";
+#define REC_ONLINE "https://github.com/Karl-Lauterbach24/ClokeOS-Releases/releases/latest/download"
+static char rec_releases[512] = REC_ONLINE;
+/* Das USB-Installationsmedium (recovery/usb.sh) bringt die Abbilder mit: dann ohne Internet */
+#define REC_LOCAL_DIR "/Library/ClokeOS/Install"
 
 typedef struct {
   char name[16], label[64];
@@ -54,7 +57,15 @@ static void rec_init(void) {
     snprintf(rec_releases, sizeof rec_releases, "%s", v);
   }
   fclose(f);
+  struct utsname u;
+  char manifest[256];
+  if (!uname(&u)) {
+    snprintf(manifest, sizeof manifest, REC_LOCAL_DIR "/clokeos-%s.txt", u.machine);
+    if (!access(manifest, R_OK)) snprintf(rec_releases, sizeof rec_releases, "file://" REC_LOCAL_DIR);
+  }
 }
+
+static bool rec_offline(void) { return !strncmp(rec_releases, "file:", 5); }
 
 /* 8 589 934 592 -> "8.6 GB" (Deutsch "8,6 GB") */
 static void fmt_size(char *out, size_t n, unsigned long long b) {
@@ -239,7 +250,10 @@ static void rec_paint(Client *c, cairo_t *cr) {
       icon_at(cr, ROPT[i][2], 32, y + 12, 44);
       RGBA fg = sel ? (RGBA){1, 1, 1, 1} : T->fg, fg2 = sel ? (RGBA){1, 1, 1, .85} : T->fg2;
       text(cr, 92, y + 22, L(ROPT[i][0]), 13.5, true, fg, w - 120, 0);
-      para(cr, 92, y + 34, w - 130, L(ROPT[i][1]), 11.5, fg2, false);
+      const char *desc = i == 0 && rec_offline()
+                           ? L("Install ClokeOS from this installer on a disk. No internet connection is needed.")
+                           : L(ROPT[i][1]);
+      para(cr, 92, y + 34, w - 130, desc, 11.5, fg2, false);
     }
     break;
   }
@@ -248,12 +262,17 @@ static void rec_paint(Client *c, cairo_t *cr) {
     text(cr, w / 2.0, 134, L("Install ClokeOS"), 18, true, T->fg, 0, 1);
     int y = 160;
     y += para(cr, 60, y, w - 120,
-              L("Recovery downloads the current version of ClokeOS from the internet and installs it on a disk. "
-                "Three partitions are created there: the startup volume, ClokeOS and a recovery like this one, "
-                "which you can use to reinstall ClokeOS later."),
+              rec_offline()
+                ? L("The installer copies ClokeOS to a disk; no internet connection is needed. Three partitions are "
+                    "created there: the startup volume, ClokeOS and a recovery, which you can use to reinstall "
+                    "ClokeOS later. The recovery comes from the internet if there is a connection.")
+                : L("Recovery downloads the current version of ClokeOS from the internet and installs it on a disk. "
+                    "Three partitions are created there: the startup volume, ClokeOS and a recovery like this one, "
+                    "which you can use to reinstall ClokeOS later."),
               12.5, T->fg, true) + 14;
     para(cr, 60, y, w - 120, L("All data on the selected disk will be erased."), 12.5, T->fg, true);
-    snprintf(buf, sizeof buf, L("Source: %s"), rec_releases);
+    if (rec_offline()) snprintf(buf, sizeof buf, "%s", L("Source: this installer (no internet needed)"));
+    else snprintf(buf, sizeof buf, L("Source: %s"), rec_releases);
     para(cr, 40, c->h - 86, w - 80, buf, 10.5, T->fg3, true);
     break;
   }
@@ -323,7 +342,7 @@ static void rec_paint(Client *c, cairo_t *cr) {
         else if (m == 1) snprintf(eta, sizeof eta, "%s", L(" · About 1 minute remaining"));
         else snprintf(eta, sizeof eta, L(" · About %d minutes remaining"), m);
       }
-      snprintf(buf, sizeof buf, L("%s of %s downloaded%s"), a, z, eta);
+      snprintf(buf, sizeof buf, rec_offline() ? L("%s of %s copied%s") : L("%s of %s downloaded%s"), a, z, eta);
       text(cr, w / 2.0, 252, buf, 11.5, false, T->fg3, 0, 1);
     }
     break;
@@ -449,7 +468,7 @@ static void rec_open_option(int i) {
     break;
   case 1: { /* Seite des Release-Repos: die Adresse ohne /releases/latest/download */
     char url[600], cmd[700];
-    snprintf(url, sizeof url, "%s", rec_releases);
+    snprintf(url, sizeof url, "%s", rec_offline() ? REC_ONLINE : rec_releases);
     char *r = strstr(url, "/releases");
     if (r) *r = 0;
     snprintf(cmd, sizeof cmd, "netsurf-gtk3 '%s#readme'", url);

@@ -7,6 +7,12 @@
 #   ./run.sh --snapshot        Änderungen am Image beim Beenden verwerfen
 #   ./run.sh --disk <datei>    zweite Festplatte, z. B. als Ziel für den Installer (recovery/);
 #                              fehlt die Datei, legt run.sh sie leer mit 16 GB an (wächst erst beim Schreiben)
+#   ./run.sh --usb <datei>     USB-Stick (usb-storage am xHCI) und davon starten, wie das
+#                              USB-Installationsmedium auf echter Hardware (recovery/usb.sh); ohne
+#                              --image dann ohne die übliche Systemplatte. CLOKEOS_VM_MEMORY=1024
+#                              wie ein PC mit 1 GB RAM (der Stick startet dann die schlanke RAM-Disk).
+#                              CLOKEOS_VM_DISK2=nvme oder ahci hängt --disk als NVMe- oder SATA-SSD
+#                              an statt virtio
 #   ./run.sh --tcg             nur arm64: emulieren statt Apples Hypervisor (HVF) zu nutzen
 #
 # Architektur wählen mit CLOKEOS_ARCH=arm64 (Standard: x86_64). Auf einem Mac mit Apple-Chip läuft
@@ -22,15 +28,18 @@ image="$CLOKE_IMG"
 headless=0
 snapshot=""
 disk2=""
+usb=""
+image_set=0
 # HVF gibt es nur für arm64-Gäste auf einem Mac mit Apple-Chip.
 accel=tcg
 [ "$CLOKE_ARCH" = arm64 ] && [ "$(uname -m)" = arm64 ] && [ "$(sysctl -n kern.hv_support 2>/dev/null)" = 1 ] && accel=hvf
 while [ $# -gt 0 ]; do
   case "$1" in
     --headless) headless=1 ;;
-    --image) image="$2"; shift ;;
+    --image) image="$2"; image_set=1; shift ;;
     --snapshot) snapshot=",snapshot=on" ;;
     --disk) disk2="$2"; shift ;;
+    --usb) usb="$2"; shift ;;
     --tcg) accel=tcg ;;
     --hvf) accel=hvf ;;
     --) shift; break ;;
@@ -39,11 +48,16 @@ while [ $# -gt 0 ]; do
   shift
 done
 
-if [ ! -f "$image" ]; then
+[ -n "$usb" ] && [ "$image_set" = 0 ] && image=""
+if [ -n "$image" ] && [ ! -f "$image" ]; then
   echo "Kein Image: $image – zuerst ./brand.sh ausführen." >&2
   exit 1
 fi
-[ -w "$image" ] || snapshot=",snapshot=on"
+[ -z "$image" ] || [ -w "$image" ] || snapshot=",snapshot=on"
+
+# CLOKEOS_VM_SSH=2222: Port 2222 des Macs auf SSH (22) in der VM, z. B. ssh -p 2222 <account>@localhost
+hostfwd=""
+[ -n "${CLOKEOS_VM_SSH:-}" ] && hostfwd=",hostfwd=tcp:127.0.0.1:${CLOKEOS_VM_SSH}-:22"
 
 mkdir -p "$VM_STATE"
 if [ ! -f "$VM_STATE/efi-vars.fd" ]; then
@@ -80,11 +94,9 @@ if [ "$CLOKE_ARCH" = arm64 ]; then
     -cpu "$cpu"
     -smp "${CLOKEOS_VM_SMP:-1}"
     "${common[@]}"
-    -drive if=none,id=system,format=raw,file="$image$snapshot"
-    -device virtio-blk-pci,drive=system,bootindex=1
     -device "$gpu"
     -device usb-mouse,bus=xhci.0
-    -nic user,model=virtio-net-pci
+    -nic "user,model=virtio-net-pci$hostfwd"
   )
 else
   # Wie PureDarwins Runner (nix run .#vm), nur ohne KVM. Platte und Netz sind virtio: Das kostet
@@ -105,19 +117,27 @@ else
     -device usb-mouse,bus=xhci.0
   )
   if [ "${CLOKEOS_VM_DEVICES:-virtio}" = classic ]; then
-    args+=(-drive id=root,format=raw,file="$image$snapshot" -nic user,model=e1000-82545em)
+    args+=(-nic "user,model=e1000-82545em$hostfwd")
+    [ -n "$image" ] && args+=(-drive id=root,format=raw,file="$image$snapshot") && image_classic=1
   else
-    args+=(
-      -drive if=none,id=system,format=raw,file="$image$snapshot"
-      -device virtio-blk-pci,drive=system,bootindex=1
-      -nic user,model=virtio-net-pci
-    )
+    args+=(-nic "user,model=virtio-net-pci$hostfwd")
   fi
 fi
 
+if [ -n "$image" ] && [ -z "${image_classic:-}" ]; then
+  args+=(-drive if=none,id=system,format=raw,file="$image$snapshot" -device virtio-blk-pci,drive=system,bootindex=1)
+fi
+if [ -n "$usb" ]; then
+  args+=(-drive if=none,id=usb,format=raw,file="$usb" -device usb-storage,bus=xhci.0,drive=usb,bootindex=0)
+fi
 if [ -n "$disk2" ]; then
   [ -f "$disk2" ] || truncate -s 16g "$disk2"
-  args+=(-drive if=none,id=disk2,format=raw,file="$disk2" -device virtio-blk-pci,drive=disk2)
+  # CLOKEOS_VM_DISK2=nvme oder ahci: als NVMe- oder SATA-SSD wie in einem echten PC (Standard virtio)
+  case "${CLOKEOS_VM_DISK2:-virtio}" in
+    nvme) args+=(-drive if=none,id=disk2,format=raw,file="$disk2" -device nvme,serial=clokeos2,drive=disk2) ;;
+    ahci) args+=(-drive if=none,id=disk2,format=raw,file="$disk2" -device ahci,id=ahci2 -device ide-hd,bus=ahci2.0,drive=disk2) ;;
+    *) args+=(-drive if=none,id=disk2,format=raw,file="$disk2" -device virtio-blk-pci,drive=disk2) ;;
+  esac
 fi
 
 : > "$VM_STATE/serial.log"

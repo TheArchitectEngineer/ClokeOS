@@ -11,7 +11,10 @@
 #   clokeos-<arch>-esp.img.xz         EFI-Partition
 #   clokeos-<arch>-system.ext4.xz     System
 #   clokeos-<arch>-recovery.ext4.xz   Wiederherstellung
-#   clokeos-<arch>-installer.img.xz   startfähiges Installationsmedium (zum Herunterladen für Nutzer)
+#   clokeos-<arch>-installer.img.xz   startfähiges Installationsmedium für VMs (QEMU)
+#   clokeos-x86_64-usb.img.xz         USB-Stick für echte PCs: startet als RAM-Disk und installiert
+#                                     ohne Internet auf eine SATA- oder NVMe-SSD (recovery/usb.sh)
+#   clokeos-x86_64-disk.img.xz        fertig installierte SSD zum Draufschreiben (recovery/disk.sh)
 #   clokeos-<version>-source.tar.gz   Quellcode dieses Commits und der mitgebauten Fremdquellen (GPL)
 #   SHA256SUMS, RELEASE-NOTES.md
 #
@@ -75,6 +78,17 @@ for arch in "${arches[@]}"; do
     [ "$key" = installer ] || echo "$key=$name $raw $packed $sum" >> "$man"
     rows+="| \`$name\` | $arch | $(( packed / 1048576 )) MB | $(( raw / 1048576 )) MB |"$'\n'
   done
+  if [ "$arch" = x86_64 ]; then # USB-Stick (mit den eben gepackten Abbildern) und SSD-Abbild für echte PCs
+    CLOKEOS_ARCH="$arch" "$here/recovery/usb.sh" "$dist" | tail -1
+    CLOKEOS_ARCH="$arch" "$here/recovery/disk.sh" | tail -1
+    for k in usb disk; do
+      name="clokeos-$arch-$k.img.xz"
+      echo "Packe $name"
+      xz -T0 -6 -c "$src/$k.img" > "$dist/$name"
+      rows+="| \`$name\` | $arch | $(( $(stat -f %z "$dist/$name") / 1048576 )) MB | $(( $(stat -f %z "$src/$k.img") / 1048576 )) MB |"$'\n'
+      [ "$k" = disk ] && rm -f "$src/$k.img" # gut 5 GB, gepackt reicht es
+    done
+  fi
 done
 
 # Quellcode: dieser Commit und die Fremdquellen, aus denen mitgebaut wurde
@@ -109,15 +123,36 @@ rm -rf "$srcdir"
 (cd "$dist" && shasum -a 256 -- *.xz *.tar.gz > SHA256SUMS)
 
 cat > "$dist/RELEASE-NOTES.md" <<EOF
-ClokeOS $CLOKE_VERSION „$CLOKE_CODENAME“ (Build $CLOKE_BUILD) mit dem Desktop CloakServer, zum Installieren aus dem Internet wie bei macOS.
+ClokeOS $CLOKE_VERSION „$CLOKE_CODENAME“ (Build $CLOKE_BUILD) mit dem Desktop CloakServer, zum Installieren wie bei macOS: vom USB-Stick auf einen PC oder aus dem Internet in einer VM.
 
-## Installieren
+## Auf einem PC installieren (x86_64, USB-Stick)
 
-1. \`clokeos-<arch>-installer.img.xz\` laden und entpacken (\`xz -dk\`): x86_64 für Intel- und AMD-Rechner, arm64 für Macs mit Apple-Chip (in einer VM).
-2. Davon starten, zum Beispiel in QEMU mit \`clokeos-darwin/run.sh\` aus dem Quellcode: \`CLOKEOS_ARCH=arm64 CLOKEOS_FLAVOR=desktop ./run.sh --image clokeos-arm64-installer.img --disk platte.img\`.
-3. In der Wiederherstellung „ClokeOS installieren“ wählen. Sie lädt das aktuelle System von hier, legt auf der Festplatte Startvolume, ClokeOS und eine Wiederherstellung an und startet danach von der Festplatte.
+1. \`clokeos-x86_64-usb.img.xz\` laden, entpacken (\`xz -dk\`) und auf einen USB-Stick mit mindestens 2 GB schreiben, zum Beispiel mit balenaEtcher oder auf dem Mac: \`diskutil list\`, \`diskutil unmountDisk /dev/diskN\`, \`sudo dd if=clokeos-x86_64-usb.img of=/dev/rdiskN bs=4m\` (N ist der Stick; alles darauf wird gelöscht).
+2. Am PC im Boot-Menü der Firmware den Stick wählen (UEFI, ohne CSM/Legacy, Secure Boot aus, SATA im AHCI-Modus). Das Laden dauert je nach Stick eine bis zwei Minuten; mit gedrückter Taste V startet ClokeOS ausführlich mit Meldungen auf dem Bildschirm.
+3. In der Wiederherstellung „Install ClokeOS“ wählen und die SATA- oder NVMe-SSD angeben. Die SSD wird dabei gelöscht. Ab etwa 1,5 GB RAM ist alles Nötige auf dem Stick, Internet braucht es nicht. Mit 1 GB RAM startet der Stick von selbst eine schlanke Variante, die das System aus dem Internet lädt (per LAN-Kabel, Netzwerkchip siehe unten).
+4. Neu starten, den Stick abziehen. Beim ersten Start richtet der Einrichtungsassistent Sprache, Region, deinen Account und das Erscheinungsbild ein.
 
-Später startet „Neustart in Wiederherstellung …“ im ClokeOS-Menü die Wiederherstellung auf der Festplatte; auf x86_64 auch die Taste R beim Start. Aus der Wiederherstellung installiert „ClokeOS installieren“ das System neu, die Wiederherstellung selbst bleibt dabei erhalten.
+Voraussetzungen: UEFI, mindestens 1 GB RAM, SATA- oder NVMe-SSD. Netzwerk (für SSH) nur mit Realtek RTL8111/8168/8169 oder Intel 82545EM; neuere Intel-Netzwerkchips (I219, I225) werden nicht erkannt. Bild über die Grafik der Firmware (GOP), Tastatur und Maus über USB oder PS/2.
+
+## Ohne USB-Stick: fertiges SSD-Abbild (x86_64)
+
+\`clokeos-x86_64-disk.img.xz\` ist eine fertig installierte SSD mit System und Wiederherstellung, ganz ohne Internet: die SSD des PCs per USB-SATA- oder USB-NVMe-Adapter an den Mac hängen, entpacken und draufschreiben (\`sudo dd if=clokeos-x86_64-disk.img of=/dev/rdiskN bs=4m\`, oder balenaEtcher), zurück in den PC und davon starten. Beim ersten Start läuft der Einrichtungsassistent. ClokeOS belegt gut 5 GB, der Rest der SSD bleibt frei.
+
+## In einer VM installieren (QEMU)
+
+\`clokeos-<arch>-installer.img.xz\` (x86_64 oder arm64 für Macs mit Apple-Chip) entpacken und mit einer leeren zweiten Platte starten, zum Beispiel mit \`clokeos-darwin/run.sh\` aus dem Quellcode: \`CLOKEOS_ARCH=arm64 CLOKEOS_FLAVOR=desktop ./run.sh --image clokeos-arm64-installer.img --disk platte.img\`. Die Wiederherstellung lädt das System dann aus dem Internet von hier.
+
+Später startet „Restart in Recovery…“ im ClokeOS-Menü die Wiederherstellung auf der Platte, auf x86_64 auch die Taste R beim Start. Von dort lässt sich ClokeOS neu installieren, die Wiederherstellung bleibt erhalten.
+
+## Neu in $CLOKE_VERSION
+
+- Englisch als Grundsprache wie bei macOS, Deutsch unter System Settings > Language & Region oder im Einrichtungsassistenten
+- Einrichtungsassistent beim ersten Start: Sprache, Region mit Zeitzone, eigener Account mit Passwort, Erscheinungsbild
+- Entfernte Anmeldung per SSH (System Settings > Sharing > Remote Login, voreingestellt an): \`ssh <account>@<adresse>\`, die Adresse steht auf derselben Seite
+- USB-Stick für echte PCs: startet als RAM-Disk und installiert ohne Internet auf SATA- oder NVMe-SSDs; mit 1 GB RAM eine schlanke Variante, die aus dem Internet installiert
+- fertiges SSD-Abbild zum Draufschreiben, als Weg ohne Stick
+- GTK-Thema ClokeOS in den Farben des Desktops
+- schlankere Wiederherstellung (knapp 600 MB statt 1,4 GB)
 
 ## Was drin ist
 
@@ -126,7 +161,7 @@ Später startet „Neustart in Wiederherstellung …“ im ClokeOS-Menü die Wie
 - Wiederherstellung mit Installer, Online-Hilfe, Festplattendienstprogramm und Terminal
 - $macnote
 
-Grenzen: Ein Prozessorkern, Grafik in Software, getestet nur in QEMU (x86_64 emuliert, arm64 mit Apples Hypervisor auf einem Mac mit Apple-Chip).
+Grenzen: ein Prozessorkern, Grafik in Software über die Firmware, nur wenige Treiber (siehe oben). Getestet in QEMU (x86_64 emuliert, auch mit USB-Stick und NVMe-SSD; arm64 mit Apples Hypervisor); auf echter Hardware ist es ein erster Versuch.
 
 ## Dateien
 

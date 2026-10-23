@@ -60,49 +60,45 @@ fit "$out/system.ext4" "$sys_mb"
 sys_uuid=$(fsuuid "$out/system.ext4")
 echo "System: $sys_mb MB, UUID $sys_uuid"
 
-# --- Wiederherstellung: das System ohne Ballast ---------------------------------------------
-cp -c "$out/system.ext4" "$out/recovery.ext4" 2>/dev/null || cp "$out/system.ext4" "$out/recovery.ext4"
+# --- Wiederherstellung: das System ohne Ballast, kompakt neu angelegt -----------------------
+# Ausgepackt, ausgedünnt (imagetool.py prune --usb: ohne Wine, Compiler, Mesa/LLVM, Übersetzungen …)
+# und mit mke2fs -d neu angelegt: Ein verkleinertes Dateisystem des großen Systems behielte dessen
+# Inode-Tabellen und bliebe über 1,4 GB. So passt die Wiederherstellung samt Abbildern als RAM-Disk
+# auf den USB-Stick (recovery/usb.sh, unter die Grenze von XNU), und die Partition wird kleiner.
 mkdir -p "$tmp/root" # rdump legt den Baum in einen vorhandenen Ordner
-"$DEBUGFS" -R "rdump / $tmp/root" "$out/recovery.ext4" >/dev/null 2>&1 || true
+"$DEBUGFS" -R "rdump / $tmp/root" "$out/system.ext4" >/dev/null 2>&1 || true
 [ -x "$tmp/root/sbin/launchd" ] || { echo "Wurzel nicht ausgepackt" >&2; exit 1; }
-python3 -I "$HERE/recovery/imagetool.py" prune "$tmp/root" "$tmp/prune.list"
-# Dateien und Symlinks mit rm, Ordner danach mit rmdir (die Liste steht tiefste zuerst)
+python3 -I "$HERE/recovery/imagetool.py" prune "$tmp/root" "$tmp/prune.list" --usb
+# die Liste steht tiefste zuerst: Dateien, Symlinks und leere Ordner
 while read -r p; do
-  if [ -d "$tmp/root$p" ] && [ ! -L "$tmp/root$p" ]; then echo "rmdir $p"; else echo "rm $p"; fi
-done < "$tmp/prune.list" > "$tmp/prune.cmds"
-"$DEBUGFS" -w -f "$tmp/prune.cmds" "$out/recovery.ext4" > "$tmp/prune.log" 2>&1
+  if [ -d "$tmp/root$p" ] && [ ! -L "$tmp/root$p" ]; then rmdir "$tmp/root$p" 2>/dev/null || rm -rf "$tmp/root$p"
+  else rm -f "$tmp/root$p"; fi
+done < "$tmp/prune.list"
+rm -f "$tmp/root/var/db/.RunClokeOSSetup" # der Einrichtungsassistent gehört zum installierten System
 
 # Eigene Dateien der Wiederherstellung
-stage="$tmp/stage"
-mkdir -p "$stage/etc"
-cp -R "$HERE/recovery/overlay/." "$stage/"
-cat > "$stage/etc/clokeos-recovery" <<EOF
+cp -R "$HERE/recovery/overlay/." "$tmp/root/"
+cat > "$tmp/root/etc/clokeos-recovery" <<EOF
 # ClokeOS-Wiederherstellung: CloakServer zeigt statt Anmeldung und Schreibtisch die Wiederherstellung.
 RELEASES="$CLOKE_RELEASES_URL"
 VERSION="$CLOKE_VERSION"
 BUILD="$CLOKE_BUILD"
 EOF
-find "$stage" -name .DS_Store -delete
-{
-  (cd "$stage" && find . -mindepth 1 -type d | sed 's|^\.||' | sort) | while read -r d; do echo "mkdir $d"; done
-  (cd "$stage" && find . -type f | sed 's|^\.||' | sort) | while read -r f; do
-    echo "rm $f"
-    echo "write $stage$f $f"
-    echo "set_inode_field $f mode 0100$(stat -f '%Lp' "$stage$f")"
-    echo "set_inode_field $f uid 0"
-    echo "set_inode_field $f gid 0"
-  done
-} > "$tmp/stage.cmds"
-"$DEBUGFS" -w -f "$tmp/stage.cmds" "$out/recovery.ext4" > "$tmp/stage.log" 2>&1
+find "$tmp/root" -name .DS_Store -delete
+xattr -rc "$tmp/root" 2>/dev/null || true # macOS hängt com.apple.provenance an; nicht ins ext4
+DEBUGFS="$DEBUGFS" python3 -I "$HERE/recovery/imagetool.py" owners "$out/system.ext4" "$tmp/root" "$tmp/owners.cmds"
+used_root=$(du -sm "$tmp/root" | cut -f1)
+nfiles=$(find "$tmp/root" | wc -l | tr -d ' ')
+rec_mb=$(( ((used_root + RECOVERY_FREE_MB) * 11 / 10 + 63) / 64 * 64 ))
+# dieselben Merkmale wie PureDarwins ext4 (ohne das neue orphan_file von mke2fs 1.47)
+"$MKE2FS" -q -t ext4 -O ^orphan_file,metadata_csum_seed -N $(( nfiles * 3 / 2 + 4096 )) -m 0 -J size=16 \
+  -L Recovery -d "$tmp/root" "$out/recovery.ext4" "${rec_mb}M"
+"$DEBUGFS" -w -f "$tmp/owners.cmds" "$out/recovery.ext4" > "$tmp/owners.log" 2>&1
 "$E2FSCK" -fy "$out/recovery.ext4" >/dev/null 2>&1 || true
 "$E2FSCK" -fn "$out/recovery.ext4" > "$tmp/e2fsck.log" 2>&1 || { cat "$tmp/e2fsck.log" >&2; exit 1; }
-# Auf das Minimum, das resize2fs zulässt (Inode-Tabellen und Journal des großen Systems bleiben,
-# es liegt deshalb über dem belegten Platz), dann RECOVERY_FREE_MB dazu
-"$RESIZE2FS" -M "$out/recovery.ext4" >/dev/null 2>&1
-min_mb=$("$DUMPE2FS" -h "$out/recovery.ext4" 2>/dev/null | awk -F': *' '/^Block count/ {c=$2} /^Block size/ {b=$2}
-  END {printf "%d", c * b / 1048576}')
-rec_mb=$(( (min_mb + RECOVERY_FREE_MB + 63) / 64 * 64 ))
-fit "$out/recovery.ext4" "$rec_mb"
+"$DEBUGFS" -R 'stat /usr/libexec/clokeos-installer' "$out/recovery.ext4" 2>/dev/null | grep -q 'User: *0 ' ||
+  { echo "Besitzer in der Wiederherstellung nicht gesetzt" >&2; exit 1; }
+rm -rf "$tmp/root"
 cp -c "$out/recovery.ext4" "$tmp/installer.ext4" 2>/dev/null || cp "$out/recovery.ext4" "$tmp/installer.ext4"
 "$TUNE2FS" -U random -L "Recovery" "$out/recovery.ext4" >/dev/null
 "$TUNE2FS" -U random -L "Installer" "$tmp/installer.ext4" >/dev/null
