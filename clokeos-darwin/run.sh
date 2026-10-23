@@ -71,7 +71,6 @@ common=(
   -drive if=pflash,format=raw,unit=0,readonly=on,file="$FW_CODE"
   -drive if=pflash,format=raw,unit=1,file="$VM_STATE/efi-vars.fd"
   -device qemu-xhci,id=xhci
-  -device usb-kbd,bus=xhci.0
   -name "$CLOKE_NAME"
   -qmp unix:"$VM_STATE/qmp.sock",server=on,wait=off
   -no-reboot
@@ -95,6 +94,7 @@ if [ "$CLOKE_ARCH" = arm64 ]; then
     -smp "${CLOKEOS_VM_SMP:-1}"
     "${common[@]}"
     -device "$gpu"
+    -device usb-kbd,bus=xhci.0
     -device usb-mouse,bus=xhci.0
     -nic "user,model=virtio-net-pci$hostfwd"
   )
@@ -114,8 +114,10 @@ else
     -vga std
     -fw_cfg name=opt/ovmf/X-PciMmio64Mb,string=2048
     "${common[@]}"
-    -device usb-mouse,bus=xhci.0
   )
+  # CLOKEOS_VM_INPUT=ps2: ohne USB-Tastatur und -Maus, Eingaben gehen an PS/2 wie bei der eingebauten
+  # Tastatur und dem Touchpad eines Notebooks
+  [ "${CLOKEOS_VM_INPUT:-usb}" = ps2 ] || args+=(-device usb-kbd,bus=xhci.0 -device usb-mouse,bus=xhci.0)
   if [ "${CLOKEOS_VM_DEVICES:-virtio}" = classic ]; then
     args+=(-nic "user,model=e1000-82545em$hostfwd")
     [ -n "$image" ] && args+=(-drive id=root,format=raw,file="$image$snapshot") && image_classic=1
