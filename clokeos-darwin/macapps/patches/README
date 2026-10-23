@@ -13,6 +13,11 @@ weil auch Header betroffen sind. Das sind Anpassungen an ClokeOS, keine Darling-
   QuartzCore/CALayerContext.m         ohne Metal bauen
   Onyx2D/O2Encoder_JPG.m              free() statt Darlings ELF-Brücke
 
+darling-corefoundation/CFVersion.c.sed passt Darling an das SDK 27 an (Command Line Tools vom
+21.10.2026): CFBase.h deklariert kCFCoreFoundationVersionNumber dort als const double, Darlings
+Definition ohne const ließ sich nicht mehr übersetzen. Fiel erst auf, als CoreFoundation am
+22.10.2026 ganz neu übersetzt wurde (geänderte include/unicode/ualoc.h).
+
 arm64/<repo>/…: was Apples arm64-Aufrufkonvention verlangt (gefunden beim arm64-Bau am 22./23.10.2026).
 foundation.sh und appkit.sh wenden sie zusätzlich zu den Skripten oben an (gibt es für eine Datei
 beide, gelten beide). Sie gelten für beide Architekturen; auf x86_64 ändern sie am erzeugten Code
