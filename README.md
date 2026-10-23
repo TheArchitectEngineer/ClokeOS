@@ -1,31 +1,55 @@
 # ClokeOS
 
-Ein macOS-ähnliches Betriebssystem auf Basis des Darwin-Kernels (XNU), mit einem Umhang als Logo.
+A macOS-like operating system built on the Darwin kernel (XNU), with a cape as its logo.
 
-## Was es schon gibt
+**Download:** the [latest release](https://github.com/Karl-Lauterbach24/ClokeOS/releases/latest) has USB installers for PCs (offline and online), a ready-made SSD image and installer images for virtual machines (x86_64 and arm64). See [Installing ClokeOS](#installing-clokeos).
 
-`clokeos.html` ist der Prototyp der Benutzeroberfläche. Er läuft in jedem Browser:
+![ClokeOS desktop in QEMU: Fundus (Thunar) and Terminal with clokefetch, the Dock below; windows with rounded corners and soft shadows](clokeos-darwin/screenshots/desktop.png)
 
-- Startbildschirm mit Umhang-Logo (Taste **V** zeigt den ausführlichen XNU-Bootlog), Anmeldefenster
-- Menüleiste mit ClokeOS-Menü, App-Menüs, WLAN, Batterie, Kontrollzentrum und Uhr
-- Dock mit Vergrößerung, Laufindikatoren und Papierkorb; Fenster lassen sich ziehen, vergrößern, minimieren und zoomen
-- Liquid-Glass-Design im Stil von macOS Golden Gate: durchscheinende Fenster, Dock mit Lichtbrechung (in Chromium-Browsern), Glasmenüs, Regler „Liquid Glass“ von klar bis getönt
-- Hintergrundbild „Goldenes Tor“: eine selbst gezeichnete Hängebrücke im Nebel, hell am Tag und dunkel am Abend
-- Apps: Fundus (Dateimanager; im Theater ist der Fundus der Raum, in dem Kostüme und Umhänge hängen), Search (Browser mit Tabs, Verlauf und Suche über ClokeOS-Seiten und eigene Dateien; fremde Webseiten öffnen in einem neuen Tab, weil ClokeOS selbst im Browser läuft), Terminal (zsh-ähnlich: `ls`, `cd`, `cat`, `uname -a`, `sw_vers`, `sysctl`, `launchctl list`, `clokefetch` …), Notizen, Rechner, Kalender, Aktivitätsanzeige, Systemeinstellungen
-- Suche (Strg + Leertaste), Programme-Übersicht (F4), Hell-/Dunkelmodus, Akzentfarben, fünf Hintergrundbilder
-- Ein virtuelles Dateisystem mit Darwin-Struktur (`/System`, `/Users`, `/Applications`, `/bin` …), das im Browser gespeichert bleibt
+## What is there
 
-Lokal starten:
+ClokeOS consists of two parts:
+
+- **The real system** in `clokeos-darwin/`: a real Darwin kernel (XNU, Darwin 20.5.0) from [PureDarwin 20.5](https://github.com/PureDarwin/PureDarwin/releases/tag/20.5), with ClokeOS' own window server CloakServer (menu bar, Dock, Launchpad, login, setup assistant, recovery), a global menu bar for GTK and Mac apps, Mac frameworks from Darling, its own installer and recovery, USB installers for real PCs and its own kernel drivers.
+- **The UI prototype** `clokeos.html`, which runs in any browser and was the model for CloakServer:
 
 ```bash
-python -m http.server 8765
+python -m http.server 8765    # then open http://localhost:8765/clokeos.html
 ```
 
-Danach `http://localhost:8765/clokeos.html` öffnen.
+The prototype has the boot screen with the cape logo (key **V** shows a verbose XNU boot log), login, menu bar, Dock with magnification, draggable windows, a Liquid Glass look with the "Golden Gate" wallpaper (a hand-drawn suspension bridge in fog, light by day and dark in the evening), apps (Fundus, Search, Terminal, Notes, Calculator, Calendar, Activity Monitor, System Settings), search, Launchpad and a virtual file system with Darwin's layout that is kept in the browser.
 
-## Echtes ClokeOS auf XNU
+## Installing ClokeOS
 
-Im Ordner `clokeos-darwin/` entsteht das echte System. Es bootet in einer VM einen echten Darwin-Kernel (XNU, Darwin 20.5.0) bis zur zsh und meldet sich dort als ClokeOS. In der Desktop-Variante startet danach CloakServer, der Fensterserver von ClokeOS, mit Menüleiste, Dock und Fenstern im Stil der Oberfläche (siehe [Desktop: CloakServer](#desktop-cloakserver)).
+### On a PC (x86_64, USB stick)
+
+There are two sticks:
+
+- `clokeos-x86_64-usb-offline.img.xz` carries the whole system and installs without internet. The right choice for most PCs.
+- `clokeos-x86_64-usb-online.img.xz` is small and downloads the system while installing; this needs a LAN cable and a supported network chip (see below).
+
+1. Download, unpack (`xz -dk`) and write to a USB stick of at least 2 GB, for example with balenaEtcher, or on a Mac: `diskutil list`, `diskutil unmountDisk /dev/diskN`, `sudo dd if=clokeos-x86_64-usb-offline.img of=/dev/rdiskN bs=4m` (N is the stick; everything on it is erased).
+2. Plug in a USB keyboard and mouse if the PC has no built-in PS/2 keyboard and touchpad, then choose the stick in the firmware's boot menu (UEFI without CSM/legacy, Secure Boot off, SATA in AHCI mode, Intel VMD/RST off). Loading takes one to two minutes; holding **V** shows the verbose boot.
+3. In Recovery choose "Install ClokeOS" and pick the SATA or NVMe SSD. The SSD is erased. If the recovery together with the system does not fit into the memory below 1 GB (depending on the firmware only about 400 MB may be free there in one piece), the offline stick starts a slim variant that reads the system from the stick while installing.
+4. Restart and remove the stick. On first start the setup assistant asks for language, region, your account and the appearance.
+
+![Recovery: window "ClokeOS Recovery" with Install ClokeOS, Get Help Online, Disk Utility and Terminal; menu bar with Recovery, Utilities and Window](clokeos-darwin/screenshots/recovery.png)
+
+![Setup assistant after installing: "Select Your Language" with English and Deutsch](clokeos-darwin/screenshots/setup.png)
+
+Requirements: UEFI, a SATA or NVMe SSD. Keyboard and mouse over USB (plugged in at power-on) or a built-in PS/2 keyboard and PS/2 touchpad (ClokeOS' own driver ClokePS2); I²C touchpads, as in most notebooks from about 2015 on, do not work yet. If ClokeOS finds no keyboard or mouse, it shows a diagnostics window after 45 seconds to take a photo of. Network only over LAN with Realtek RTL8111/8168/8169 or Intel 82545EM; Wi-Fi and newer Intel network chips (I219, I225) are not supported. Display through the firmware's graphics (GOP).
+
+### Without a USB stick: ready-made SSD image
+
+`clokeos-x86_64-disk.img.xz` is an installed SSD with system and recovery, no internet needed: connect the PC's SSD to a Mac with a USB-SATA or USB-NVMe adapter, unpack and write it (`sudo dd if=clokeos-x86_64-disk.img of=/dev/rdiskN bs=4m`, or balenaEtcher), put it back into the PC and boot. The setup assistant runs on first start. ClokeOS uses a bit more than 5 GB, the rest of the SSD stays free.
+
+### In a virtual machine (QEMU)
+
+Unpack `clokeos-<arch>-installer.img.xz` (x86_64, or arm64 for Macs with Apple silicon) and start it with an empty second disk, for example with `clokeos-darwin/run.sh` from the source: `CLOKEOS_ARCH=arm64 CLOKEOS_FLAVOR=desktop ./run.sh --image clokeos-arm64-installer.img --disk disk.img`. Recovery then downloads the system from this repository's releases.
+
+Later, "Restart in Recovery…" in the ClokeOS menu starts the recovery on the disk, on x86_64 also the key **R** at power-on. From there ClokeOS can be reinstalled; the recovery stays.
+
+## The real system on XNU
 
 ```text
 root@clokeos / # sw_vers
@@ -36,315 +60,253 @@ root@clokeos / # uname -a
 Darwin clokeos 20.5.0 Darwin Kernel Version 20.5.0: Sun Aug 23 10:54:37 UTC 2026; nixbld:xnu-build/RELEASE_X86_64 x86_64
 ```
 
-![ClokeOS startet in QEMU: das Umhang-Logo, weiß auf Schwarz](clokeos-darwin/bootlogo.png)
+![ClokeOS booting in QEMU: the cape logo, white on black](clokeos-darwin/bootlogo.png)
 
-Grundlage ist das fertige Image von [PureDarwin 20.5](https://github.com/PureDarwin/PureDarwin/releases/tag/20.5) (UEFI, eigener Loader, XNU, launchd, zsh, ext4 als Wurzeldateisystem). ClokeOS ändert daran:
+The base is the ready-made image of [PureDarwin 20.5](https://github.com/PureDarwin/PureDarwin/releases/tag/20.5) (UEFI, its own loader, XNU, launchd, zsh, ext4 as root file system). ClokeOS changes:
 
-- `SystemVersion.plist`: ClokeOS 2.2 „Presidio“, Build 2C1 (launchd setzt daraus auch `kern.osversion`)
-- `sw_vers` liest die Plist wie bei macOS; PureDarwins eigenes `sw_vers` hat „PureDarwin 11.3“ fest einkompiliert
-- Rechnername `clokeos` über den launchd-Dienst `com.clokeos.hostname`
-- Anmeldetext mit Umhang (`/etc/motd`), Eingabeaufforderung `root@clokeos / #`
-- `clokefetch` wie im Terminal der Oberfläche, Volume-Name „Cloke HD“
-- Bootlogo: der Umhang aus der Oberfläche statt des Kernel-Logs (eigener Build von PureDarwins Loader, siehe unten); V beim Start gedrückt halten zeigt das Log
-- Desktop-Variante: CloakServer auf Xorg, gestartet von launchd
+- `SystemVersion.plist`: ClokeOS 2.2 "Presidio", build 2C1 (launchd also sets `kern.osversion` from it)
+- `sw_vers` reads the plist as on macOS; PureDarwin's own `sw_vers` has "PureDarwin 11.3" compiled in
+- host name `clokeos` via the launchd service `com.clokeos.hostname`
+- login text with the cape (`/etc/motd`), prompt `root@clokeos / #`
+- `clokefetch` as in the prototype's Terminal, volume name "Cloke HD"
+- boot logo: the cape instead of the kernel log (a custom build of PureDarwin's loader, see below); holding V at power-on shows the log
+- desktop variant: CloakServer on Xorg, started by launchd
 
-Einmal einrichten (Homebrew):
+Set up once (Homebrew):
 
 ```bash
 brew install qemu e2fsprogs mtools mingw-w64
 ```
 
-Image bauen und starten:
+Build and start:
 
 ```bash
 cd clokeos-darwin && ./brand.sh && ./run.sh
 ```
 
-`brand.sh` lädt das PureDarwin-Image (275 MB) und die Quellen des Bootloaders (zusammen 300 KB, alle Prüfsummen werden geprüft), baut den Loader mit Bootlogo, schreibt die Dateien aus `overlay/` mit `debugfs` ins ext4-Dateisystem (ohne Linux und ohne Root-Rechte), legt Loader und Boot-Argumente mit `mtools` in die EFI-Partition und erzeugt `~/ClokeOS-work/out/clokeos-2.2-x86_64.img`. `run.sh` öffnet ein QEMU-Fenster mit dem Bildschirm und die serielle Konsole im Terminal. Im Fenster steht ab etwa der vierten Sekunde das Logo, später zeichnet der Kernel einen Fortschrittsbalken darunter; Kernel-Log, Anmeldetext und zsh laufen im Terminal. Auf einem Mac mit Apple-Chip wird x86_64 emuliert; bis zur Eingabeaufforderung dauert es etwa 70 Sekunden (arm64 mit Apples Hypervisor: etwa 7, siehe [Architekturen](#architekturen)). Beenden mit `poweroff` in der VM.
+`brand.sh` downloads the PureDarwin image (275 MB) and the boot loader's sources (300 KB together, all checksums are verified), builds the loader with the boot logo, writes the files from `overlay/` into the ext4 file system with `debugfs` (no Linux and no root needed), puts loader and boot arguments into the EFI partition with `mtools` and produces `~/ClokeOS-work/out/clokeos-2.2-x86_64.img`. `run.sh` opens a QEMU window with the screen and the serial console in the terminal. On a Mac with Apple silicon x86_64 is emulated; reaching the prompt takes about 70 seconds (arm64 with Apple's hypervisor: about 7, see [Architectures](#architectures)). Quit with `poweroff` in the VM.
 
-Für Tests ohne Fenster: `./run.sh --headless`, dann `./vmctl.py wait 'Willkommen'`, `./vmctl.py send 'clokefetch'`, `./vmctl.py shot bild.png`, `./vmctl.py quit`. Downloads, Images und VM-Zustand liegen in `~/ClokeOS-work`, nicht im Projektordner. Versionsnummern und Namen stehen in `clokeos-darwin/config.sh`.
+For tests without a window: `./run.sh --headless`, then `./vmctl.py wait 'Welcome'`, `./vmctl.py send 'clokefetch'`, `./vmctl.py shot screen.png`, `./vmctl.py quit`. Downloads, images and VM state live in `~/ClokeOS-work`, not in the project folder. Versions and names are in `clokeos-darwin/config.sh`.
 
-### Bootlogo
+### Boot logo
 
-Den Kernel startet PureDarwins Bootloader [xnu-loader](https://github.com/PureDarwin/xnu-loader) (`EFI/BOOT/BOOTX64.EFI`). ClokeOS baut ihn selbst, mit einer Änderung: Steht in den Boot-Argumenten kein `-v`, zeichnet er vor dem Kernelstart den Umhang (Pfad `LOGO_D` aus `clokeos.html`) über GOP zentriert auf schwarzen Grund, 12 % der Bildschirmhöhe groß (96 Pixel bei QEMUs 1280 × 800). Sein eigenes Protokoll schreibt er dann nur noch auf die serielle Schnittstelle, Fehlermeldungen weiterhin auch auf den Bildschirm.
+The kernel is started by PureDarwin's boot loader [xnu-loader](https://github.com/PureDarwin/xnu-loader) (`EFI/BOOT/BOOTX64.EFI`). ClokeOS builds it itself with a change: without `-v` in the boot arguments it draws the cape (path `LOGO_D` from `clokeos.html`) via GOP, centered on black, 12 % of the screen height, before starting the kernel. Its own log then only goes to the serial port; errors still also go to the screen.
 
-Danach gehört der Bildschirm dem Kernel, und PureDarwins Kernel ist für die Fehlersuche gebaut: Bekommt er einen Framebuffer, malt er farbige Fortschrittsbalken in die oberen Bildschirmzeilen und, solange die Textkonsole aus ist, jedes Zeichen der seriellen Ausgabe auf den Bildschirm, auch später noch über einen Desktop. Mit Boot-Argumenten lässt sich das nicht abschalten. Alle diese Malroutinen zeichnen aber nur bei 32 Bit Farbtiefe, und XNUs Videokonsole kennt 24 Bit gar nicht. PureDarwins Grafiktreiber `IOGOPFramebuffer` behandelt 24 Bit dagegen genau wie 32 (32-Bit-Pixel, dieselben Farbmasken). Ohne `-v` übergibt der Loader dem Kernel deshalb denselben Framebuffer im Grafikmodus, nur mit der Angabe 24 Bit. Der Kernel lässt das Logo dann stehen, `/dev/fb0` gibt es, und Xorg kann zeichnen. Sobald `IOGOPFramebuffer` läuft, zeichnet XNU seinen Fortschrittsbalken unter das Logo, so wie der Startbildschirm in `clokeos.html` einen hat. Im Minimal-Image bleiben Logo und der halb gefüllte Balken stehen, bis die VM ausgeschaltet wird; die Shell läuft auf der seriellen Konsole. In der Desktop-Variante übernimmt Xorg den Bildschirm.
+After that the screen belongs to the kernel, and PureDarwin's kernel is built for debugging: given a framebuffer it paints colored progress bars into the top lines and, while the text console is off, every character of the serial output onto the screen, even later over a desktop. Boot arguments cannot turn this off. All these painting routines only draw at 32-bit color depth, though, and XNU's video console does not know 24 bit at all, while PureDarwin's graphics driver `IOGOPFramebuffer` treats 24 bit exactly like 32. Without `-v` the loader therefore hands the kernel the same framebuffer in graphics mode, only marked as 24 bit. The kernel then leaves the logo alone, `/dev/fb0` exists and Xorg can draw. As soon as `IOGOPFramebuffer` runs, XNU draws its progress bar below the logo, just like the boot screen in `clokeos.html`.
 
-(Bis zur Desktop-Variante gab der Loader dem Kernel ohne `-v` gar keinen Framebuffer, wie auf einem Rechner ohne Bildschirm. Dann gab es aber auch kein `/dev/fb0` und keinen Grafiktreiber.)
+The boot arguments are `CLOKE_BOOT_ARGS` in `clokeos-darwin/config.sh`: `debug=0x218 -nogzalloc_mode keepsyms=1 serial=3 gen9_debug=1`, PureDarwin's default without `-v` and `gopconsole=1`. `serial=3` must stay, console, terminal and `vmctl.py` run over it. Holding **V** at power-on gives a single verbose boot: the loader looks twice without waiting (right after reading the boot arguments and again once the kernel is loaded), appends ` -v gopconsole=1`, clears the logo and hands the kernel the framebuffer as text console. A short tap is not enough: the firmware empties the keyboard buffer right before starting the loader, and in QEMU the loader is done after about 0.25 seconds; only key repeat of a held key reliably lands in that window.
 
-Die Boot-Argumente stehen als `CLOKE_BOOT_ARGS` in `clokeos-darwin/config.sh`: `debug=0x218 -nogzalloc_mode keepsyms=1 serial=3 gen9_debug=1`, also PureDarwins Vorgabe ohne `-v` und ohne `gopconsole=1`. `gopconsole=1` schaltet die Textkonsole mit dem ganzen Log ein, sobald `IOGOPFramebuffer` startet. `serial=3` muss bleiben, denn darüber laufen Konsole, Terminal und `vmctl.py`. Mit `-v gopconsole=1` vorn und einem neuen `./brand.sh` sieht der Start wieder aus wie bei PureDarwin, mit Kernel-Log und zsh auf dem Bildschirm ([Bildschirmfoto](clokeos-darwin/vm-bildschirm.png)).
+The loader is built by `clokeos-darwin/loader/build.sh`, which `brand.sh` calls: it unpacks xnu-loader at `8295cd89` (the same as in PureDarwin 20.5) and gnu-efi 4.0.2, applies `loader/xnu-loader.patch`, adds `splash.c` and turns `LOGO_D` into outline data with `logo.py`. The loader rasterizes the logo at boot in the current resolution, so it is sharp on every screen. It is compiled with mingw-w64, which produces EFI programs directly; the build is reproducible.
 
-Für einen einzelnen ausführlichen Start reicht die Taste V, wie es der Startbildschirm in `clokeos.html` anbietet: V beim Einschalten gedrückt halten, im QEMU-Fenster oder auf der seriellen Konsole. Der Loader sieht zweimal nach, ohne zu warten: gleich nach dem Lesen der Boot-Argumente und noch einmal, wenn der Kernel geladen ist. Findet er ein v oder V, hängt er ` -v gopconsole=1` an die Boot-Argumente, löscht den Bildschirm samt Logo, schreibt sein Protokoll wieder auch auf den Bildschirm und gibt dem Kernel den Framebuffer als Textkonsole. Der Start sieht dann aus wie mit `-v gopconsole=1` in `config.sh`, und im seriellen Protokoll steht `key V: verbose boot, using "… -v gopconsole=1"`. In der Desktop-Variante startet danach trotzdem Xorg; die Textkonsole des Kernels schreibt dann aber auch über den Desktop. Kurz tippen genügt nicht: Die Firmware (OVMF) leert den Tastaturpuffer direkt bevor sie den Loader startet, und der Loader ist in QEMU nach etwa 0,25 Sekunden fertig. Erst die Tastenwiederholung der gehaltenen Taste kommt sicher in dieses Fenster. Ohne Fenster lässt sich das nachstellen, indem man ab dem Start von `./run.sh --headless` alle 50 ms ein `v` an den seriellen Socket (`~/ClokeOS-work/vm/x86_64/serial.sock`) schickt oder per QMP `send-key` drückt. Ein einziges „Taste gedrückt“ per QMP-`input-send-event` vor dem Start reicht dagegen nicht, weil QEMU den Tastaturzustand zurücksetzt, wenn die Firmware die USB-Tastatur einrichtet.
+Network and disk: `run.sh` gives the x86 VM virtio devices (`virtio-blk-pci`, `-nic user,model=virtio-net-pci`), which PureDarwin has drivers for and which cost less under emulation than an emulated AHCI disk and Intel card. `CLOKEOS_VM_DEVICES=classic` uses AHCI and an Intel 82545EM (`e1000-82545em`), the only card PureDarwin's `PDE1000` recognizes. The mouse is a USB mouse (`usb-mouse`), since PureDarwin's HID driver only knows boot-protocol mice.
 
-Gebaut wird der Loader von `clokeos-darwin/loader/build.sh`, das `brand.sh` aufruft. Es entpackt xnu-loader im Stand `8295cd89` (derselbe wie in PureDarwin 20.5) und gnu-efi 4.0.2, wendet `loader/xnu-loader.patch` an, fügt `splash.c` hinzu und erzeugt mit `logo.py` aus `LOGO_D` die Umrisse des Logos als C-Header. Der Loader rastert das Logo erst beim Start in der vorhandenen Auflösung, deshalb ist es auf jedem Bildschirm scharf, und eine Änderung am Logo in `clokeos.html` landet beim nächsten `./brand.sh` von selbst im Bootlogo. Kompiliert wird mit mingw-w64, das direkt EFI-Programme erzeugt; eine Linux-VM ist nicht nötig. Der Build ist reproduzierbar, das Ergebnis liegt in `~/ClokeOS-work/out/BOOTX64.EFI`.
+Limits: the VM sees one CPU core (`hw.ncpu` = 1), see [Drivers and performance](#drivers-and-performance). Kernel and drivers come from PureDarwin, apart from 15 bytes in `IOGOPFramebuffer` (below) and ClokeOS' own drivers ([Own kernel drivers](#own-kernel-drivers)).
 
-Netzwerk und Platte: `run.sh` gibt der x86-VM virtio-Geräte (`virtio-blk-pci`, `-nic user,model=virtio-net-pci`), für die PureDarwin Treiber hat. Sie kosten unter Emulation weniger als eine nachgebildete AHCI-Platte und Intel-Karte. Die VM holt sich per DHCP `10.0.2.15`, löst Namen auf und erreicht das Internet (`ping github.com`); Minimal- und Desktop-Image sind so getestet. `CLOKEOS_VM_DEVICES=classic` nimmt stattdessen AHCI und eine Intel-Karte vom Typ 82545EM (`e1000-82545em`), die einzige, die PureDarwins Treiber `PDE1000` erkennt; mit QEMUs Standardkarten e1000/e1000e bekommt die VM keine Adresse. Als Maus hängt eine USB-Maus (`usb-mouse`) an der VM, denn PureDarwins HID-Treiber kennt nur Mäuse mit Boot-Protokoll, kein `usb-tablet`. Im QEMU-Fenster fängt ein Klick die Maus ein, Strg+Alt+G gibt sie wieder frei.
+#### Wrong colors in PureDarwin's graphics driver
 
-Grenzen: Die VM sieht nur einen Prozessorkern (`hw.ncpu` = 1), siehe [Treiber und Leistung](#treiber-und-leistung). Im Minimal-Image zeigt der Bildschirm ohne `-v` (oder V beim Start) nach dem Start weiter Logo und Fortschrittsbalken (siehe oben). Kernel und Treiber übernimmt ClokeOS von PureDarwin; geändert sind nur 15 Byte in `IOGOPFramebuffer` (siehe unten). Die Kernelzeile von `uname` bleibt PureDarwins Build. Weil PureDarwin keine Zeitzonen-Datenbank hat, setzt ClokeOS die Zeitzone als POSIX-Regel (`CLOKE_TZ` in `config.sh`, Mitteleuropa mit Sommerzeit); Shell und Menüleiste zeigen damit deutsche Zeit.
-
-#### Falsche Farben in PureDarwins Grafiktreiber
-
-Bei der PCI-Konfiguration verlegt PureDarwins `IOPCIFamily` die Konsole und schreibt ihre Adresse mit gesetztem Bit 0 zurück (`0x80000001` statt `0x80000000`; bei XNU heißt das „physische Adresse“). `IOGOPFramebuffer::start()` übernimmt diese Adresse ungefiltert als Basis des Framebuffers. Damit liegen `/dev/fb0` und die Abbildung, in die Xorg zeichnet, ein Byte neben dem Bildschirm: Blau erscheint grün, Weiß gelb, Rot schwarz. Das passiert auch mit PureDarwins eigenem Loader und `-v`. `clokeos-darwin/kcfix.py` korrigiert das im Kernel Collection (`EFI/BOOT/kernel`), das `brand.sh` für x86_64 aufruft: Der Treiber ist ohne Optimierung übersetzt, deshalb lassen sich 15 Byte direkt nach `getConsoleInfo()` durch gleich lange Befehle ersetzen, die die Basisadresse auf 4 Byte abrunden. Das Skript sucht den Code am umgebenden Muster und ändert nur bei genau einem Treffer. PureDarwin hat den Fehler im Entwicklungszweig `upstream-xnu-12377` schon behoben (Commit `867967e`, `fbBase = bootDisplay.v_baseAddr & ~3`); in `main` und in den Images vom 23.08.2026 fehlt die Korrektur noch. Kommt ein neueres Image mit dieser Korrektur, findet `kcfix.py` den alten Code nicht mehr: Es gibt dann eine Warnung aus, ändert nichts, und `brand.sh` baut weiter. Zeigt Xorg danach trotzdem falsche Farben, ist es ein anderer Kernel mit dem alten Fehler, und das Muster in `kcfix.py` muss angepasst werden.
+During PCI configuration PureDarwin's `IOPCIFamily` moves the console and writes its address back with bit 0 set (`0x80000001` instead of `0x80000000`; in XNU that means "physical address"). `IOGOPFramebuffer::start()` takes that address unfiltered as framebuffer base. `/dev/fb0` and Xorg's mapping are then one byte off the screen: blue shows as green, white as yellow, red as black. `clokeos-darwin/kcfix.py` fixes this in the kernel collection (`EFI/BOOT/kernel`): the driver is compiled without optimization, so 15 bytes right after `getConsoleInfo()` can be replaced by equally long instructions that round the base address down to 4 bytes. The script finds the code by its surrounding pattern and only changes it on exactly one match. PureDarwin has fixed this in its development branch `upstream-xnu-12377` (commit `867967e`).
 
 ### Desktop: CloakServer
 
-![ClokeOS-Desktop in QEMU am Tag, angemeldet als Gast: Das ClokeOS-Menü mit „Gast“ abmelden liegt als Glas über Fundus (Thunar) mit /Users/gast, das Dock über dem Terminal mit clokefetch; die Fenster haben runde Ecken und weiche Schatten](clokeos-darwin/desktop.png)
+![The same desktop in dark mode: evening sky with stars, dark window frames, the Dock as lighter violet glass](clokeos-darwin/screenshots/desktop-dark.png)
 
-![Derselbe Desktop im Dunkelmodus: Abendhimmel mit Sternen, dunkle Fensterrahmen, das Dock als helleres violettes Glas, der Papierkorb so groß wie die übrigen Symbole, darüber das Namensschild „Papierkorb“](clokeos-darwin/desktop-dunkel.png)
-
-Die Desktop-Variante baut auf PureDarwins Vorschau-Image `puredarwin.img` auf (6,1 GiB, von puredarwin.org; Xorg mit PureDarwins eigenem Treiber `puredarwingop`, Wayland/sway, i3, Xfce, Wine, Compiler). Grafisch startet dort von selbst nichts: PureDarwin öffnet zsh auf der Konsole, Xorg, sway oder Xfce startet man von Hand. ClokeOS startet beim Hochfahren über den launchd-Dienst `com.clokeos.cloakserver` Xorg mit CloakServer (`/usr/libexec/cloakserver-start` und `cloakserver-session`, mit einem D-Bus für die Sitzung):
+The desktop variant builds on PureDarwin's preview image `puredarwin.img` (6.1 GiB, from puredarwin.org; Xorg with PureDarwin's own driver `puredarwingop`, Wayland/sway, i3, Xfce, Wine, compilers). Nothing graphical starts there by itself; ClokeOS starts Xorg with CloakServer at boot through the launchd service `com.clokeos.cloakserver` (`/usr/libexec/cloakserver-start` and `cloakserver-session`, with a D-Bus for the session):
 
 ```bash
 cd clokeos-darwin && CLOKEOS_FLAVOR=desktop ./brand.sh && CLOKEOS_FLAVOR=desktop ./run.sh
 ```
 
-`brand.sh` lädt dafür einmal das Desktop-Image (Prüfsumme wird geprüft) und erzeugt `~/ClokeOS-work/out/clokeos-2.2-x86_64-desktop.img`. Bei Emulation auf einem Mac mit Apple-Chip steht etwa 100 Sekunden lang das Bootlogo mit Fortschrittsbalken, dann startet Xorg, CloakServer zeigt kurz wieder den Umhang an derselben Stelle, und nach knapp zwei Minuten steht die Anmeldung da; ohne Fenster meldet `./vmctl.py key ret` als Gast an. Die serielle Konsole mit zsh bleibt daneben erhalten, `vmctl.py` funktioniert wie beim Minimal-Image.
+CloakServer (`clokeos-darwin/cloakserver/`) is ClokeOS' window server, for now an X11 window manager with its own UI, written in C with Xlib, cairo, pango and librsvg:
 
-CloakServer (`clokeos-darwin/cloakserver/`) ist der Fensterserver von ClokeOS, zunächst als X11-Fenstermanager mit eigener Oberfläche, geschrieben in C mit Xlib, cairo, pango und librsvg:
+- Wallpaper "Golden Gate": `drawBay()` from `clokeos.html` ported line by line to cairo (`wall.c`) with the same random generator, so stars, lights and fog sit in the same places; light by day, dark from 7 pm to 7 am
+- Menu bar: ClokeOS menu (About ClokeOS, System Settings, Activity Monitor, Applications, Sleep, Restart…, Shut Down…, Restart in Recovery…, Log Out), the active app's name and menus, network with IP address, search (opens Launchpad), appearance (auto, light, dark), clock with date
+- Global menu bar as on macOS: the active app's menus sit at the top next to the cape, not in the window, with submenus, check marks and shortcuts written as on macOS (⌃⌥⇧⌘). GTK apps like Fundus (Thunar) and Terminal export their menu bar via the GTK module `appmenu-gtk-module` over D-Bus (from vala-panel-appmenu 25.04, LGPL-3, with a small patch, `menubar/appmenu-clokeos.patch`); the helper `cloakmenu` reads it as the logged-in user and passes it to CloakServer. Mac apps put their menu into the window property `_CLOKE_MENU`; Darling's AppKit does that (`macapps/appkit/clokemenu.m`)
+- Language as on macOS: English by default, German in System Settings > Language & Region and in the setup assistant. CloakServer, login, menu bar and app names switch immediately; date and clock follow the language. Strings are English in the code, `L()` translates them (`cloakserver/l10n.c`, translations in `strings-de.h`, also for the installer; `cloakserver/l10n-check.py` reports missing ones). App bundles have English names (Notes.app, Calculator.app …), their German names are in `Contents/Resources/de.lproj/InfoPlist.strings` as on macOS
+- Setup assistant as on macOS on first start after an install (`cloakserver/setup.c`): "hello" in changing languages, language, country or region (sets the time zone), your own account with full name, account name and password, appearance; the new account is then logged in. It is triggered by `/var/db/.RunClokeOSSetup`, afterwards there is `/var/db/.ClokeOSSetupDone`, like `.AppleSetupDone` on macOS
+- GTK theme ClokeOS (light and dark, `overlay-desktop/share/themes`): Adwaita with CloakServer's colors, violet accent, flat toolbars, rounded buttons and fields; CloakServer announces it via XSETTINGS, and running apps switch along with light and dark mode
+- Sharing > Remote Login: SSH on port 22, switchable as on macOS; the page shows the matching `ssh` command with the IP address. Behind it is PureDarwin's sshd, started by `/usr/libexec/clokeos-sshd`, which reads the switch in `/etc/clokeos-remote-login`
+- Dock with the icons from `clokeos.html`, running indicators, name tags on hover, a context menu (Open, Keep in Dock / Remove from Dock, Show in Fundus, Quit); left, bottom or right in three sizes; it shrinks by itself if it would not fit. Launching apps bounce
+- Compositor (`comp.c`): CloakServer composes the picture itself (Composite, Damage, XFixes, Render): soft shadows, smooth rounded corners, glass for Dock, menus and name tags (blurred background with tint and a light edge, as in the prototype's Liquid Glass style). Only damaged areas are redrawn
+- Animations: new windows grow in and fade in, "Minimize" shrinks the window into its Dock icon, a click brings it back the same way
+- Windows: frame with title bar and traffic lights (close, minimize, zoom), rounded corners, move, resize at the bottom right corner, double-click on the title zooms, Alt+Tab switches, Alt+F4 closes
+- "About ClokeOS" as in the prototype, with version and build from `/etc/clokeos-release` and the machine's values (`sysctl`)
+- Login as in the prototype, before the desktop and after logging out
 
-- Hintergrund „Goldenes Tor“: `drawBay()` aus `clokeos.html` Zeile für Zeile nach cairo übertragen (`wall.c`), mit demselben Zufallsgenerator, damit Sterne, Lichter und Nebel an denselben Stellen sitzen; hell am Tag, dunkel von 19 bis 7 Uhr
-- Menüleiste: ClokeOS-Menü (Über ClokeOS, Systemeinstellungen, Aktivitätsanzeige, Programme, Ruhezustand, Neustart … und Ausschalten … mit Rückfrage, Abmelden), Name des aktiven Programms mit Menü (ausblenden, beenden), Ablage (neues Fenster, Fenster schließen), Fenster (ins Dock, zoomen, Liste der Fenster), Netzwerk mit IP-Adresse, Suche (öffnet das Launchpad), Erscheinungsbild (automatisch, hell, dunkel) und Uhr mit Datum
-- Globale Menüleiste wie bei macOS: Die Menüs des aktiven Programms stehen oben in der Leiste neben dem Umhang und nicht im Fenster, mit Untermenüs, Häkchen und Tastenkürzeln in der Schreibweise von macOS (⌃⌥⇧⌘). GTK-Programme wie Fundus (Thunar) und Terminal geben ihre Menüleiste über das GTK-Modul `appmenu-gtk-module` per D-Bus heraus. Es stammt aus vala-panel-appmenu 25.04 (LGPL-3), mit einem kleinen Patch für Darwin und für die Kürzel (`menubar/appmenu-clokeos.patch`). Der Helfer `cloakmenu` liest die Menüs als angemeldeter Benutzer und gibt sie zeilenweise an CloakServer weiter; er belegt dazu `com.canonical.AppMenu.Registrar`, sonst zeigt GTK die Leiste weiter im Fenster. Über XSETTINGS (`Gtk/ShellShowsMenubar`) blendet GTK sie im Fenster aus. Mac-Programme legen ihr Menü als Fenstereigenschaft `_CLOKE_MENU` ab; Darlings AppKit tut das (`macapps/appkit/clokemenu.m`). Zum Testen ohne Fenster kennt `vmctl.py` dafür `click`, `move`, `xkey` und `type`
-- Sprache wie bei macOS: Grundsprache ist Englisch, Deutsch gibt es in Systemeinstellungen > Language & Region (Sprache & Region) und im Einrichtungsassistenten. CloakServer, Anmeldung, Menüleiste und die Namen der Programme wechseln sofort; Datum und Uhr folgen der Sprache (US-Format mit AM/PM oder deutsches Format). Im Code stehen die Texte englisch, `L()` übersetzt sie (`cloakserver/l10n.c`, Übersetzungen in `strings-de.h`, auch für den Installer; `cloakserver/l10n-check.py` meldet fehlende). Die Programmpakete heißen englisch (Notes.app, Calculator.app …), ihre deutschen Namen stehen wie bei macOS in `Contents/Resources/de.lproj/InfoPlist.strings`. Eingestellt ist die Sprache systemweit in `/etc/clokeos-language` (`CLOKE_LANGUAGE` in `config.sh` für selbst gebaute Images)
-- Einrichtungsassistent wie bei macOS beim ersten Start nach einer Installation (`cloakserver/setup.c`): „hello“ in wechselnden Sprachen, Sprache, Land oder Region (setzt die Zeitzone), eigener Account mit vollem Namen, Accountname und Passwort, Erscheinungsbild; danach ist der neue Account angemeldet. Er legt den Account an wie `brand.sh` das Gastkonto (master.passwd, passwd, Gruppe staff, Benutzerordner mit Desktop, Documents, Downloads, Pictures, Music, Movies und einer Begrüßung in der gewählten Sprache). Ausgelöst wird er von `/var/db/.RunClokeOSSetup`, das `recovery/build.sh` ins System des Releases legt; danach steht `/var/db/.ClokeOSSetupDone` da, wie `.AppleSetupDone` bei macOS
-- GTK-Thema ClokeOS (hell und dunkel, `overlay-desktop/share/themes`): Adwaita mit den Farben von CloakServer, violettem Akzent, flachen Werkzeugleisten, runden Knöpfen und Feldern mit Fokusring, schmalen Bildlaufleisten und runden Menüs; CloakServer meldet es über XSETTINGS
-- Freigaben > Entfernte Anmeldung (Sharing > Remote Login): SSH auf Port 22, wie bei macOS ein- und ausschaltbar; die Seite zeigt den passenden `ssh`-Befehl mit der IP-Adresse. Anmelden können sich Accounts mit Passwort. Dahinter steht PureDarwins sshd, gestartet von `/usr/libexec/clokeos-sshd`, das den Schalter in `/etc/clokeos-remote-login` liest
-- Dock mit den Icons aus `clokeos.html`, Laufanzeigen, Namensschild beim Überfahren und Kontextmenü auf der rechten Maustaste (Öffnen, Im Dock behalten oder Aus dem Dock entfernen, Im Fundus zeigen, Beenden); ein Klick startet das Programm oder holt seine Fenster zurück. Wie bei macOS steht Fundus vorn, dahinter die behaltenen Programme, dann laufende andere, Trennstrich und Papierkorb. Das Dock steht unten, links oder rechts, in drei Größen, und wird von selbst kleiner, wenn es sonst nicht auf den Bildschirm passt; Fenster weichen ihm beim Zoomen aus. Ein startendes Programm lässt sein Symbol hüpfen. Icons, deren Bild die Fläche nicht füllt, wie der Papierkorb, zieht CloakServer auf die Höhe der übrigen und setzt sie in die Mitte; der volle Papierkorb steht genau dort, wo der leere stand. Im Dunkelmodus ist das Dock helleres, violett getöntes Glas, damit es sich vom Abendhimmel abhebt
-- Compositor (`comp.c`): CloakServer setzt das Bild selbst zusammen (X-Erweiterungen Composite, Damage, XFixes, Render). Fenster bekommen weiche Schatten und runde Ecken ohne Treppchen, das aktive einen größeren Schatten. Dock, Menüs und Namensschilder sind Glas: Sie zeigen unscharf, was dahinter liegt, auch Fenster, mit Tönung und Lichtkante wie im Liquid-Glass-Stil des Prototyps. Neu gezeichnet wird nur, was sich geändert hat; unter Emulation kostet ein ganzes Bild 100 bis 300 ms, ein Teilbild meist 50 bis 60 ms, ein blinkender Cursor 5 bis 15 ms. CloakServer meldet sich als Compositor (`_NET_WM_CM_S0`), GTK-Programme mit eigener Durchsicht bekommen dann 32-Bit-Rahmen. Fehlt Composite, oder mit `--compositor aus`, arbeitet CloakServer wie zuvor ohne Compositor; das Glas zeigt dann nur das Hintergrundbild, die Ecken schneidet XShape ab.
-- Animationen (nur mit Compositor): Neue Fenster wachsen aus 94 % Größe und blenden ein, „Ins Dock“ lässt das Fenster zu seinem Dock-Symbol schrumpfen und fliegen, ein Klick aufs Symbol holt es auf demselben Weg zurück
-- Hell und Dunkel gelten auch für die Programme, sogar für die, die schon laufen: CloakServer ist XSETTINGS-Manager (`_XSETTINGS_S0`) und meldet GTK das Thema `Adwaita` oder `Adwaita-dark` (ein kleines Thema in `/share/themes`, das GTKs eingebaute dunkle Variante lädt). Fundus, Terminal und die übrigen GTK-Programme wechseln dann sofort mit, wie bei macOS; reine X-Programme wie xcalc bleiben, wie sie sind
-- Fenster: Rahmen mit Titelleiste und Ampelknöpfen (schließen, ins Dock, zoomen), runde Ecken, ziehen, Größe an der Ecke unten rechts ändern, Doppelklick auf den Titel zoomt, Alt+Tab wechselt das Fenster, Alt+F4 schließt es
-- „Über ClokeOS“ wie im Prototyp, mit Version und Build aus `/etc/clokeos-release` und den Werten des Rechners (`sysctl`)
-- Anmeldung wie im Prototyp, vor dem Desktop und nach dem Abmelden (siehe unten)
+![Global menu bar: Fundus (Thunar) with its menus File, Edit, View, Go, Bookmarks, Window and Help at the top next to the cape; the View menu is open](clokeos-darwin/screenshots/menubar.png)
 
-![Globale Menüleiste in QEMU: Fundus (Thunar) mit /Users/gast; oben in der Leiste neben dem Umhang stehen Fundus, File, Edit, View, Go, Bookmarks, Fenster und Help. Das Menü View ist offen, mit Häkchen bei Statusbar und Menubar, daneben das Untermenü Side Pane mit Shortcuts, Tree und Image Preview; das Fenster selbst hat keine Menüleiste mehr](clokeos-darwin/menueleiste.png)
+![Login screen: blurred Golden Gate, date and a large clock, the accounts with avatars and a password field, at the bottom Sleep, Restart and Shut Down](clokeos-darwin/screenshots/login.png)
 
-![Anmeldebildschirm in QEMU: unscharfes Goldenes Tor, Datum und große Uhr, darunter zwei Konten, groß und violett „G“ für Gast, kleiner und grau „S“ für System Administrator; unter Gast das Passwortfeld mit dem Hinweis, dass die Eingabetaste genügt, unten Ruhezustand, Neustart und Ausschalten](clokeos-darwin/anmeldung.png)
+The login shows date and clock over the blurred wallpaper, the accounts with avatars, the password field under the selected account, and Sleep, Restart and Shut Down. Built images have the local user Guest (account `guest`, UID 501, group staff, home `/Users/guest`), created by `brand.sh` from `CLOKE_USER` in `config.sh`; installed systems get the account from the setup assistant. Next to it is root ("System Administrator") for administration, since PureDarwin has neither su nor sudo. Passwords are checked with `crypt()` against `/etc/master.passwd`; a wrong one shakes the field as in the prototype.
 
-Die Anmeldung zeigt Datum und Uhr über dem unscharfen Hintergrund, darunter die Konten mit Avatar, das Passwortfeld unter dem ausgewählten Konto und die Knöpfe Ruhezustand, Neustart und Ausschalten. Wie im Prototyp gibt es den lokalen Benutzer Gast (Kontoname `gast`, UID 501, Gruppe staff, Ordner `/Users/gast` mit Desktop, Dokumente, Downloads, Bilder und Musik, auf dem Schreibtisch `Willkommen.txt`); `brand.sh` legt ihn nach `CLOKE_USER` in `config.sh` an. Daneben steht root („System Administrator“, grau) für Verwaltungsaufgaben, denn PureDarwin hat weder su noch sudo. Ein Klick oder die Pfeiltasten wählen das Konto. Beide haben kein Passwort, Gast ein leeres Feld und root PureDarwins `*` in `/etc/master.passwd`; dann genügt die Eingabetaste, wie der Hinweis sagt. Steht dort ein Passwort-Hash, prüft CloakServer ihn mit `crypt()`; ein falsches Passwort schüttelt das Feld wie im Prototyp und leert es. Wie bei macOS kann nur root `/etc/master.passwd` lesen, die Programme der Sitzung finden die Namen in `/etc/passwd`.
+CloakServer itself runs as root, like loginwindow on macOS, and starts apps as the logged-in user, with their rights, home and environment and their own session D-Bus. "Log Out" closes all windows, ends all of the user's processes and returns to the login. Shut down and restart are run by CloakServer as root.
 
-CloakServer selbst läuft als root, wie loginwindow bei macOS, und startet die Programme als der angemeldete Benutzer: mit dessen Rechten, Ordner und Umgebung (`HOME`, `USER`, `XDG_RUNTIME_DIR=/var/run/user/<UID>`) und einem eigenen D-Bus für die Sitzung (`dbus-launch` als der Benutzer). Fundus öffnet so `/Users/gast`, Notizen und Papierkorb liegen im Benutzerordner, und Thunar warnt nicht mehr vor dem root-Konto. „Abmelden“ im ClokeOS-Menü schließt alle Fenster, beendet danach alle Prozesse des Benutzers (auch D-Bus und xfconfd) und kehrt zur Anmeldung zurück. „Ruhezustand“ schaltet nur den Bildschirm schwarz; danach zeigt die Anmeldung nur das angemeldete Konto, und die Sitzung läuft weiter. Ausschalten und Neustart führt CloakServer als root aus. Mit `CLOKE_LOGIN="nein"` startet der Desktop ohne Anmeldung mit dem ersten Konto (Gast).
+#### Apps as on macOS
 
-#### Programme wie bei macOS
+![Launchpad: a search field and the apps in a grid over the blurred wallpaper](clokeos-darwin/screenshots/launchpad.png)
 
-![Launchpad in QEMU: über dem unscharfen Hintergrund ein Suchfeld und die Programme im Raster, darunter Fenster-Demo mit Verbotszeichen; rechts das Dock in Groß, am Ende Dillo als laufendes Programm](clokeos-darwin/launchpad.png)
+Apps in ClokeOS are bundles as on macOS: a folder `Name.app` with `Contents/Info.plist` (`CFBundleName`, `CFBundleIdentifier`, `CFBundleExecutable`, `CFBundleIconFile` …), the executable in `Contents/MacOS/` and the icon in `Contents/Resources/`. CloakServer finds them in `/System/Applications` (utilities in `Utilities/`), `/Applications` and `~/Applications`; Fundus (in a theater, the room where costumes and capes hang) lives in `/System/Library/CoreServices` like the Finder. Installing works as on macOS: drag the bundle into `/Applications` or `~/Applications`, remove it with the Trash. Info.plist may be XML or binary, icons SVG, PNG or `.icns`.
 
-Programme sind in ClokeOS Pakete wie bei macOS: ein Ordner `Name.app` mit `Contents/Info.plist` (`CFBundleName`, `CFBundleIdentifier`, `CFBundleExecutable`, `CFBundleIconFile` …), der Startdatei in `Contents/MacOS/` und dem Icon in `Contents/Resources/`. CloakServer sucht sie wie macOS in `/System/Applications` (Dienstprogramme in `Utilities/`), `/Applications` und `~/Applications`; Fundus liegt wie der Finder in `/System/Library/CoreServices`. Installiert wird auch wie bei macOS: das Paket in den Ordner `/Applications` ziehen (die Gruppe staff darf dort schreiben) oder nach `~/Applications`, entfernt wird es mit dem Papierkorb. CloakServer schaut alle zwei Sekunden nach, Launchpad und Dock zeigen neue Programme also sofort. Die Info.plist darf XML oder binär sein (`bplist00`), das Icon SVG, PNG oder `.icns`; ohne Icon zeichnet CloakServer ein Quadrat mit dem Anfangsbuchstaben. Zwei Schlüssel kennt nur ClokeOS: `CLWindowClasses` (WM_CLASS der Fenster, damit sie zum Symbol im Dock finden) und `CLInternal` für das, was CloakServer selbst zeichnet. Ohne `CLWindowClasses` findet CloakServer die Fenster über die PID des gestarteten Programms oder den Namen der Startdatei.
+Launchpad ("Applications" in the Dock, the magnifier in the menu bar) shows all apps in a grid; typing searches, Return starts the first, Esc closes. The Dock is stored per user in `~/Library/Preferences/com.clokeos.dock.plist` with the keys of `com.apple.dock`, the appearance in `.GlobalPreferences.plist` (`AppleInterfaceStyle`).
 
-Das Launchpad („Programme“ im Dock, die Lupe in der Menüleiste) zeigt alle Programme im Raster wie `#launchpad` im Prototyp; Tippen sucht, die Eingabetaste startet das erste, Esc schließt. Das Dock merkt sich ClokeOS für jeden Benutzer in `~/Library/Preferences/com.clokeos.dock.plist` mit den Schlüsseln von `com.apple.dock` (`persistent-apps`, `orientation`, `tilesize`), das Erscheinungsbild in `.GlobalPreferences.plist` (`AppleInterfaceStyle`), die Grundeinstellung liegt in `/Library/Preferences/com.clokeos.dock.plist`.
+The system apps are generated by `cloakserver/bundles.py`; their executables are small scripts in front of programs from the PureDarwin image:
 
-Die Systemprogramme erzeugt `cloakserver/bundles.py` beim Bauen; ihre Startdateien sind kleine Shell-Skripte vor Programmen des PureDarwin-Images:
-
-| Programm | Ort | dahinter |
+| App | Location | behind it |
 |---|---|---|
 | Fundus | `/System/Library/CoreServices` | Thunar |
-| Programme | `/System/Applications` | Launchpad in CloakServer |
+| Applications | `/System/Applications` | Launchpad in CloakServer |
 | Search | `/System/Applications` | NetSurf |
-| Notizen | `/System/Applications` | nano in xfce4-terminal (`~/Notizen.txt`) |
-| Rechner | `/System/Applications` | xcalc |
-| Kalender | `/System/Applications` | `/usr/libexec/clokeos-kalender` in xfce4-terminal: drei Monate, deutsch, heute markiert |
-| Systemeinstellungen | `/System/Applications` | eigenes Fenster in CloakServer (siehe unten) |
-| Terminal | `/System/Applications/Utilities` | xfce4-terminal, mit Farben und Schrift wie im Prototyp (`/etc/xdg/xfce4/terminal/terminalrc`) |
-| Aktivitätsanzeige | `/System/Applications/Utilities` | `/usr/libexec/clokeos-aktivitaet` in xfce4-terminal: Prozesse nach Rechenzeit |
-| Xfce-Einstellungen | `/System/Applications/Utilities` | xfce4-settings-manager für alles, was die Systemeinstellungen nicht haben |
-| Dillo | `/Applications` | der Browser Dillo, als Beispiel für ein nachinstalliertes Programm |
-| Papierkorb (im Dock) | | Thunar in `~/.Trash` |
+| Notes | `/System/Applications` | nano in xfce4-terminal |
+| Calculator | `/System/Applications` | xcalc |
+| Calendar | `/System/Applications` | `/usr/libexec/clokeos-kalender` in xfce4-terminal |
+| System Settings | `/System/Applications` | a window in CloakServer |
+| Terminal | `/System/Applications/Utilities` | xfce4-terminal with the prototype's colors and font |
+| Activity Monitor | `/System/Applications/Utilities` | `/usr/libexec/clokeos-aktivitaet` in xfce4-terminal |
+| Xfce Settings | `/System/Applications/Utilities` | xfce4-settings-manager for everything System Settings lacks |
+| Dillo | `/Applications` | the Dillo browser, as an example of an added app |
 
-**Mac-Programme.** ClokeOS ist Darwin 20.5, also der Unterbau von macOS 11, und führt Mach-O-Programme seiner Architektur aus (x86_64, auf arm64 arm64). Ein Kommandozeilenprogramm, auf dem Mac mit Apples SDK gebaut (`clang -target x86_64-apple-macos11.0`), läuft unverändert. Für Programme mit Fenstern bringt das Desktop-Image Darlings Mac-Frameworks mit, gebaut für ClokeOS auf PureDarwins echtem objc4 und dyld (`clokeos-darwin/macapps/`): CoreFoundation, Foundation, AppKit, Cocoa, CoreGraphics, CoreText, QuartzCore und weitere unter `/Library/ClokeOS/MacFrameworks`. AppKit zeichnet in Software und kopiert jedes Fenster per XShm zu CloakServer (auf arm64 per XPutImage), das es mit Titelleiste, Ampel und Schatten verwaltet wie jedes andere Fenster. Beispiel ist `Hallo.app` in `/Applications`, eine kleine Cocoa-App, mit Apples SDK universal gebaut (x86_64 und arm64 in einer Datei): Sie startet aus Launchpad und Dock, hat Menü, Textfeld und Knopf, reagiert auf Maus und Tastatur und beendet sich mit der roten Ampel. Das Hauptmenü eines Mac-Programms steht wie bei macOS oben in CloakServers Menüleiste, nicht im Fenster, mit Kürzeln wie ⌘H, gesperrten Einträgen, Haken und Untermenüs (`macapps/appkit/clokemenu.m`).
+**Mac apps.** ClokeOS is Darwin 20.5, the foundation of macOS 11, and runs Mach-O programs of its architecture (x86_64, arm64 on arm64). A command line program built on the Mac with Apple's SDK (`clang -target x86_64-apple-macos11.0`) runs unchanged. For apps with windows the desktop image brings Darling's Mac frameworks, built for ClokeOS on PureDarwin's real objc4 and dyld (`clokeos-darwin/macapps/`): CoreFoundation, Foundation, AppKit, Cocoa, CoreGraphics, CoreText, QuartzCore and more under `/Library/ClokeOS/MacFrameworks`. AppKit draws in software and copies each window to CloakServer, which manages it like any other window. The example is `Hallo.app` in `/Applications`, a small Cocoa app built universal with Apple's SDK: it starts from Launchpad and Dock, has a menu (shown in CloakServer's menu bar), a text field and a button, and quits with the red traffic light.
 
-![Hallo in ClokeOS: ein Fenster „Hallo ClokeOS“ mit Menü Hallo und Ablage, Textfeld „ClokeOS“, Knopf „Hallo sagen“ und der Antwort „Hallo, ClokeOS!“; in der Menüleiste steht Hallo, im Dock das Icon mit Laufpunkt](clokeos-darwin/mac-app-hallo.png)
+![Hallo, a small Cocoa app built with Apple's SDK, running in ClokeOS; its menu is in the menu bar, its icon in the Dock](clokeos-darwin/screenshots/mac-app-hello.png)
 
-Bevor ein Programm startet, liest CloakServer seine Startdatei: Architektur (auch in Universal-Programmen) und jede Bibliothek, die sie lädt. Liegt ein Framework nur in `/Library/ClokeOS/MacFrameworks`, startet CloakServer das Programm mit `DYLD_FRAMEWORK_PATH`; PureDarwins eigene CoreFoundation bleibt für alles andere, denn zwei in einem Prozess gehen nicht. Fehlt etwas, erscheint statt eines stillen Fehlschlags ein Hinweis wie bei macOS, im Launchpad trägt das Icon ein Verbotszeichen. Getestet mit TextEdit aus macOS (nur arm64: „nur für Mac mit Apple-Chip gebaut“) und, vor den Mac-Frameworks, einer Cocoa-App für Intel („braucht Cocoa.framework“). Wie weit das trägt und was noch fehlt, steht in `~/ClokeOS-work/upstream/appkit-machbarkeit.md`; kurz: einfache Programme mit klassischen AppKit-Elementen ja, Programme mit Layern, OpenGL, Metal, SwiftUI oder Swift nicht.
+Before an app starts, CloakServer reads its executable: architecture (also in universal binaries) and every library it loads. If a framework is only in `/Library/ClokeOS/MacFrameworks`, CloakServer starts the app with `DYLD_FRAMEWORK_PATH`. If something is missing, a notice appears as on macOS instead of a silent failure, and Launchpad marks the icon. Simple apps with classic AppKit controls work; apps with layers, OpenGL, Metal, SwiftUI or Swift do not.
 
-![Hinweis in ClokeOS: „Fenster-Demo“ kann nicht geöffnet werden; das Mac-Programm braucht Cocoa.framework (Aufnahme aus der Zeit vor den Mac-Frameworks)](clokeos-darwin/mac-app.png)
+**System Settings** is a window in CloakServer: Appearance, Desktop & Dock, Language & Region, Sharing and Applications. Everything else, such as keyboard and mouse settings, stays in Xfce Settings.
 
-**Systemeinstellungen** sind ein eigenes Fenster in CloakServer, gestaltet wie die Einstellungen im Prototyp: Erscheinungsbild (Hell, Dunkel, Automatisch, mit kleinen Vorschaubildern), Schreibtisch & Dock (Position Links, Unten, Rechts und die Größe Klein, Mittel, Groß) und Programme (wie man installiert, wie viele Mac-Programme gefunden sind). Alles Übrige, etwa Tastatur und Maus, bleibt in den Xfce-Einstellungen.
+![System Settings: the panes Appearance, Desktop & Dock, Applications, Language & Region and Sharing; Appearance with Light, Dark and Auto](clokeos-darwin/screenshots/settings.png)
 
-![Systemeinstellungen in QEMU: links die Bereiche, rechts Schreibtisch & Dock mit drei Vorschaubildern für die Position und den Knöpfen Klein, Mittel, Groß; das Dock steht links](clokeos-darwin/einstellungen.png)
+CloakServer is built on the Mac, without Linux and without the VM: `cloakserver/build.sh` pulls headers and libraries straight out of the desktop image with `debugfs` and compiles with Apple's clang for `x86_64-apple-macos11.0`, like PureDarwin's own programs (Mach-O for macOS 11, classic dyld info). `cloakserver/resources.py` runs the icon code from `clokeos.html` in macOS' own JavaScript engine (`osascript -l JavaScript`) and writes logo and icons as SVG.
 
-Gebaut wird CloakServer auf dem Mac, ohne Linux und ohne die VM: `cloakserver/build.sh`, das `brand.sh` aufruft, holt mit `debugfs` Header und Bibliotheken direkt aus dem Desktop-Image nach `~/ClokeOS-work/sysroot/` und übersetzt mit Apples clang für `x86_64-apple-macos11.0`, so wie PureDarwins eigene Programme gebaut sind (Mach-O für macOS 11, klassische dyld-Info). Zwei Eigenheiten: PureDarwins `sys/cdefs.h` braucht `-DPLATFORM_MacOSX`, sonst verweist das Programm auf Symbole wie `fopen$UNIX2003`, die PureDarwins libSystem nicht hat; und `ifaddrs.h` fehlt, `getifaddrs` gibt es aber. `cloakserver/resources.py` lässt den Icon-Code aus `clokeos.html` von macOS' eigener JavaScript-Engine ausführen (`osascript -l JavaScript`) und schreibt Logo und Icons als SVG nach `Resources/`. Eine Änderung an den Icons im Prototyp landet so beim nächsten `./brand.sh` im Image.
+Limits:
 
-Grenzen:
+- The blur is an approximation, title bars are opaque.
+- Animations stutter under emulation (one frame of the moving area takes 150 to 800 ms there).
+- Under emulation apps take 10 to 25 seconds to start.
+- Mac apps only run as far as Darling's AppKit goes; apps only for Apple silicon do not start on x86_64.
+- There is no user management in System Settings yet, and no su or sudo.
 
-- Die Unschärfe ist eine Näherung: Der Compositor verkleinert den Hintergrund viermal auf die Hälfte und zieht ihn wieder auf. Titelleisten sind deckend, nicht aus Glas.
-- Animationen ruckeln unter Emulation: Ein Bild der bewegten Fläche kostet dort 150 bis 800 ms. Damit eine Animation nicht in einem Sprung endet, zeigt CloakServer jede in mindestens vier Bildern; „Ins Dock“ dauert in QEMU so gut 1 s, das Zurückholen eines großen Terminals 3 s, gedacht sind 0,34 und 0,3 s.
-- Die Programme sind englisch, denn PureDarwins libc kennt keine deutsche Locale (`Locale not supported by C library`). Ihre Menüs stehen im Programmfenster, nicht in der Menüleiste.
-- Mac-Programme mit Fenstern laufen nur, soweit Darlings AppKit reicht (siehe oben): Views mit Layern bleiben leer, Schriften wie „San Francisco“ fehlen. Programme nur für Apple-Chips starten nicht. Die Mac-Frameworks kommen nur ins Image, wenn ihre Quellen geladen sind (`macapps/README.md`). Fundus (Thunar) zeigt `.app`-Pakete als Ordner, ein Doppelklick öffnet den Ordner statt das Programm; gestartet wird aus Launchpad oder Dock. Icons aus Asset-Katalogen (`Assets.car`) kann CloakServer nicht lesen, nur `.icns`, PNG und SVG.
-- Bei Emulation brauchen Programme 10 bis 25 Sekunden zum Start.
-- Konten legt nur `brand.sh` an. Eine Benutzerverwaltung in den Systemeinstellungen fehlt ebenso wie su und sudo; als Gast gibt es keine Verwaltungsrechte, dafür meldet man sich als System Administrator an.
-- Auf arm64 starten Mac-Programme nicht, deren Code `___chkstk_darwin` aufruft (siehe [Desktop auf arm64](#desktop-auf-arm64)).
-- Das Desktop-Image gehört nicht zu den Releases (6 GiB), `release.sh` baut nur das Minimal-Image.
+### Desktop on arm64
 
-### Desktop auf arm64
-
-![Anmeldung auf arm64 mit Apples Hypervisor, 12,6 Sekunden nach dem Start von QEMU](clokeos-darwin/anmeldung-arm64.png)
-
-![Desktop auf arm64: Terminal, Fundus und „Über ClokeOS“ mit Architektur arm64, Prozessor „Apple processor“](clokeos-darwin/desktop-arm64.png)
+![Login on arm64 with Apple's hypervisor, 12.6 seconds after QEMU starts](clokeos-darwin/screenshots/login-arm64.png)
 
 ```bash
 cd clokeos-darwin && CLOKEOS_ARCH=arm64 CLOKEOS_FLAVOR=desktop ./brand.sh && CLOKEOS_ARCH=arm64 CLOKEOS_FLAVOR=desktop ./run.sh
 ```
 
-Basis ist PureDarwins Vorschau-Image `puredarwin-arm64-virt.img` (3,1 GiB). Mit Apples Hypervisor (HVF) steht die Anmeldung 12,6 Sekunden nach dem Start von QEMU da (drei Messungen, Shell nach 7,1 s; x86_64 emuliert: knapp 90 Sekunden), der Desktop eine Sekunde nach der Anmeldung; Terminal und Fundus öffnen in etwa einer Sekunde. Gemessen am 22.10.2026 auf dem Mac mit Apple-Chip. Was dafür nötig war, weil PureDarwins arm64-Image an mehreren Stellen nicht trägt:
+The base is PureDarwin's preview image `puredarwin-arm64-virt.img` (3.1 GiB). With Apple's hypervisor (HVF) the login is there 12.6 seconds after QEMU starts (shell after 7.1 s; x86_64 emulated: almost 90 s), the desktop one second after logging in. What it took, because PureDarwin's arm64 image falls short in several places:
 
-- **Bild über virtio-gpu.** Mit ramfb startet kein Grafiktreiber: `IOGOPFramebuffer` hängt sich auf arm64 nur an einen „framebuffer“-Knoten, den PureDarwin bloß für den Raspberry Pi anlegt. Xorgs Treiber `puredarwingop` nimmt auf arm64 zuerst `IOVirtIOGPU`; `run.sh` gibt dem Desktop deshalb `virtio-gpu-pci` (1280 × 800). Die Firmware bietet dort nur Blt an, der Kernel bekommt also keinen Framebuffer; mit PureDarwins Boot-Argumenten `-v gopconsole=1 serial_video_mirror=1` malt er seine Konsole trotzdem und hängt in einer Endlosschleife. ClokeOS setzt eigene Boot-Argumente ohne diese (`config.sh`). Ein Bootlogo gibt es auf arm64 noch nicht; das Bild bleibt schwarz, bis CloakServer den Umhang zeigt.
-- **Kernel-Panik beim ersten Bild.** `IOVirtIOGPU::setConsoleDrawing` schaltet beim ersten Bild von Xorg die Kernel-Konsole ab; dabei schreibt der Kernel in `cons_ops_index`, das in PureDarwins arm64-Kernel schreibgeschützt liegt („Unexpected fault in kernel static region“). `kcfix.py` ersetzt diesen einen Aufruf im Kernel Collection durch `nop` (die x86-Farbkorrektur braucht arm64 nicht, dort zeichnet `IOGOPFramebuffer` nicht).
-- **Xlib nur statisch.** Im arm64-Image gibt es Xlib und alle X-Erweiterungen nur als Archive; cairo und GTK haben je eine eigene Kopie eingebaut. `cloakserver/build.sh` linkt CloakServer für `arm64-apple-macos11.0` ebenso statisch (vor cairo, damit kein X-Aufruf an cairos Kopie geht) und ohne `___chkstk_darwin` (`-fno-stack-check`), das PureDarwins libSystem fehlt.
-- **libXcursor.** Die einzige `libXcursor.1.dylib` des Images ist eine x86_64-Datei, GTK sucht die 13 Xcursor-Funktionen aber zur Laufzeit; Terminal, NetSurf und Xfce-Einstellungen brachen ab. ClokeOS baut sie aus `libXcursor.a` neu und lädt sie mit `DYLD_INSERT_LIBRARIES` in die Sitzung.
-- **Kein System-V-Shared-Memory.** `shmget` beendet Programme mit SIGSYS (cairo prüft damit MIT-SHM). CloakServer ignoriert SIGSYS, seine Programme erben das und zeichnen ohne Shared Memory.
-- **D-Bus.** PureDarwins `dbus-launch` startet auf arm64 nicht (sucht `xcb_parse_display`). Die Sitzung läuft jetzt auf beiden Architekturen über `dbus-run-session`, der Bus des Benutzers über `dbus-daemon --fork`.
-- **Netz und Uhr.** configd benennt die Karte, holt aber keine Adresse, und startete es nach `com.clokeos.network`, räumte es dessen Default-Route wieder ab (dann keine Uhrzeit, kein Internet). brand.sh nimmt configd aus arm64-Images heraus; `com.clokeos.network` (feste Adresse, Uhr per HTTP, bis zu fünf Versuche) kommt in jedes arm64-Image. CloakServer wartet höchstens 5 s auf die Uhr, damit die Anmeldung nicht 1970 und das Nachtbild zeigt; Xorg startet unterdessen schon.
-- **Xorg kreiste mit voller Last.** PureDarwins Tastatur- und Maustreiber beantworten `poll` sofort mit `POLLNVAL`, Xorg wartete deshalb nie: Eine zsh-Schleife mit 2 Mio. Durchläufen brauchte 6,8 statt 3,5 s. `cloakserver/xpoll.c` (in Xorg geladen von `cloakserver-xorg`) fragt solche Geräte alle 10 ms ab; danach braucht die Schleife mit Xorg 3,5 s, Xorg selbst 0,1 % CPU. x86_64 hat denselben Fehler; dort liegt Xorg mit der Bibliothek bei etwa 4 % unter Emulation.
+- **Display via virtio-gpu.** `IOGOPFramebuffer` only attaches to a "framebuffer" node on arm64, which PureDarwin only creates for the Raspberry Pi; `run.sh` gives the desktop `virtio-gpu-pci` (1280 × 800), which Xorg's `puredarwingop` drives through `IOVirtIOGPU`.
+- **Kernel panic on the first frame.** `IOVirtIOGPU::setConsoleDrawing` turns off the kernel console on Xorg's first frame and writes to `cons_ops_index`, which is read-only in PureDarwin's arm64 kernel; `kcfix.py` replaces that one call with `nop`.
+- **Static Xlib only**, **libXcursor** rebuilt from the archive, **no System V shared memory** (SIGSYS ignored), **D-Bus** via `dbus-run-session`, **network and clock** via `com.clokeos.network` (fixed address, time over HTTP), and **Xorg spinning at full load** because PureDarwin's keyboard and mouse drivers answer `poll` with `POLLNVAL` (`cloakserver/xpoll.c` polls them every 10 ms instead).
 
-Mac-Programme: arm64-Kommandozeilenprogramme aus Apples SDK laufen (auch mit „chained fixups“), arm64e (Apples eigene Programme) lehnt der Kernel ab („bad CPU type“). CloakServer prüft Programme gegen die eigene Architektur: Intel-Programme melden auf arm64, dass es kein Rosetta gibt, reine arm64e-Programme, dass ClokeOS arm64e nicht ausführt.
+Darling's Mac frameworks also run on arm64: `macapps/cfarm64.S` and `cfarm64.m` implement Apple's arm64 calling convention for message forwarding and `NSInvocation`, checked against clang itself with 3200 random signatures (`macapps/arm64abi.py`) and in the VM.
 
-#### Mac-Programme mit Fenstern auf arm64
+### Architectures
 
-![Hallo auf arm64, aus Launchpad als Gast gestartet: oben in der Menüleiste ist Hallos Menü „Ablage“ mit „Hallo sagen ⌘H“ und „Fenster schließen ⌘W“ geöffnet, im Fenster ohne eigene Menüzeile steht „Hallo, arm64!“](clokeos-darwin/mac-app-hallo-arm64.png)
-
-Seit dem 23.10.2026 laufen Darlings Mac-Frameworks auch auf arm64. `CLOKEOS_ARCH=arm64 CLOKEOS_FLAVOR=desktop ./brand.sh` baut sie mit `macapps/foundation.sh` und `appkit.sh` für arm64 (nach `~/ClokeOS-work/out/macapps-arm64`) und legt sie samt `Hallo.app` ins Image. Aus Launchpad gestartet, als Gast, steht Hallos Fenster nach 0,12 bis 0,24 s da (fünf Messungen mit HVF; x86_64 emuliert: 3,5 s); Tippen, Knopf, Menü und Beenden gehen wie auf x86_64. Was dafür nötig war:
-
-- **Aufrufkonvention.** Darlings CoreFoundation hatte Nachrichtenweiterleitung und `NSInvocation` nur in x86- und arm32-Assembler und rechnete `NSMethodSignature` nach der x86_64-Konvention. `macapps/cfarm64.S` und `cfarm64.m` setzen Apples arm64-Konvention um: x0–x7 und v0–v7, dicht gepackter Stack, HFA (`CGPoint`, `CGRect`, … Glied für Glied in v-Registern), Strukturen über 16 Byte per Verweis, große Rückgabewerte über x8, Erweiterung kleiner Ganzzahlen auf 32 Bit. Geprüft auf dem Mac gegen clang selbst (`macapps/arm64abi.py`: 3200 zufällige Signaturen, jeweils Weiterleitung und Aufruf, dazu Ausnahmen durch beide Wege, 0 Fehler) und in der VM mit `macapps/invprobe.m`: 15 von 15 Prüfungen wie mit Apples Foundation (NSInvocation mit 22 Argumenten, forwardInvocation:, NSProxy, NSUndoManager, KVO, KVC mit Strukturen, CFEqual, NSPredicate, NSTimer). Die Foundation-Probe besteht 24 von 25 wie auf x86_64.
-- **Typumwandlungen.** Apples SDK erlaubt auf arm64 kein `objc_msgSend` und keinen IMP-Aufruf ohne Typumwandlung (variadische Argumente lägen auf dem Stack statt in Registern). Darling hatte 24 solche Stellen, darunter `CFEqual` mit Objective-C-Objekten und KVO; die Korrekturen stehen in `macapps/patches/arm64/`.
-- **Einstellungen hingen.** CoreFoundation fragt für „ByHost“-Einstellungen `gethostuuid` ohne Zeitlimit, und PureDarwin veröffentlicht auf arm64 keine Plattform-UUID: Jedes Programm, das `NSUserDefaults` liest, also jedes AppKit-Programm, blieb für immer im Kernel stehen. Jetzt fragt CF mit 1 ns Zeitlimit und nimmt ohne UUID wie Apple „UnknownHostID“.
-- **libSystem.** PureDarwins arm64-libSystem fehlen gegenüber x86_64 elf Symbole, darunter `nftw`, mit dem NSFileManager Ordner löscht; `macapps/syscompat.c` bringt eine eigene Fassung mit (auf dem Mac gegen Apples verglichen). Es fehlt auch `___chkstk_darwin`, die Frameworks sind deshalb mit `-fno-stack-check` gebaut.
-- **X11.** Xlib gibt es nur statisch; die `X11.backend`-Bundles von AppKit und CoreGraphics linken sie je selbst ein (jedes hat ohnehin seine eigene X-Verbindung). Ohne System-V-Shared-Memory nimmt AppKit `XPutImage`; `shmget` läuft dafür mit ignoriertem SIGSYS, sodass auch ein aus der Shell gestartetes Programm nicht beendet wird.
-
-Offen: Mac-Programme, deren Code `___chkstk_darwin` aufruft (clang tut das auf arm64 für Funktionen mit mehr als 4 KiB Stack), starten nicht („Symbol not found: ___chkstk_darwin“). Dafür müsste PureDarwins libSystem das Symbol bekommen, etwa über eine zusätzliche Re-Export-Bibliothek; Hallo braucht es nicht, `fprobe` und `invprobe` sind mit `-fno-stack-check` gebaut.
-
-Offen: Die VM belegt auch im Leerlauf einen Kern des Macs ganz; im Gast rechnet dann kein Prozess, die Zeit verbringt PureDarwins Kernel in seiner Leerlaufschleife (nicht weiter untersucht). Die x86_64-Desktop-Variante ist mit allen Änderungen neu gebaut und gebootet (Anmeldung, Terminal, D-Bus über dbus-daemon).
-
-### Architekturen
-
-| Ziel | Stand | Basis |
+| Target | State | Base |
 |---|---|---|
-| x86_64 (QEMU q35, UEFI) | gebaut, gebootet, als Release | PureDarwin 20.5, `puredarwin-minimal.img` |
-| x86_64 mit Desktop | gebaut, gebootet bis CloakServer, kein Release | PureDarwins Vorschau-Image `puredarwin.img` (6,1 GiB, von puredarwin.org) |
-| arm64 (QEMU virt) | gebaut, gebootet mit Apples Hypervisor und emuliert, Netzwerk, noch kein Release | PureDarwins Vorschau-Image `puredarwin-arm64-virt-minimal.img` (578 MiB, von puredarwin.org) |
-| arm64 mit Desktop | gebaut, gebootet bis CloakServer mit HVF, Anmeldung nach 12,6 s, Mac-Programme mit Darlings AppKit, kein Release | PureDarwins Vorschau-Image `puredarwin-arm64-virt.img` (3,1 GiB, von puredarwin.org) |
-| Raspberry Pi 3 | offen | PureDarwin bootet dort bis zur Shell, bietet aber kein fertiges Image an |
+| x86_64 (QEMU q35, UEFI) | built, booted, released | PureDarwin 20.5, `puredarwin-minimal.img` |
+| x86_64 desktop | built, booted, released (installer, USB sticks, SSD image) | PureDarwin's preview image `puredarwin.img` |
+| x86_64 on real PCs | tested on an HP 15s-fq5655ng: boot from USB, recovery | the same |
+| arm64 (QEMU virt) | built, booted with Apple's hypervisor and emulated | `puredarwin-arm64-virt-minimal.img` |
+| arm64 desktop | built, booted with HVF, released (installer) | `puredarwin-arm64-virt.img` |
+| Raspberry Pi 3 | open | PureDarwin boots there to a shell but has no ready image |
 
-Die Architektur wählt `CLOKEOS_ARCH`, für alle Skripte gleich:
+The architecture is chosen with `CLOKEOS_ARCH` for all scripts (`CLOKEOS_ARCH=arm64 ./brand.sh && CLOKEOS_ARCH=arm64 ./run.sh`). On arm64 `run.sh` uses Apple's hypervisor (HVF, `-cpu host`) on a Mac with Apple silicon; `--tcg` emulates instead.
 
-```bash
-CLOKEOS_ARCH=arm64 ./brand.sh && CLOKEOS_ARCH=arm64 ./run.sh
-```
+### Drivers and performance
 
-Für arm64 lädt `fetch.sh` PureDarwins Vorschau-Image. Trotz des Namens ist es die Variante `arm64-virt-minimal-release` (Release-Kernel, ext4-Wurzel auf der Partition, keine RAM-Disk); `brand.sh` würde eine RAM-Disk in der EFI-Partition aber auch bearbeiten. `run.sh` startet `qemu-system-aarch64` wie PureDarwins eigener Runner (virt, GICv3, virtio-Platte und -Netz, ramfb), auf einem Mac mit Apple-Chip mit Apples Hypervisor (HVF, `-cpu host`). Bis zur Eingabeaufforderung vergehen dann etwa 7 Sekunden ab dem Start von QEMU. `--tcg` emuliert stattdessen (`-cpu neoverse-n2`, etwa 16 Sekunden; mit `-cpu max` stürzt laut PureDarwin die Firmware ab).
+Measured on a Mac with Apple silicon (minimal image, time from QEMU start; the loop is `while (( i < 2000000 )); do (( i++ )); done` in the VM's zsh):
 
-Was ClokeOS auf arm64 zusätzlich erledigt, weil dem Image Teile von PureDarwins x86-System fehlen:
-
-- **Netzwerk.** Der virtio-Treiber hängt an der Karte, aber ohne configd bekommt sie keinen BSD-Namen (`en0`). `tools/netup.c` (`/usr/libexec/clokeos-netup`) bittet `IONetworkStack`, alle Karten zu registrieren, wie es configd tut. Danach setzt PureDarwins `netsetup` eine feste Adresse für QEMUs Benutzernetz (10.0.2.15, Router 10.0.2.2, DNS 10.0.2.3; andere Werte in `/etc/clokeos-network`). Das erledigt der launchd-Dienst `com.clokeos.network`; `brand.sh` legt ihn in jedes Image ohne configd. `tools/build.sh` übersetzt das Programm auf dem Mac gegen libSystem, IOKit und CoreFoundation aus dem Image.
-- **Uhr.** PureDarwin liest auf arm64 die Echtzeituhr der Maschine nicht, die Zeit beginnt bei 1970. Steht sie nach dem Netzwerkstart noch vor 2020, stellt `com.clokeos.network` sie nach dem `Date`-Kopf einer HTTP-Antwort von `example.com` (`TIME_HOST=` in `/etc/clokeos-network` schaltet das ab).
-- **Ausschalten.** PureDarwins arm64-Kernel kann die VM nicht ausschalten. Nach `reboot(RB_HALT)` hängt er beim Abmelden der Treiber, noch bevor er die Platten synchronisiert, bis sein Wachhund nach 30 Sekunden mit „Halt/Restart Timed Out“ in Panik geht. `poweroff` in der ClokeOS-zsh ruft deshalb vorher `sync` auf, und `run.sh` beendet QEMU 5 Sekunden nach `reboot(RB_HALT)`. Eine vorher geschriebene Datei ist danach noch da, ext4 meldet beim nächsten Start nichts zu reparieren.
-
-Noch nicht auf arm64: Bootlogo (der Loader-Patch müsste für `BOOTAA64.EFI` gebaut werden, und mingw-w64 aus Homebrew kann kein arm64), DHCP (statt der festen Adresse), Release.
-
-Ein Raspberry-Pi-Image müsste ClokeOS selbst bauen (PureDarwins Nix-Ziel `image-arm64-bcm2837`, siehe unten). Das `.img.xz`-Format der Releases ist so gewählt, dass Raspberry Pi Imager und balenaEtcher es direkt schreiben können.
-
-### Treiber und Leistung
-
-Gemessen auf dem Mac mit Apple-Chip (Minimal-Image, Zeit ab dem Start von QEMU; die Schleife ist `while (( i < 2000000 )); do (( i++ )); done` in der zsh der VM):
-
-| | bis zur Eingabeaufforderung | 2 Mio. Schleifendurchläufe |
+| | to the prompt | 2 million loop iterations |
 |---|---|---|
-| arm64 mit HVF | etwa 7 s | 2–3 s |
-| arm64 emuliert (TCG) | etwa 16 s | 18 s |
-| x86_64 emuliert (TCG) | etwa 66–71 s | 23 s |
+| arm64 with HVF | about 7 s | 2–3 s |
+| arm64 emulated (TCG) | about 16 s | 18 s |
+| x86_64 emulated (TCG) | about 66–71 s | 23 s |
 
-Auf einem Mac mit Apple-Chip ist arm64 mit HVF also rund zehnmal schneller als x86_64. Auf einem Intel-PC wäre es umgekehrt: Dort läuft x86_64 mit KVM (PureDarwins Runner `nix run .#kvm`) nativ, `run.sh` nutzt das noch nicht.
+Drivers ClokeOS uses: virtio disk and network (`IOVirtIOBlock`, `IOVirtIONet`), NVMe (`IONVMEFamily`), SATA (`RavynAHCIPort`), xHCI with USB keyboard, mouse and mass storage (`RavynXHCIPort`, `IOUSBHIDDriver`), Realtek RTL8111 and Intel 82545EM LAN, display via GOP. Missing:
 
-Herunterfahren: Eine interaktive zsh ignoriert SIGTERM, ebenso PureDarwins `diskarbitrationd`. launchd wartete deshalb bei jedem `poweroff` 20 Sekunden, bevor es beide hart beendete. Die ClokeOS-zsh beendet sich jetzt auf SIGTERM (`TRAPTERM` in `/etc/zshrc`), `diskarbitrationd` hat eine `ExitTimeOut` von 2 Sekunden; x86_64 ist danach nach wenigen Sekunden aus.
+- **More than one CPU core.** PureDarwin only starts the first core.
+- **Graphics acceleration.** Drawing is in software.
+- **Wi-Fi, I²C touchpads, audio on most hardware.**
 
-Treiber, die ClokeOS in QEMU nutzt: virtio-Platte und virtio-Netz (`IOVirtIOBlock`, `IOVirtIONet`), xHCI mit USB-Tastatur und -Maus (`RavynXHCIPort`, `IOUSBHIDDriver`), Bild über GOP (x86_64, `IOGOPFramebuffer`) oder ramfb (arm64). Was fehlt:
+#### Own kernel drivers
 
-- **Mehrere Prozessorkerne.** PureDarwin startet nur den ersten Kern: auf arm64 steht in `PDArmCPU.cpp` „No secondary CPUs are started on the virt target“, auf x86_64 läuft die einfache Plattform `AppleI386PlatformExpert`, die experimentelle ACPI-Plattform von PureDarwin ist nicht im Image. `run.sh` gibt der VM deshalb einen Kern (`CLOKEOS_VM_SMP` ändert das). Mehr Kerne brauchen Arbeit an PureDarwins Kernel-Erweiterungen und damit dessen Nix-Build (siehe unten).
-- **Grafikbeschleunigung.** Gezeichnet wird in Software (Mesa llvmpipe im Desktop-Image). Einen virtio-GPU-Treiber hat PureDarwin (`IOVirtIOGPU`, mit virgl), auf arm64 ist GL laut PureDarwin aber noch kaputt.
-- **NVIDIA.** Seit dem 7. Oktober 2026 gibt es von NullMoth einen inoffiziellen Treiber für GeForce-Karten ab Turing unter macOS 15 auf Intel-Macs und OpenCore-PCs ([github.com/nullmoth/nvidia-macos-driver](https://github.com/nullmoth/nvidia-macos-driver)). Aufgebaut ist er aus NVIDIAs offenen Kernel-Modulen als vier Kernel-Erweiterungen, Mesas Vulkan-Treiber NVK und einem Übersetzer von Metal-Shadern nach SPIR-V. Für ClokeOS ist das eine Spur, aber kein Treiber zum Einbauen: Die Erweiterungen sind für den Kernel von macOS 15 gebaut (ClokeOS hat Darwin 20.5) und brauchen Lilu und abgeschaltete Signaturprüfung; der Metal-Teil braucht Apples WindowServer und Metal, die es in ClokeOS nicht gibt. Wiederverwendbar wären die Kernel-Erweiterungen als Vorlage für PureDarwins Kernel und NVK, das wie das übrige Mesa von PureDarwin auch ohne Metal liefe. Testen ginge nur auf einem PC mit NVIDIA-Karte, nicht in QEMU und nicht auf einem Mac mit Apple-Chip. Die Lizenz (PolyForm Noncommercial) erlaubt keine kommerzielle Nutzung.
+`clokeos-darwin/kext/` holds ClokeOS' own kernel extensions; `kext/build.sh` builds them and the kernel collection:
 
-### Wiederherstellung und Installation
+- PureDarwin's image contains `Kernel.framework` headers matching its XNU and its own kernel collection builder `kc-builder`. That is an x86_64 program which only needs libSystem, so on a Mac with Apple silicon it runs under Rosetta. Without own drivers the result is byte-identical to the kernel in PureDarwin's EFI partition (after `kcfix.py`).
+- Drivers are linked like PureDarwin's own: `MH_BUNDLE` against PureDarwin's libSystem, kernel symbols via `-undefined dynamic_lookup`, pointers as rebase/bind opcodes (`kc-builder` does not apply classic local relocations).
+- **ClokePS2** takes over the PS/2 controller (i8042) instead of PureDarwin's ApplePS2Controller, which only passes keys to the text console and has no mouse driver at all. It translates scan codes (set 1) into HID usages, supports PS/2 mice and touchpads in PS/2 mode with wheel, and creates `/dev/clokeos_kbd` and `/dev/clokeos_mouse` in the format of PureDarwin's USB HID devices, which Xorg's `puredarwininput` reads (`overlay-desktop/etc/X11/xorg.conf`). Tested in QEMU with `CLOKEOS_VM_INPUT=ps2` (keys, pointer movement, clicks).
+- `inputfix.py` completes the key table in `puredarwininput`: Insert, Home, Delete, End, Page Up/Down, Print, the whole keypad, the ISO key `<>|` and the menu key were missing, for USB keyboards too.
 
-![Wiederherstellung in QEMU: dunkles Fenster „ClokeOS-Wiederherstellung“ mit vier Möglichkeiten (ClokeOS installieren, Online-Hilfe, Festplattendienstprogramm, Terminal) und dem Knopf Fortfahren; oben die Menüleiste mit Wiederherstellung, Dienstprogramme und Fenster](clokeos-darwin/wiederherstellung.png)
+Next: an I²C HID touchpad driver (Intel LPSS DesignWare I²C). PureDarwin has no ACPI interpreter, so when started from the USB stick the loader copies the firmware's ACPI tables onto the stick (`\ClokeOS\ACPI`), which is where a notebook's touchpad bus, address and interrupt pin are described.
 
-Wie macOS hat ClokeOS eine Wiederherstellung, die das aktuelle System aus dem Internet lädt und installiert. Es gibt sie zweimal: als startfähiges Installationsmedium `clokeos-<arch>-installer.img` für x86_64 und arm64, und auf jeder damit eingerichteten Festplatte als eigene Partition „ClokeOS Recovery“.
+### Recovery and installation
 
-Die Wiederherstellung ist CloakServer in einer eigenen Betriebsart: dunkel, ohne Anmeldung, Dock und Schreibtischsymbole (`cloakserver/recovery.c`). Ein Fenster bietet wie bei macOS „ClokeOS installieren“, „Online-Hilfe“ (NetSurf mit der Seite der Releases), „Festplattendienstprogramm“ (Festplatten und Partitionen ansehen, Festplatten löschen) und „Terminal“ (zsh als root). Dieselben Punkte stehen in der Menüleiste unter „Dienstprogramme“. „ClokeOS installieren“ führt durch Einleitung, Wahl der Festplatte und Rückfrage, zeigt dann Fortschritt und Restzeit und startet am Ende neu.
+Like macOS, ClokeOS has a recovery that downloads the current system from the internet and installs it: as bootable installer image `clokeos-<arch>-installer.img` for x86_64 and arm64, as USB sticks for PCs, and on every disk set up with it as its own partition "ClokeOS Recovery".
 
-Installiert wird mit `clokeos-installer` (`recovery/installer.c`, läuft als root):
+The recovery is CloakServer in its own mode: dark, without login, Dock or desktop icons (`cloakserver/recovery.c`). A window offers "Install ClokeOS", "Get Help Online" (NetSurf with the releases page), "Disk Utility" (view disks and partitions, erase disks) and "Terminal" (zsh as root); the same items are in the menu bar under "Utilities". "Install ClokeOS" walks through introduction, disk choice and confirmation, then shows progress and remaining time and restarts at the end.
 
-- Es lädt die Beschreibung `clokeos-<arch>.txt` aus dem neuesten Release des öffentlichen Repos [Karl-Lauterbach24/ClokeOS-Releases](https://github.com/Karl-Lauterbach24/ClokeOS-Releases) (über `releases/latest/download/`, ohne Anmeldung) und danach drei mit xz gepackte Partitionsabbilder, zusammen etwa 400 MB. libcurl lädt, liblzma entpackt, und alles geht ohne Zwischendatei direkt auf die Platte. Jedes Abbild wird gegen die SHA-256 in der Beschreibung geprüft.
-- Auf der Festplatte entsteht wie bei macOS eine neue GPT mit drei Partitionen: EFI-Partition (Loader, Kernel, Boot-Argumente, 64 MB), „ClokeOS“ (das volle Desktop-System, ext4, belegt plus 2 GB frei, etwa 4,4 GB) und „ClokeOS Recovery“ (ext4, knapp 600 MB). In der Wiederherstellung fehlen Wine, Compiler, Python und Entwicklerdateien (`recovery/imagetool.py prune`; was davon abhängt, fällt mit weg).
-- Danach trägt es die Kennungen der neuen GPT-Partitionen in die Boot-Argumente der EFI-Partition ein: `boot-args-system.txt`, `boot-args-recovery.txt` und `boot-args.txt`, das der Loader bei jedem Start liest. `boot-uuid=` nennt dort die GPT-Partition, die der Kernel als Wurzel einbindet, nicht die UUID des Dateisystems.
-- Startet man „ClokeOS installieren“ aus der Wiederherstellung derselben Platte, bleiben GPT und Wiederherstellung erhalten, und nur EFI-Partition und System werden neu geschrieben. Die ganze Platte lässt sich dann nicht öffnen, weil ihre dritte Partition gerade die Wurzel ist; der Installer schreibt deshalb auf die Partitionsgeräte selbst.
+Installing is done by `clokeos-installer` (`recovery/installer.c`, runs as root):
 
-„Neustart in Wiederherstellung …“ im ClokeOS-Menü stellt `boot-args.txt` für einen Start auf die Wiederherstellung um (`clokeos-installer bootnext recovery`, schreibt auf `/dev/rdisk0s1`). Dort stellt der launchd-Dienst `com.clokeos.recovery-boot` die Datei gleich wieder auf das System zurück, der nächste Start ist also wieder normal. Auf x86_64 startet auch die Taste **R** beim Einschalten die Wiederherstellung, so wie **V** den ausführlichen Start (der Loader liest dann `boot-args-recovery.txt`). Auf arm64 startet PureDarwins eigener Loader, dort gibt es nur den Menüpunkt.
+- It loads the description `clokeos-<arch>.txt` from the latest release of this repository (via `releases/latest/download/`, no login) and then three xz-compressed partition images, about 400 MB together. libcurl downloads, liblzma unpacks, and everything goes straight to the disk without a temporary file. Each image is checked against the SHA-256 in the description. Broken connections continue at the same byte with a range request (up to 10 attempts).
+- The disk gets a new GPT with three partitions as on macOS: EFI partition (loader, kernel, boot arguments, 64 MB), "ClokeOS" (the full desktop system, ext4, about 4.4 GB) and "ClokeOS Recovery" (ext4, almost 600 MB). The recovery lacks Wine, compilers, Python and developer files (`recovery/imagetool.py prune`).
+- It then writes the new GPT partitions' GUIDs into the boot arguments on the EFI partition: `boot-args-system.txt`, `boot-args-recovery.txt` and `boot-args.txt`, which the loader reads at every boot. `boot-uuid=` there names the GPT partition the kernel mounts as root.
+- Started from the recovery of the same disk, GPT and recovery stay and only EFI partition and system are rewritten; the installer then writes to the partition devices, since the whole disk cannot be opened while its third partition is the root.
 
-#### USB-Sticks für echte PCs
+"Restart in Recovery…" in the ClokeOS menu switches `boot-args.txt` to the recovery for one boot (`clokeos-installer bootnext recovery`); the launchd service `com.clokeos.recovery-boot` switches it back right away. On x86_64 the key **R** at power-on also starts the recovery.
 
-Zwei Sticks (`recovery/usb.sh offline <ordner>` und `recovery/usb.sh online`) installieren ClokeOS auf die SATA- oder NVMe-SSD eines PCs: `clokeos-x86_64-usb-offline.img` bringt das System mit, `clokeos-x86_64-usb-online.img` ist klein und lädt es aus dem Internet. Auf den Stick schreiben (macOS: `diskutil list`, dann `diskutil unmountDisk /dev/diskN` und `sudo dd if=clokeos-x86_64-usb-offline.img of=/dev/rdiskN bs=4m`, oder mit balenaEtcher), am PC im Boot-Menü der Firmware den Stick wählen. Voraussetzungen:
+#### USB sticks for real PCs
 
-- UEFI ohne CSM/Legacy-Modus, Secure Boot aus, SATA im AHCI-Modus, Intel VMD/RST aus
-- Zielplatte: SATA (AHCI, PureDarwins RavynAHCIPort) oder NVMe (IONVMEFamily)
-- Tastatur und Maus über USB, beim Einschalten angesteckt: Xorg liest Eingaben nur von `/dev/usb_hid_kbd` und `/dev/usb_hid_mouse` (puredarwininput, IOUSBHIDDriver) und öffnet sie nur beim Start. Eingebaute Notebook-Tastaturen (PS/2, ApplePS2Keyboard) kommen nur auf der Textkonsole an, für Touchpads (PS/2-Maus oder I²C) hat PureDarwin keinen Treiber. Fehlt eins davon 45 Sekunden nach dem Start der Sitzung, zeigt `clokeos-diag` ein Fenster mit Modell, PCI-Geräten samt Treiber, USB-Geräten, Netz und Kernelmeldungen zum Abfotografieren (`cloakserver-session`).
-- Netzwerk für SSH und Online-Installation nur mit Realtek RTL8111/8168/8169 (PDRealtek8111) oder Intel 82545EM (PDE1000); WLAN und Intel-LAN neuerer Mainboards (I219, I225) gehen nicht
-- Bild über die GOP-Grafik der Firmware (keine eigenen Grafiktreiber)
+`recovery/usb.sh offline <folder>` and `recovery/usb.sh online` build the two sticks. Each has a FAT32 partition with loader, kernel and boot arguments; the loader loads the recovery as a RAM disk into memory and the kernel boots from it with `rd=md0` (`clokeos_load_ramdisk` in `loader/xnu-loader.patch`).
 
-Warum eine RAM-Disk: PureDarwins einziger Treiber für USB-Massenspeicher (`RavynXHCIMassStorageDisk` im xHCI-Treiber) bricht als Wurzel-Laufwerk nach kurzer Zeit mit E/A-Fehlern ab, an USB-2-Controllern fehlt er ganz. Die Firmware kann den Stick aber lesen, und so lädt der Loader die Wiederherstellung als RAM-Disk in den Arbeitsspeicher; der Kernel startet mit `rd=md0` daraus (`clokeos_load_ramdisk` in `loader/xnu-loader.patch`). PureDarwin hatte diesen Weg auf x86 abgeschaltet: XNU nimmt Loader-Speicher nach dem Start als frei und erreicht die RAM-Disk nur über `ml_static_ptovirt`, also nur unterhalb von `physfree`, und seine Seitentabellen decken beim Start nur bis 0x3E800000 (knapp 1 GB) ab. Der ClokeOS-Loader sucht deshalb in der Speicherkarte der Firmware das unterste freie Stück, in das die RAM-Disk passt und das unter dieser Grenze endet (abzüglich Platz für die UEFI-Laufzeitdienste), belegt es als `EfiLoaderData`, schiebt das Fenster der Laufzeitdienste dahinter und vergrößert `ksize` über beides. Wie viel dort frei ist, hängt an der Firmware, nicht am eingebauten Speicher: QEMU mit 1 GB lässt 672 MB am Stück, ein HP 15s-fq5655ng mit 8 GB nur 381 MB.
+Why a RAM disk: PureDarwin's only USB mass storage driver (`RavynXHCIMassStorageDisk` in the xHCI driver) fails with I/O errors after a while as a root disk, and USB 2 controllers have none. The firmware can read the stick, though. PureDarwin had switched this path off on x86: XNU treats loader memory as free after boot and only reaches the RAM disk through `ml_static_ptovirt`, i.e. below `physfree`, and its page tables only cover memory up to 0x3E800000 (just under 1 GB) at boot. ClokeOS' loader therefore searches the firmware's memory map for the lowest free range below that limit that fits the RAM disk (minus room for UEFI runtime services), allocates it as `EfiLoaderData`, moves the runtime window behind it and grows `ksize` over both. How much is free there depends on the firmware, not on the installed RAM: QEMU with 1 GB leaves 672 MB in one piece, an HP 15s-fq5655ng with 8 GB only 381 MB.
 
-Auf dem Stick liegen deshalb bis zu zwei RAM-Disks, der Loader nimmt die erste, die passt; passt keine, zeigt er, wie viel er gebraucht hätte und wie groß das größte freie Stück ist:
+The loader takes the first RAM disk that fits and, if none does, shows how much it needed and how large the largest free piece is:
 
-- `\ramdisk.img` (nur offline, knapp 700 MB): Wiederherstellung und unter `/Library/ClokeOS/Install` die Abbilder von EFI-Partition und System, installiert aus dem Arbeitsspeicher.
-- `\ramdisk-lite.img` (gut 250 MB): nur die Wiederherstellung, ohne SSH, Bauwerkzeuge, andere Fenstermanager und X-Demos. Auf dem Offline-Stick liest der Installer die Abbilder dann unter `\ClokeOS\Install` vom Stick selbst (`clokeos-installer install <disk> stick:`): die FAT einmal ganz, die Dateien in zusammenhängenden Stücken bis 1 MB, jeder Lesevorgang mit Wiederholung, bei Fehlern in Stücken von 64 KB. Die Wiederherstellung erkennt das mit `clokeos-installer stick`. Auf dem Online-Stick lädt sie aus dem Internet.
+- `\ramdisk.img` (offline only, about 700 MB): recovery plus the images of EFI partition and system under `/Library/ClokeOS/Install`, installs from memory.
+- `\ramdisk-lite.img` (about 260 MB): only the recovery, without SSH, build tools, other window managers and X demos. On the offline stick the installer then reads the images under `\ClokeOS\Install` from the stick itself (`clokeos-installer install <disk> stick:`): the whole FAT once, the files in contiguous pieces of up to 1 MB, each read retried, in 64 KB pieces after errors. The recovery detects this with `clokeos-installer stick`. The online stick downloads instead.
 
-Vom Stick aus verbindet der Loader vor dem Start alle Treiber der Firmware (`clokeos_connect_all`, wie `connect -r` in der UEFI-Shell): RavynAHCIPort liest die Gerätekennung eines SATA-Ports, bevor es ihn Daten empfangen lässt, und sieht an Ports, die die Firmware nicht angefasst hat, nur 0xffffffff. Der Installer setzt abgebrochene Downloads per Range-Anfrage an derselben Stelle fort (bis zu 10 Versuche). Die Wiederherstellung ist schlanker als das System: ohne Wine, Compiler, Mesa/LLVM, Übersetzungen und die SSH-Helfer mit eigenem OpenSSL, kompakt mit `mke2fs -d` neu angelegt (`imagetool.py prune --usb` und `owners`). In QEMU lässt sich das nachstellen: `--usb` hängt das Abbild als USB-Massenspeicher an, `CLOKEOS_VM_MEMORY=1024` lässt die große RAM-Disk nicht passen, `CLOKEOS_VM_DISK2=nvme` oder `ahci` hängt die Zielplatte als NVMe- oder SATA-SSD an, `CLOKEOS_VM_INPUT=ps2` lässt USB-Tastatur und -Maus weg wie bei einem Notebook.
+Started from the stick, the loader connects all firmware drivers before booting (`clokeos_connect_all`, like `connect -r` in the UEFI shell): `RavynAHCIPort` reads a SATA port's device signature before letting it receive data and sees only 0xffffffff on ports the firmware never touched. It also copies the ACPI tables onto the stick. If no keyboard or mouse is found, `clokeos-diag` shows model, PCI devices with their drivers, USB devices, network and kernel messages in a window after 45 seconds.
 
-#### Fertiges SSD-Abbild
+`recovery/disk.sh` builds the ready-made SSD image: an installed disk with boot arguments, system and recovery, exactly as the installer writes it.
 
-`clokeos-x86_64-disk.img` (`recovery/disk.sh`) ist eine fertig installierte Platte, genau wie sie der Installer schreibt: EFI-Partition mit eingetragenen Boot-Argumenten, System und Wiederherstellung, beim ersten Start läuft der Einrichtungsassistent. Der Weg für PCs, auf denen der Stick nicht startet oder nicht ins Netz kommt: die SSD per USB-Adapter an den Mac hängen und das Abbild darauf schreiben (`sudo dd if=clokeos-x86_64-disk.img of=/dev/rdiskN bs=4m`), dann zurück in den PC. Die Partitionen sind so groß wie im Abbild (gut 5 GB), der Rest der SSD bleibt frei.
-
-Bauen und testen:
+Build and test:
 
 ```bash
 cd clokeos-darwin
-CLOKEOS_ARCH=arm64 recovery/build.sh     # Wiederherstellung, Abbilder, Installationsmedium nach ~/ClokeOS-work/out/recovery-arm64/
-recovery/release.sh                      # beide Architekturen, gepackt nach ~/ClokeOS-work/dist/online-<version>/
-CLOKEOS_ARCH=arm64 CLOKEOS_FLAVOR=desktop ./run.sh --image ~/ClokeOS-work/out/recovery-arm64/installer.img --disk platte.img
+CLOKEOS_ARCH=arm64 recovery/build.sh     # recovery, images, installer into ~/ClokeOS-work/out/recovery-arm64/
+recovery/release.sh                      # both architectures, packed into ~/ClokeOS-work/dist/online-<version>/
+CLOKEOS_ARCH=arm64 CLOKEOS_FLAVOR=desktop ./run.sh --image ~/ClokeOS-work/out/recovery-arm64/installer.img --disk disk.img
 ```
 
-`--disk` hängt eine zweite Platte an; fehlt die Datei, legt `run.sh` sie leer mit 16 GB an. Den Offline-Stick testet `CLOKEOS_VM_DISK2=nvme ./run.sh --usb ~/ClokeOS-work/out/recovery-x86_64/usb-offline.img --disk ssd.img` (vorher `recovery/usb.sh offline <ordner>` oder `recovery/release.sh`), mit `CLOKEOS_VM_MEMORY=1024` startet die schlanke RAM-Disk und liest vom Stick; das SSD-Abbild `./run.sh --image ~/ClokeOS-work/out/recovery-x86_64/disk.img` (vorher `recovery/disk.sh`); `CLOKEOS_VM_SSH=2222` leitet Port 2222 des Macs auf SSH in der VM. Mit `CLOKEOS_RELEASES_URL=http://10.0.2.2:8099` vor `recovery/release.sh` lädt die Wiederherstellung aus einem lokalen Webserver auf dem Mac (`python3 -m http.server 8099` im dist-Ordner), so lässt sich alles testen, ohne etwas zu veröffentlichen. Auf arm64 dauert die Installation so etwa zwei Minuten.
+`--disk` adds a second disk (created empty with 16 GB if missing). The offline stick is tested with `CLOKEOS_VM_DISK2=nvme ./run.sh --usb ~/ClokeOS-work/out/recovery-x86_64/usb-offline.img --disk ssd.img`; with `CLOKEOS_VM_MEMORY=1024` the slim RAM disk starts and reads from the stick. `CLOKEOS_VM_DISK2=ahci` attaches the target as SATA SSD, `CLOKEOS_VM_INPUT=ps2` leaves out USB keyboard and mouse like on a notebook, `CLOKEOS_VM_SSH=2222` forwards port 2222 to SSH in the VM. With `CLOKEOS_RELEASES_URL=http://10.0.2.2:8099` before `recovery/release.sh` the recovery downloads from a local web server on the Mac, so everything can be tested without publishing.
 
 ### Releases
 
-```bash
-cd clokeos-darwin && ./release.sh                 # x86_64; mehrere: ./release.sh x86_64 arm64
-cd clokeos-darwin && ./release.sh --upload        # zusätzlich als Entwurf v<version> auf GitHub
-```
+`recovery/release.sh` builds all images fresh, packs them with xz and writes `SHA256SUMS` and `RELEASE-NOTES.md` into `~/ClokeOS-work/dist/online-<version>/`; `--upload` publishes the release `v<version>` in this repository (only a published release counts as "latest" and is found by the recovery). Each release has a source archive of exactly the built commit with the third-party sources built along (for the GPL and LGPL parts). The images contain PureDarwin and with it GPL parts (corecrypto); the release notes point to the exact sources.
 
-`release.sh` baut jedes Image frisch, packt es mit xz und legt `SHA256SUMS` und `RELEASE-NOTES.md` (Downloads, Starten, was geht und was nicht, Quellen und Lizenzen) nach `~/ClokeOS-work/dist/<version>/`. Mit `--upload` landet alles als Release-Entwurf `v<version>` im GitHub-Repo, aber nur wenn alles eingecheckt und gepusht ist; veröffentlicht wird von Hand. Ist die Version dort schon veröffentlicht, bricht das Skript ab, dann `CLOKE_VERSION` in `config.sh` erhöhen. Die Images enthalten PureDarwin und damit auch GPL-Teile (corecrypto); die Release-Notizen verweisen deshalb auf die genauen Quellstände. Releases enthalten nur das Minimal-Image; die Desktop-Variante (6 GiB) baut man mit `CLOKEOS_FLAVOR=desktop ./brand.sh` selbst.
+### What Apple does not publish
 
-Die Desktop-Variante gibt es als Online-Release für Installer und Wiederherstellung: `recovery/release.sh --upload` legt es im öffentlichen Repo `Karl-Lauterbach24/ClokeOS-Releases` an und veröffentlicht es gleich, denn nur ein veröffentlichtes Release gilt als „latest“ und wird von der Wiederherstellung gefunden. Dazu gehören ein Quellarchiv genau des gebauten Commits mit den mitgebauten Fremdquellen (für die GPL- und LGPL-Teile) und `SHA256SUMS`. Das Entwicklungs-Repo bleibt privat.
+The kernel is the smaller problem, since XNU is open source (Apple Public Source License 2.0, `github.com/apple-oss-distributions/xnu`). Hard is everything Apple does **not** publish:
 
-### Was Apple nicht veröffentlicht
-
-Der Kernel ist das kleinere Problem, denn XNU ist Open Source (Apple Public Source License 2.0, Quelle: `github.com/apple-oss-distributions/xnu`). Schwierig ist alles, was Apple **nicht** veröffentlicht:
-
-| Schicht | macOS | Open Source? | ClokeOS-Ansatz |
+| Layer | macOS | Open source? | ClokeOS' approach |
 |---|---|---|---|
-| Kernel | XNU | ja | unverändert von PureDarwin übernehmen, nur Branding |
-| Basis-Userland | Libc, dyld, BSD-Tools | größtenteils | von PureDarwin (dazu toybox und zsh) |
-| Init | launchd | nur ältere Versionen | PureDarwins launchd/libxpc |
-| Grafik-Stack | Quartz, WindowServer | nein | eigener Fensterserver („CloakServer“) |
-| Oberfläche | AppKit, Finder, Dock | nein | diese Shell als native App neu umsetzen; AppKit für Mac-Programme aus Darling (darling-cocotron) |
-| Treiber | Grafik, WLAN, Audio | meist nein | zuerst nur in einer VM mit Standardhardware |
+| Kernel | XNU | yes | from PureDarwin, plus own drivers |
+| Base userland | Libc, dyld, BSD tools | mostly | from PureDarwin (plus toybox and zsh) |
+| Init | launchd | only older versions | PureDarwin's launchd/libxpc |
+| Graphics stack | Quartz, WindowServer | no | own window server ("CloakServer") |
+| UI | AppKit, Finder, Dock | no | rebuilt natively; AppKit for Mac apps from Darling (darling-cocotron) |
+| Drivers | graphics, Wi-Fi, audio | mostly no | VMs with standard hardware first, own drivers for PCs |
 
-### Bauplan
+### Roadmap
 
-1. ~~**Darwin in einer VM booten.**~~ Erledigt mit PureDarwin 20.5 in QEMU (siehe oben).
-2. ~~**Branding.**~~ Erledigt: `SystemVersion.plist`, `sw_vers`, Hostname, Anmeldetext, Volume-Name und das Bootlogo, das PureDarwins xnu-loader jetzt vor dem Kernelstart über GOP zeichnet (siehe Bootlogo).
-3. **Fensterserver.** Begonnen: CloakServer läuft in der Desktop-Variante als X11-Fenstermanager auf Xorg und PureDarwins GOP-Treiber, mit Hintergrund, Menüleiste, Dock und Fenstern im ClokeOS-Stil (siehe [Desktop: CloakServer](#desktop-cloakserver)). Dafür übergibt der Loader dem Kernel den Framebuffer wieder, und eine 15-Byte-Korrektur in `IOGOPFramebuffer` behebt die falschen Farben. CloakServer setzt das Bild inzwischen selbst zusammen (Schatten, runde Ecken, Glas über Fenstern). Dazu kommt die Anmeldung wie im Prototyp, mit dem Konto Gast, dessen Programme nicht mehr als root laufen. Fenster öffnen, schrumpfen ins Dock und kommen animiert zurück. Als Nächstes: Benutzerverwaltung (Konten anlegen, Passwörter, sudo), arm64 (dort startet Xorg, GL ist laut PureDarwin aber noch kaputt), und auf längere Sicht ein eigener Wayland-Compositor statt Xorg (wlroots samt Headern ist im Desktop-Image, PureDarwin hat dafür ein eigenes Backend).
-4. **Shell portieren.** Menüleiste, Dock, Launchpad und Systemeinstellungen gibt es jetzt nativ in CloakServer, Programme sind `.app`-Pakete wie bei macOS. Die Menüs von GTK-Programmen stehen wie bei macOS in der Menüleiste. Mac-Programme mit Fenstern laufen über Darlings AppKit (aus dem Cocotron-Projekt); als Nächstes gehört auch ihr Menü dorthin (`_CLOKE_MENU`), und Views mit Layern brauchen einen Renderer ohne OpenGL. Offen sind Fundus, Search und die übrigen Apps aus `clokeos.html` als native Programme; bis dahin stehen Thunar, NetSurf und andere Programme des PureDarwin-Images hinter den Dock-Symbolen. Alternativ eine Browser-Engine als Shell-Laufzeit: Mit WebKitGTK könnte `clokeos.html` fast unverändert laufen; PureDarwin arbeitet daran, laut Statusseite läuft es noch nicht.
-5. ~~**Installer-Image.**~~ Erledigt: Installationsmedium und Wiederherstellung wie bei macOS, die das aktuelle System aus dem öffentlichen Release-Repo laden (siehe [Wiederherstellung und Installation](#wiederherstellung-und-installation)).
+1. ~~**Boot Darwin in a VM.**~~ Done with PureDarwin 20.5 in QEMU.
+2. ~~**Branding.**~~ Done: `SystemVersion.plist`, `sw_vers`, host name, login text, volume name and the boot logo.
+3. **Window server.** CloakServer runs as an X11 window manager and compositor with menu bar, Dock, login, setup assistant and global menu bar. Next: user management, sudo, and in the long run a Wayland compositor instead of Xorg.
+4. **Port the shell.** Menu bar, Dock, Launchpad and System Settings are native in CloakServer, apps are `.app` bundles, Mac apps run through Darling's AppKit. Open: Fundus, Search and the other prototype apps as native programs.
+5. ~~**Installer.**~~ Done: installer, recovery, USB sticks and SSD image (see [Recovery and installation](#recovery-and-installation)).
+6. **Real hardware.** Started: USB installers, SATA detection, PS/2 keyboard and touchpad (ClokePS2). Next: I²C touchpads, Wi-Fi.
 
-Für Schritt 3 und 4 reicht das Minimal-Image nicht mehr. PureDarwin bietet auf seiner Website Vorschau-Images mit Desktop an: `puredarwin.img` (x86_64, 6,1 GiB, X11, Wayland, Xfce, Wine, Compiler) und `puredarwin-arm64-virt.img` (3,1 GiB). Das x86_64-Image ist die Basis der Desktop-Variante; CloakServer entsteht darauf, ohne PureDarwin selbst zu bauen. Eigene Images (etwa für den Raspberry Pi oder mit eigenem Kernel) gehen nur mit PureDarwins Nix-Build unter Linux (etwa 60 GB) und Apples `MacOSX11.3.sdk`, das man selbst besorgen muss, weil es nicht weitergegeben werden darf; es gehört zu Xcode 12.5 (developer.apple.com). PureDarwins Build erwartet eine bestimmte Prüfsumme des SDK-Archivs, ein selbst gepacktes SDK braucht deshalb einen angepassten Hash.
+Custom images (for example for the Raspberry Pi or with a custom kernel) need PureDarwin's Nix build on Linux (about 60 GB) and Apple's `MacOSX11.3.sdk`, which you have to get yourself because it may not be redistributed.
 
-Wichtig: Apples Markennamen, Icons und Schriften dürfen nicht übernommen werden. ClokeOS nutzt deshalb eigene Namen, eigene Icons und ein eigenes Logo.
+Important: Apple's trademarks, icons and fonts must not be used. ClokeOS uses its own names, icons and logo.
