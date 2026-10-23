@@ -18,7 +18,7 @@ import sys
 import tempfile
 
 DOCK_ICONS = ['dateien', 'programme', 'search', 'terminal', 'notizen', 'rechner', 'kalender',
-              'aktivitaet', 'einstellungen', 'info', 'folder']
+              'aktivitaet', 'einstellungen', 'info', 'folder', 'hd']
 MENUBAR_ICONS = {'mb-wifi': 'wifi', 'mb-spot': 'spot', 'mb-cc': 'cc'}
 
 

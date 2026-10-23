@@ -48,6 +48,7 @@
 #include <sys/stat.h>
 #include <sys/sysctl.h>
 #include <sys/utsname.h>
+#include <sys/wait.h>
 #include <time.h>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -74,6 +75,7 @@ void freeifaddrs(struct ifaddrs *);
 /* holt die Menüs von GTK-Programmen für die Menüleiste (menubar/cloakmenu.c) */
 #define CLOAKMENU "/System/Library/CoreServices/CloakServer/cloakmenu"
 #define GM_TOP_MAX 16 /* höchstens so viele Programm-Menüs in der Leiste */
+static bool recovery; /* läuft als Wiederherstellung (recovery.c, /etc/clokeos-recovery) */
 #define TITLE_H   36   /* Prototyp: 38; auf 800 Pixel Höhe etwas knapper */
 #define BORDER    1
 #define RADIUS    10
@@ -536,6 +538,7 @@ static void blur_box(unsigned char *p, int w, int h, int stride, int r, bool hor
 }
 
 static bool want_dark(void) {
+  if (recovery) return true; /* die Wiederherstellung ist dunkel, wie bei macOS */
   if (theme_mode == 1) return false;
   if (theme_mode == 2) return true;
   time_t t = time(NULL);
@@ -817,6 +820,23 @@ static pid_t spawn_env(const char *cmd, bool system, bool macfw) {
 
 static pid_t spawn_as(const char *cmd, bool system) { return spawn_env(cmd, system, false); }
 static pid_t spawn(const char *cmd) { return spawn_as(cmd, false); }
+
+/* Auf ein Kind warten (system, pclose): CloakServer ignoriert SIGCHLD, damit gestartete Programme
+ * keine Zombies werden. Darwin behandelt das wie SA_NOCLDWAIT, und waitpid wacht dann nicht auf,
+ * wenn das Kind endet, solange noch andere Kinder laufen (cloakmenu läuft immer): CloakServer
+ * stünde still. Deshalb SIGCHLD solange auf Standard und danach liegengebliebene Zombies abholen. */
+static void child_wait_begin(void) { signal(SIGCHLD, SIG_DFL); }
+static void child_wait_end(void) {
+  signal(SIGCHLD, SIG_IGN);
+  while (waitpid(-1, NULL, WNOHANG) > 0) {
+  }
+}
+static int run_wait(const char *cmd) {
+  child_wait_begin();
+  int st = system(cmd);
+  child_wait_end();
+  return st;
+}
 
 /* 'Pfad' für sh -c */
 static void sh_quote(char *out, size_t n, const char *s) {
@@ -1599,18 +1619,41 @@ static void click_about(Client *c, int x, int y) {
   if (y >= c->h - 48 && y <= c->h - 18 && fabs(x - c->w / 2.0) < 110) launch_ident("com.clokeos.systemeinstellungen");
 }
 
+static void draw_own(Client *c);
+
+/* Rückfragen vor Neustart (data 1), Ausschalten (0) und Neustart in die Wiederherstellung (2);
+ * 3: die Startplatte hat keine Wiederherstellung (nur eine Meldung) */
+static const char *confirm_ok(long data) {
+  return data == 1 ? "Neustart" : data == 2 ? "Neustart" : data == 3 ? "OK" : "Ausschalten";
+}
+
 static void paint_confirm(Client *c, cairo_t *cr) {
-  bool reboot = c->data == 1;
   cairo_surface_t *lg = svg_render("logo-gradient.svg", 56, 56, NULL);
   if (lg) {
     cairo_set_source_surface(cr, lg, 22, 22);
     cairo_paint(cr);
     cairo_surface_destroy(lg);
   }
-  text(cr, 94, 40, reboot ? "Möchtest du ClokeOS jetzt neu starten?" : "Möchtest du ClokeOS jetzt ausschalten?", 13, true,
-       T->fg, c->w - 110, 0);
-  text(cr, 94, 64, "Nicht gesicherte Änderungen in Programmen gehen verloren.", 11.5, false, T->fg2, c->w - 110, 0);
-  const char *ok = reboot ? "Neustart" : "Ausschalten";
+  static const char *const head[] = {"Möchtest du ClokeOS jetzt ausschalten?", "Möchtest du ClokeOS jetzt neu starten?",
+                                     "In die Wiederherstellung neu starten?", "Keine Wiederherstellung gefunden"};
+  static const char *const sub[] = {"Nicht gesicherte Änderungen in Programmen gehen verloren.",
+                                    "Nicht gesicherte Änderungen in Programmen gehen verloren.",
+                                    "Nur dieses eine Mal, danach startet wieder ClokeOS.",
+                                    "Die Startplatte hat keine Wiederherstellungspartition."};
+  int k = c->data >= 0 && c->data <= 3 ? (int)c->data : 0;
+  text(cr, 94, 40, head[k], 13, true, T->fg, c->w - 110, 0);
+  text(cr, 94, 64, sub[k], 11.5, false, T->fg2, c->w - 110, 0);
+  if (c->data == 3) { /* nur OK */
+    const char *ok = "OK";
+    int w2 = text_width(ok, 12.5, false) + 40;
+    double y = c->h - 44, x2 = c->w - 20 - w2;
+    rrect(cr, x2, y, w2, 28, 14);
+    set(cr, ACCENT);
+    cairo_fill(cr);
+    text(cr, x2 + w2 / 2.0, y + 14, ok, 12.5, false, (RGBA){1, 1, 1, 1}, 0, 1);
+    return;
+  }
+  const char *ok = confirm_ok(c->data);
   int w2 = text_width(ok, 12.5, false) + 32, w1 = text_width("Abbrechen", 12.5, false) + 32;
   double y = c->h - 44, x2 = c->w - 20 - w2, x1 = x2 - 10 - w1;
   rrect(cr, x1, y, w1, 28, 14);
@@ -1626,15 +1669,28 @@ static void paint_confirm(Client *c, cairo_t *cr) {
 }
 
 static void click_confirm(Client *c, int x, int y) {
-  bool reboot = c->data == 1;
-  const char *ok = reboot ? "Neustart" : "Ausschalten";
-  int w2 = text_width(ok, 12.5, false) + 32, w1 = text_width("Abbrechen", 12.5, false) + 32;
+  const char *ok = confirm_ok(c->data);
+  int w2 = text_width(ok, 12.5, false) + (c->data == 3 ? 40 : 32), w1 = text_width("Abbrechen", 12.5, false) + 32;
   double by = c->h - 44, x2 = c->w - 20 - w2, x1 = x2 - 10 - w1;
   if (y < by || y > by + 28) return;
   if (x >= x2 && x <= x2 + w2) {
+    if (c->data == 3) {
+      close_client(c);
+      return;
+    }
+    if (c->data == 2) {
+      /* Boot-Argumente der EFI-Partition einmal auf die Wiederherstellung stellen; die stellt sie
+       * beim Start zurück (recovery/overlay/usr/libexec/clokeos-recovery-boot) */
+      int st = run_wait("/usr/libexec/clokeos-installer bootnext recovery >/dev/null 2>&1");
+      if (st != 0) {
+        c->data = 3;
+        draw_own(c);
+        return;
+      }
+    }
     XSync(dpy, False);
-    spawn_as(reboot ? "/bin/reboot" : "/bin/poweroff", true);
-  } else if (x >= x1 && x <= x1 + w1) {
+    spawn_as(c->data == 0 ? "/bin/poweroff" : "/bin/reboot", true);
+  } else if (c->data != 3 && x >= x1 && x <= x1 + w1) {
     close_client(c);
   }
 }
@@ -1691,8 +1747,11 @@ static void show_about(long unused) {
 }
 
 static void confirm_power(long reboot) {
-  own_window(500, 140, reboot ? "Neustart" : "Ausschalten", paint_confirm, click_confirm, reboot);
+  own_window(500, 140, reboot == 2 ? "Wiederherstellung" : reboot ? "Neustart" : "Ausschalten", paint_confirm,
+             click_confirm, reboot);
 }
+
+#include "recovery.c"
 
 /* ---------------------------------------------------------------------------------------- */
 /* Konten und Sitzung. Wie im Prototyp gibt es den lokalen Benutzer gast (/Users/gast), dazu   */
@@ -2051,7 +2110,7 @@ static void unlock(void) {
   XUngrabKeyboard(dpy, CurrentTime);
   XUnmapWindow(dpy, loginwin);
   XMapRaised(dpy, menubar);
-  XMapRaised(dpy, dock);
+  if (!recovery) XMapRaised(dpy, dock);
   Client *c = clients;
   while (c && c->minimized) c = c->next;
   focus_client(c);
@@ -2407,6 +2466,7 @@ static int current_app(void) {
 }
 
 static const char *current_app_name(void) {
+  if (recovery && (!focused || focused->draw)) return "Wiederherstellung";
   if (!focused) return app_fundus >= 0 ? apps[app_fundus].b.name : "Fundus";
   if (focused->app >= 0) return apps[focused->app].b.name;
   if (focused->draw) return "ClokeOS";
@@ -2743,18 +2803,30 @@ static void build_menu(int which) {
   case MB_LOGO:
     add_item("Über ClokeOS", show_about, 0, false);
     add_sep();
+    if (recovery) {
+      add_item("Neustart …", confirm_power, 1, false);
+      add_item("Ausschalten …", confirm_power, 0, false);
+      break;
+    }
     add_item("Systemeinstellungen …", show_settings, -1, false);
     add_item("Aktivitätsanzeige", launch_app, app_by_ident("com.clokeos.aktivitaet"), app_by_ident("com.clokeos.aktivitaet") < 0);
     add_item("Programme", cmd_spot, 0, false);
     add_sep();
     add_item("Ruhezustand", cmd_sleep, 0, false);
     add_item("Neustart …", confirm_power, 1, false);
+    add_item("Neustart in Wiederherstellung …", confirm_power, 2, access(INSTALLER, X_OK) != 0);
     add_item("Ausschalten …", confirm_power, 0, false);
     add_sep();
     snprintf(buf, sizeof buf, "„%s“ abmelden …", session_name());
     add_item(buf, cmd_logout, 0, false);
     break;
   case MB_APP: {
+    if (recovery && (!focused || focused->draw)) {
+      add_item("Über ClokeOS", show_about, 0, false);
+      add_sep();
+      add_item("Wiederherstellung beenden …", confirm_power, 1, false);
+      break;
+    }
     const char *name = current_app_name();
     snprintf(buf, sizeof buf, "Über %s", name);
     add_item(focused && app >= 0 ? buf : "Über ClokeOS", show_about, 0, false);
@@ -2768,6 +2840,14 @@ static void build_menu(int which) {
     break;
   }
   case MB_FILE:
+    if (recovery) { /* "Dienstprogramme" wie in macOS Recovery */
+      add_item("ClokeOS installieren …", rec_menu_install, 0, false);
+      add_sep();
+      add_item("Festplattendienstprogramm", show_disk_utility, 0, false);
+      add_item("Terminal", rec_menu_terminal, 0, false);
+      add_item("Online-Hilfe", rec_menu_help, 0, false);
+      break;
+    }
     add_item("Neues Fenster", launch_app, app, app < 0);
     add_item("Fenster schließen", cmd_close, 0, !focused);
     break;
@@ -2843,7 +2923,7 @@ static const char *mb_label(int i) {
   if (i >= MB_DYN) return i - MB_DYN < ngm_top ? gm[gm_top[i - MB_DYN]].label : "";
   switch (i) {
   case MB_APP: return current_app_name();
-  case MB_FILE: return "Ablage";
+  case MB_FILE: return recovery ? "Dienstprogramme" : "Ablage";
   case MB_WINDOW: return "Fenster";
   }
   return "";
@@ -4351,6 +4431,7 @@ int main(int argc, char **argv) {
    * MIT-SHM ausprobieren, beendet das Programm sonst mit SIGSYS statt mit ENOSYS. Ignoriert, gibt
    * es nur einen Fehler, und alle zeichnen ohne Shared Memory. Gestartete Programme erben das. */
   signal(SIGSYS, SIG_IGN);
+  rec_init();
 
   dpy = XOpenDisplay(NULL);
   if (!dpy) {
@@ -4402,14 +4483,19 @@ int main(int argc, char **argv) {
   dock = ui_window(dwx, dwy, dww, dwh, ExposureMask | ButtonPressMask | PointerMotionMask | LeaveWindowMask,
                    true, NET_WM_WINDOW_TYPE_DOCK);
   XMapRaised(dpy, menubar);
-  XMapRaised(dpy, dock);
+  if (!recovery) XMapRaised(dpy, dock); /* die Wiederherstellung hat kein Dock */
   XGrabKey(dpy, XKeysymToKeycode(dpy, XK_Tab), Mod1Mask, root, True, GrabModeAsync, GrabModeAsync);
   XGrabKey(dpy, XKeysymToKeycode(dpy, XK_F4), Mod1Mask, root, True, GrabModeAsync, GrabModeAsync);
   render_mb_icons();
   scan_existing();
   save_root_env();
   load_accounts();
-  if (strcmp(os_login, "nein")) show_login(false);
+  if (recovery) { /* als root, ohne Anmeldung, gleich das Fenster der Wiederherstellung */
+    for (int i = 0; i < naccounts; i++)
+      if (accounts[i].uid == 0) start_session(&accounts[i]);
+    if (!session) start_session(&accounts[0]);
+    rec_show(RP_CHOOSE);
+  } else if (strcmp(os_login, "nein")) show_login(false);
   else start_session(&accounts[0]);
   focus_client(clients);
   redraw_all();
@@ -4485,9 +4571,13 @@ int main(int argc, char **argv) {
     FD_ZERO(&fds);
     FD_SET(fd, &fds);
     if (gm_fd >= 0) FD_SET(gm_fd, &fds);
+    if (rec_fd >= 0) FD_SET(rec_fd, &fds);
+    int maxfd = fd > gm_fd ? fd : gm_fd;
+    if (rec_fd > maxfd) maxfd = rec_fd;
     struct timeval tv = {1, 0};
     if (shake_t0 >= 0 || anim) tv = (struct timeval){0, 16000}; /* Animation: so oft wie möglich */
-    select((gm_fd > fd ? gm_fd : fd) + 1, &fds, NULL, NULL, &tv);
+    select(maxfd + 1, &fds, NULL, NULL, &tv);
     if (gm_fd >= 0 && FD_ISSET(gm_fd, &fds)) gm_read();
+    if (rec_fd >= 0 && FD_ISSET(rec_fd, &fds)) rec_read();
   }
 }

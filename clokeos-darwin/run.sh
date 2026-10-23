@@ -5,6 +5,8 @@
 #   ./run.sh --headless        ohne Fenster; Konsole über ./vmctl.py, Mitschnitt in ~/ClokeOS-work/vm/<arch>/serial.log
 #   ./run.sh --image <datei>   anderes Image starten (z. B. das unveränderte PureDarwin)
 #   ./run.sh --snapshot        Änderungen am Image beim Beenden verwerfen
+#   ./run.sh --disk <datei>    zweite Festplatte, z. B. als Ziel für den Installer (recovery/);
+#                              fehlt die Datei, legt run.sh sie leer mit 16 GB an (wächst erst beim Schreiben)
 #   ./run.sh --tcg             nur arm64: emulieren statt Apples Hypervisor (HVF) zu nutzen
 #
 # Architektur wählen mit CLOKEOS_ARCH=arm64 (Standard: x86_64). Auf einem Mac mit Apple-Chip läuft
@@ -19,6 +21,7 @@ need "$QEMU"
 image="$CLOKE_IMG"
 headless=0
 snapshot=""
+disk2=""
 # HVF gibt es nur für arm64-Gäste auf einem Mac mit Apple-Chip.
 accel=tcg
 [ "$CLOKE_ARCH" = arm64 ] && [ "$(uname -m)" = arm64 ] && [ "$(sysctl -n kern.hv_support 2>/dev/null)" = 1 ] && accel=hvf
@@ -27,6 +30,7 @@ while [ $# -gt 0 ]; do
     --headless) headless=1 ;;
     --image) image="$2"; shift ;;
     --snapshot) snapshot=",snapshot=on" ;;
+    --disk) disk2="$2"; shift ;;
     --tcg) accel=tcg ;;
     --hvf) accel=hvf ;;
     --) shift; break ;;
@@ -109,6 +113,11 @@ else
       -nic user,model=virtio-net-pci
     )
   fi
+fi
+
+if [ -n "$disk2" ]; then
+  [ -f "$disk2" ] || truncate -s 16g "$disk2"
+  args+=(-drive if=none,id=disk2,format=raw,file="$disk2" -device virtio-blk-pci,drive=disk2)
 fi
 
 : > "$VM_STATE/serial.log"

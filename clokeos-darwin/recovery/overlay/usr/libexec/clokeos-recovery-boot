@@ -1,0 +1,6 @@
+#!/bin/sh
+# Läuft beim Start der Wiederherstellung. "Neustart in Wiederherstellung" (CloakServer) hat die
+# Boot-Argumente der EFI-Partition auf die Wiederherstellung umgestellt; der nächste Start soll
+# wieder das System sein. Auf dem Installationsmedium gibt es kein boot-args-system.txt, dann
+# tut das nichts.
+/usr/libexec/clokeos-installer bootnext system >/dev/null 2>&1 || true

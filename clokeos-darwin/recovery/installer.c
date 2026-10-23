@@ -1,0 +1,863 @@
+/*
+ * clokeos-installer: installiert ClokeOS aus dem Internet, wie macOS Recovery.
+ *
+ *   clokeos-installer disks                      Festplatten mit Größe und Partitionen
+ *   clokeos-installer install <diskN> <url>      ClokeOS aus <url>/clokeos-<arch>.txt installieren
+ *   clokeos-installer erase <diskN>              Festplatte löschen (leere GPT)
+ *   clokeos-installer bootnext recovery|system   nächsten Start in Wiederherstellung oder System
+ *
+ * Ein Release (recovery/release.sh) besteht aus einer Beschreibung clokeos-<arch>.txt und drei mit
+ * xz gepackten Partitionsabbildern: EFI-Partition (Loader, Kernel, Boot-Argumente), System (ext4
+ * mit dem vollen Desktop) und Wiederherstellung (ext4, das abgespeckte System, in dem dieses
+ * Programm läuft). install legt auf der Festplatte eine GPT mit diesen drei Partitionen an und
+ * schreibt die Abbilder beim Herunterladen direkt an ihre Stelle, ohne Zwischendatei: libcurl
+ * lädt, liblzma entpackt, SHA-256 prüft das Geladene gegen die Beschreibung. Läuft das Programm
+ * selbst von der Wiederherstellungspartition dieser Festplatte, bleiben GPT und
+ * Wiederherstellung, wie bei macOS; nur EFI-Partition und System werden neu geschrieben.
+ *
+ * Für CloakServer schreibt es zeilenweise auf stdout:
+ *   DISK <name> <bytes> <merkmale> <bezeichnung>    merkmale: r Startplatte, i Installationsmedium,
+ *   PART <name> <index> <bytes> <name in der GPT>              c ClokeOS darauf, - nichts davon
+ *   STEP <text> | PROGRESS <fertig> <gesamt> | ERROR <text> | DONE <version>
+ */
+#include <curl/curl.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <lzma.h>
+#include <stdarg.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/disk.h>
+#include <sys/ioctl.h>
+#include <sys/mount.h>
+#include <sys/stat.h>
+#include <sys/time.h>
+#include <sys/utsname.h>
+#include <unistd.h>
+
+#define CA_FILE "/etc/ssl/cert.pem"
+#define CHUNK (1 << 20) /* in diesen Schritten auf die Platte, ein Vielfaches jeder Blockgröße */
+
+static void out(const char *fmt, ...) {
+  va_list ap;
+  va_start(ap, fmt);
+  vprintf(fmt, ap);
+  va_end(ap);
+  putchar('\n');
+  fflush(stdout);
+}
+
+static void fail(const char *fmt, ...) {
+  char msg[512];
+  va_list ap;
+  va_start(ap, fmt);
+  vsnprintf(msg, sizeof msg, fmt, ap);
+  va_end(ap);
+  out("ERROR %s", msg);
+  exit(1);
+}
+
+/* ---- SHA-256 (FIPS 180-4) ---------------------------------------------------------------- */
+
+typedef struct {
+  uint32_t h[8];
+  uint64_t len;
+  uint8_t buf[64];
+  size_t n;
+} Sha256;
+
+static const uint32_t K[64] = {
+  0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5, 0xd807aa98,
+  0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174, 0xe49b69c1, 0xefbe4786,
+  0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da, 0x983e5152, 0xa831c66d, 0xb00327c8,
+  0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967, 0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13,
+  0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85, 0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819,
+  0xd6990624, 0xf40e3585, 0x106aa070, 0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a,
+  0x5b9cca4f, 0x682e6ff3, 0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7,
+  0xc67178f2};
+
+#define ROR(x, n) (((x) >> (n)) | ((x) << (32 - (n))))
+
+static void sha_block(Sha256 *s, const uint8_t *p) {
+  uint32_t w[64], a[8];
+  for (int i = 0; i < 16; i++) w[i] = (uint32_t)p[4 * i] << 24 | p[4 * i + 1] << 16 | p[4 * i + 2] << 8 | p[4 * i + 3];
+  for (int i = 16; i < 64; i++) {
+    uint32_t s0 = ROR(w[i - 15], 7) ^ ROR(w[i - 15], 18) ^ (w[i - 15] >> 3);
+    uint32_t s1 = ROR(w[i - 2], 17) ^ ROR(w[i - 2], 19) ^ (w[i - 2] >> 10);
+    w[i] = w[i - 16] + s0 + w[i - 7] + s1;
+  }
+  memcpy(a, s->h, sizeof a);
+  for (int i = 0; i < 64; i++) {
+    uint32_t t1 = a[7] + (ROR(a[4], 6) ^ ROR(a[4], 11) ^ ROR(a[4], 25)) + ((a[4] & a[5]) ^ (~a[4] & a[6])) + K[i] + w[i];
+    uint32_t t2 = (ROR(a[0], 2) ^ ROR(a[0], 13) ^ ROR(a[0], 22)) + ((a[0] & a[1]) ^ (a[0] & a[2]) ^ (a[1] & a[2]));
+    memmove(a + 1, a, 7 * sizeof a[0]);
+    a[4] += t1;
+    a[0] = t1 + t2;
+  }
+  for (int i = 0; i < 8; i++) s->h[i] += a[i];
+}
+
+static void sha_init(Sha256 *s) {
+  static const uint32_t h0[8] = {0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
+                                 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19};
+  memcpy(s->h, h0, sizeof h0);
+  s->len = 0;
+  s->n = 0;
+}
+
+static void sha_update(Sha256 *s, const uint8_t *p, size_t n) {
+  s->len += n;
+  while (n) {
+    size_t k = 64 - s->n < n ? 64 - s->n : n;
+    memcpy(s->buf + s->n, p, k);
+    s->n += k, p += k, n -= k;
+    if (s->n == 64) {
+      sha_block(s, s->buf);
+      s->n = 0;
+    }
+  }
+}
+
+static void sha_hex(Sha256 *s, char out[65]) {
+  uint64_t bits = s->len * 8;
+  uint8_t pad = 0x80, zero = 0, len[8];
+  sha_update(s, &pad, 1);
+  while (s->n != 56) sha_update(s, &zero, 1);
+  for (int i = 0; i < 8; i++) len[i] = (uint8_t)(bits >> (56 - 8 * i));
+  sha_update(s, len, 8);
+  for (int i = 0; i < 8; i++) sprintf(out + 8 * i, "%08x", s->h[i]);
+}
+
+/* ---- Festplatten ------------------------------------------------------------------------- */
+
+typedef struct {
+  char name[32];   /* disk1 */
+  uint64_t bytes;
+  uint32_t bsize;
+  bool root, installer, clokeos;
+  int nparts;
+  struct { uint64_t first, count; char name[40]; uint8_t type[16], guid[16]; } part[16];
+} Disk;
+
+static const uint8_t GUID_ESP[16] = {0x28, 0x73, 0x2a, 0xc1, 0x1f, 0xf8, 0xd2, 0x11, 0xba, 0x4b, 0x00, 0xa0, 0xc9, 0x3e, 0xc9, 0x3b};
+static const uint8_t GUID_LINUX[16] = {0xaf, 0x3d, 0xc6, 0x0f, 0x83, 0x84, 0x72, 0x47, 0x8e, 0x79, 0x3d, 0x69, 0xd8, 0x47, 0x7d, 0xe4};
+
+static uint32_t crc32(const void *data, size_t n) {
+  const uint8_t *p = data;
+  uint32_t c = 0xffffffff;
+  while (n--) {
+    c ^= *p++;
+    for (int k = 0; k < 8; k++) c = c & 1 ? (c >> 1) ^ 0xedb88320 : c >> 1;
+  }
+  return ~c;
+}
+
+static int open_raw(const char *name, int flags) {
+  char path[64];
+  snprintf(path, sizeof path, "/dev/r%s", name);
+  return open(path, flags);
+}
+
+/* Partitionsliste aus der GPT (Blockgröße 512 oder 4096) */
+static void read_gpt(int fd, Disk *d) {
+  uint8_t *hdr = malloc(d->bsize);
+  if (!hdr) return;
+  if (pread(fd, hdr, d->bsize, d->bsize) != (ssize_t)d->bsize || memcmp(hdr, "EFI PART", 8)) {
+    free(hdr);
+    return;
+  }
+  uint64_t lba;
+  uint32_t count, esize;
+  memcpy(&lba, hdr + 72, 8);
+  memcpy(&count, hdr + 80, 4);
+  memcpy(&esize, hdr + 84, 4);
+  free(hdr);
+  if (esize < 128 || count > 256) return;
+  size_t len = (size_t)count * esize;
+  len = (len + d->bsize - 1) / d->bsize * d->bsize;
+  uint8_t *tab = malloc(len);
+  if (!tab || pread(fd, tab, len, (off_t)(lba * d->bsize)) != (ssize_t)len) {
+    free(tab);
+    return;
+  }
+  for (uint32_t i = 0; i < count && d->nparts < 16; i++) {
+    uint8_t *e = tab + (size_t)i * esize;
+    static const uint8_t zero[16];
+    if (!memcmp(e, zero, 16)) continue;
+    uint64_t first, last;
+    memcpy(&first, e + 32, 8);
+    memcpy(&last, e + 40, 8);
+    typeof(d->part[0]) *p = &d->part[d->nparts++];
+    p->first = first;
+    p->count = last - first + 1;
+    memcpy(p->type, e, 16);
+    memcpy(p->guid, e + 16, 16);
+    size_t k = 0;
+    for (int c = 0; c < 36 && k + 1 < sizeof p->name; c++) { /* UTF-16LE, hier nur ASCII */
+      uint16_t ch = e[56 + 2 * c] | e[57 + 2 * c] << 8;
+      if (!ch) break;
+      p->name[k++] = ch < 128 ? (char)ch : '?';
+    }
+    p->name[k] = 0;
+    if (!strcmp(p->name, "ClokeOS Installer")) d->installer = true;
+    if (!strncmp(p->name, "ClokeOS", 7)) d->clokeos = true;
+  }
+  free(tab);
+}
+
+static bool probe_disk(const char *name, Disk *d) {
+  memset(d, 0, sizeof *d);
+  snprintf(d->name, sizeof d->name, "%s", name);
+  int fd = open_raw(name, O_RDONLY);
+  if (fd < 0) return false;
+  uint64_t blocks = 0;
+  if (ioctl(fd, DKIOCGETBLOCKSIZE, &d->bsize) || ioctl(fd, DKIOCGETBLOCKCOUNT, &blocks) || !d->bsize) {
+    close(fd);
+    return false;
+  }
+  d->bytes = blocks * d->bsize;
+  read_gpt(fd, d);
+  close(fd);
+  /* Die Platte, von der dieses System läuft: st_dev von / ist das Gerät der Wurzelpartition */
+  struct stat rs, ps;
+  if (!stat("/", &rs))
+    for (int i = 1; i <= 16; i++) {
+      char path[64];
+      snprintf(path, sizeof path, "/dev/%ss%d", name, i);
+      if (!stat(path, &ps) && ps.st_rdev == rs.st_dev) d->root = true;
+    }
+  return true;
+}
+
+/* Index (1, 2, …) der Partition, von der das System läuft, oder 0 */
+static int root_part(const char *disk) {
+  struct stat rs, ps;
+  if (stat("/", &rs)) return 0;
+  for (int i = 1; i <= 16; i++) {
+    char path[64];
+    snprintf(path, sizeof path, "/dev/%ss%d", disk, i);
+    if (!stat(path, &ps) && ps.st_rdev == rs.st_dev) return i;
+  }
+  return 0;
+}
+
+/* Eingebundene Partitionen der Platte lösen, bevor darunter geschrieben wird (diskarbitrationd
+ * bindet erkannte Dateisysteme ein; sonst schriebe der Kernel womöglich alte Puffer darüber) */
+static void unmount_disk(const char *disk, int keep_part) {
+  struct statfs *m;
+  int n = getmntinfo(&m, MNT_NOWAIT);
+  char prefix[40];
+  snprintf(prefix, sizeof prefix, "/dev/%ss", disk);
+  for (int i = 0; i < n; i++) {
+    if (strncmp(m[i].f_mntfromname, prefix, strlen(prefix))) continue;
+    if (keep_part && atoi(m[i].f_mntfromname + strlen(prefix)) == keep_part) continue;
+    if (unmount(m[i].f_mntonname, MNT_FORCE)) fail("%s ist noch eingebunden: %s", m[i].f_mntonname, strerror(errno));
+  }
+}
+
+static void cmd_disks(void) {
+  for (int i = 0; i < 16; i++) {
+    char name[16];
+    snprintf(name, sizeof name, "disk%d", i);
+    Disk d;
+    if (!probe_disk(name, &d)) continue;
+    char flags[8] = "";
+    size_t f = 0;
+    if (d.root) flags[f++] = 'r';
+    if (d.installer) flags[f++] = 'i';
+    if (d.clokeos) flags[f++] = 'c';
+    if (!f) flags[f++] = '-';
+    const char *label = d.installer ? "ClokeOS-Installationsmedium" : d.clokeos ? "ClokeOS-Festplatte" : "Festplatte";
+    out("DISK %s %llu %s %s", d.name, (unsigned long long)d.bytes, flags, label);
+    for (int k = 0; k < d.nparts; k++)
+      out("PART %s %d %llu %s", d.name, k + 1, (unsigned long long)(d.part[k].count * d.bsize),
+          d.part[k].name[0] ? d.part[k].name : "-");
+  }
+}
+
+/* ---- GPT schreiben ----------------------------------------------------------------------- */
+
+typedef struct {
+  const uint8_t *type;
+  const char *name;
+  uint64_t first, count; /* in Blöcken */
+  uint8_t guid[16];      /* Kennung der Partition, von write_gpt gewürfelt */
+} NewPart;
+
+/* Kennung als Text, wie IOMedia sie als UUID führt und der Loader sie in boot-uuid= erwartet */
+static void guid_str(const uint8_t g[16], char out[37]) {
+  snprintf(out, 37, "%02X%02X%02X%02X-%02X%02X-%02X%02X-%02X%02X-%02X%02X%02X%02X%02X%02X", g[3], g[2], g[1], g[0],
+           g[5], g[4], g[7], g[6], g[8], g[9], g[10], g[11], g[12], g[13], g[14], g[15]);
+}
+
+static void put16name(uint8_t *e, const char *name) {
+  for (int c = 0; c < 36 && name[c]; c++) e[56 + 2 * c] = (uint8_t)name[c];
+}
+
+static void random_guid(uint8_t g[16]) {
+  arc4random_buf(g, 16);
+  g[7] = (g[7] & 0x0f) | 0x40; /* Version 4 */
+  g[8] = (g[8] & 0x3f) | 0x80;
+}
+
+/* Schützende MBR, primäre GPT am Anfang, Sicherung am Ende */
+static void write_gpt(int fd, const Disk *d, NewPart *p, int n) {
+  uint32_t bs = d->bsize;
+  uint64_t last = d->bytes / bs - 1;
+  uint32_t tab_blocks = (128 * 128 + bs - 1) / bs;
+  uint8_t *tab = calloc(1, (size_t)tab_blocks * bs), *hdr = calloc(1, bs), *mbr = calloc(1, bs);
+  if (!tab || !hdr || !mbr) fail("Kein Speicher");
+  for (int i = 0; i < n; i++) {
+    uint8_t *e = tab + 128 * i;
+    memcpy(e, p[i].type, 16);
+    random_guid(p[i].guid);
+    memcpy(e + 16, p[i].guid, 16);
+    uint64_t f = p[i].first, l = p[i].first + p[i].count - 1;
+    memcpy(e + 32, &f, 8);
+    memcpy(e + 40, &l, 8);
+    put16name(e, p[i].name);
+  }
+  uint32_t tab_crc = crc32(tab, 128 * 128);
+
+  mbr[446 + 4] = 0xee; /* eine Partition vom Typ GPT-Schutz über die ganze Platte */
+  uint32_t one = 1, cnt = last > 0xffffffff ? 0xffffffff : (uint32_t)last;
+  memcpy(mbr + 446 + 8, &one, 4);
+  memcpy(mbr + 446 + 12, &cnt, 4);
+  mbr[446 + 2] = 2;
+  mbr[446 + 5] = mbr[446 + 6] = mbr[446 + 7] = 0xff;
+  mbr[510] = 0x55, mbr[511] = 0xaa;
+
+  for (int backup = 0; backup <= 1; backup++) {
+    memset(hdr, 0, bs);
+    memcpy(hdr, "EFI PART", 8);
+    uint32_t rev = 0x00010000, hsize = 92, zero = 0, nent = 128, esize = 128;
+    uint64_t my = backup ? last : 1, alt = backup ? 1 : last;
+    uint64_t first_use = 2 + tab_blocks, last_use = last - 1 - tab_blocks;
+    uint64_t tab_lba = backup ? last - tab_blocks : 2;
+    memcpy(hdr + 8, &rev, 4);
+    memcpy(hdr + 12, &hsize, 4);
+    memcpy(hdr + 16, &zero, 4);
+    memcpy(hdr + 24, &my, 8);
+    memcpy(hdr + 32, &alt, 8);
+    memcpy(hdr + 40, &first_use, 8);
+    memcpy(hdr + 48, &last_use, 8);
+    static uint8_t disk_guid[16];
+    if (!backup) random_guid(disk_guid);
+    memcpy(hdr + 56, disk_guid, 16);
+    memcpy(hdr + 72, &tab_lba, 8);
+    memcpy(hdr + 80, &nent, 4);
+    memcpy(hdr + 84, &esize, 4);
+    memcpy(hdr + 88, &tab_crc, 4);
+    uint32_t hcrc = crc32(hdr, 92);
+    memcpy(hdr + 16, &hcrc, 4);
+    if (pwrite(fd, tab, (size_t)tab_blocks * bs, (off_t)(tab_lba * bs)) != (ssize_t)((size_t)tab_blocks * bs) ||
+        pwrite(fd, hdr, bs, (off_t)(my * bs)) != (ssize_t)bs)
+      fail("GPT nicht geschrieben: %s", strerror(errno));
+  }
+  if (pwrite(fd, mbr, bs, 0) != (ssize_t)bs) fail("MBR nicht geschrieben: %s", strerror(errno));
+  free(tab);
+  free(hdr);
+  free(mbr);
+}
+
+static void cmd_erase(const char *disk) {
+  Disk d;
+  if (!probe_disk(disk, &d)) fail("Keine Festplatte %s", disk);
+  if (d.root) fail("Von dieser Festplatte läuft das System, sie lässt sich nicht löschen.");
+  unmount_disk(disk, 0);
+  int fd = open_raw(disk, O_RDWR);
+  if (fd < 0) fail("%s lässt sich nicht öffnen: %s", disk, strerror(errno));
+  out("STEP Festplatte wird gelöscht");
+  uint8_t *z = calloc(1, CHUNK);
+  /* alte Dateisysteme am Anfang unkenntlich machen, dann eine leere GPT */
+  for (int i = 0; i < 8 && z; i++) (void)pwrite(fd, z, CHUNK, (off_t)i * CHUNK);
+  free(z);
+  write_gpt(fd, &d, NULL, 0);
+  fsync(fd);
+  close(fd);
+  out("DONE gelöscht");
+}
+
+/* ---- Beschreibung des Releases ----------------------------------------------------------- */
+
+typedef struct {
+  char file[128], sha[65];
+  uint64_t raw, xz;
+} Asset;
+
+typedef struct {
+  char version[32], build[32], codename[64], arch[16];
+  Asset esp, system, recovery;
+} Manifest;
+
+static size_t mem_write(char *p, size_t s, size_t n, void *arg) {
+  char **buf = arg;
+  size_t len = *buf ? strlen(*buf) : 0, add = s * n;
+  if (len + add > 1 << 16) return 0;
+  char *b = realloc(*buf, len + add + 1);
+  if (!b) return 0;
+  memcpy(b + len, p, add);
+  b[len + add] = 0;
+  *buf = b;
+  return add;
+}
+
+static void curl_common(CURL *c, const char *url) {
+  curl_easy_setopt(c, CURLOPT_URL, url);
+  curl_easy_setopt(c, CURLOPT_FOLLOWLOCATION, 1L);
+  curl_easy_setopt(c, CURLOPT_FAILONERROR, 1L);
+  curl_easy_setopt(c, CURLOPT_USERAGENT, "ClokeOS-Installer");
+  if (!access(CA_FILE, R_OK)) curl_easy_setopt(c, CURLOPT_CAINFO, CA_FILE);
+  curl_easy_setopt(c, CURLOPT_CONNECTTIMEOUT, 30L);
+  curl_easy_setopt(c, CURLOPT_LOW_SPEED_LIMIT, 1024L); /* steht der Download eine Minute, Abbruch */
+  curl_easy_setopt(c, CURLOPT_LOW_SPEED_TIME, 60L);
+}
+
+static bool parse_asset(const char *v, Asset *a) {
+  unsigned long long raw, xz;
+  return sscanf(v, "%127s %llu %llu %64s", a->file, &raw, &xz, a->sha) == 4 && (a->raw = raw, a->xz = xz, true);
+}
+
+static void fetch_manifest(const char *base, const char *arch, Manifest *m) {
+  char url[1024], *text = NULL, err[CURL_ERROR_SIZE] = "";
+  snprintf(url, sizeof url, "%s/clokeos-%s.txt", base, arch);
+  CURL *c = curl_easy_init();
+  curl_common(c, url);
+  curl_easy_setopt(c, CURLOPT_WRITEFUNCTION, mem_write);
+  curl_easy_setopt(c, CURLOPT_WRITEDATA, &text);
+  curl_easy_setopt(c, CURLOPT_ERRORBUFFER, err);
+  CURLcode rc = curl_easy_perform(c);
+  curl_easy_cleanup(c);
+  if (rc != CURLE_OK || !text)
+    fail("Keine Verbindung zum ClokeOS-Server (%s). Ist das Netzwerk verbunden?", err[0] ? err : curl_easy_strerror(rc));
+  memset(m, 0, sizeof *m);
+  char *save = NULL;
+  for (char *line = strtok_r(text, "\n", &save); line; line = strtok_r(NULL, "\n", &save)) {
+    char *eq = strchr(line, '=');
+    if (!eq) continue;
+    *eq = 0;
+    const char *k = line, *v = eq + 1;
+    if (!strcmp(k, "version")) snprintf(m->version, sizeof m->version, "%s", v);
+    else if (!strcmp(k, "build")) snprintf(m->build, sizeof m->build, "%s", v);
+    else if (!strcmp(k, "codename")) snprintf(m->codename, sizeof m->codename, "%s", v);
+    else if (!strcmp(k, "arch")) snprintf(m->arch, sizeof m->arch, "%s", v);
+    else if (!strcmp(k, "esp")) parse_asset(v, &m->esp);
+    else if (!strcmp(k, "system")) parse_asset(v, &m->system);
+    else if (!strcmp(k, "recovery")) parse_asset(v, &m->recovery);
+  }
+  free(text);
+  if (strcmp(m->arch, arch) || !m->esp.raw || !m->system.raw || !m->recovery.raw)
+    fail("Die Beschreibung des Releases ist unvollständig.");
+}
+
+/* ---- Herunterladen, entpacken, schreiben -------------------------------------------------- */
+
+typedef struct {
+  int fd;
+  uint64_t off, limit, written;
+  lzma_stream z;
+  Sha256 sha;
+  uint8_t *buf;
+  size_t fill;
+  uint64_t done_before, total; /* Fortschritt über alle Downloads */
+  uint64_t got;
+  double last;
+  bool bad;
+} Writer;
+
+static double now(void) {
+  struct timeval tv;
+  gettimeofday(&tv, NULL);
+  return tv.tv_sec + tv.tv_usec / 1e6;
+}
+
+static bool flush_buf(Writer *w, bool final) {
+  if (!w->fill) return true;
+  size_t len = w->fill;
+  if (final) {
+    len = (w->fill + 4095) / 4096 * 4096; /* Rest auf ganze Blöcke mit Nullen auffüllen */
+    memset(w->buf + w->fill, 0, len - w->fill);
+  }
+  if (w->written + len > w->limit) return false;
+  if (pwrite(w->fd, w->buf, len, (off_t)(w->off + w->written)) != (ssize_t)len) return false;
+  w->written += len;
+  w->fill = 0;
+  return true;
+}
+
+static size_t on_data(char *p, size_t s, size_t n, void *arg) {
+  Writer *w = arg;
+  size_t len = s * n;
+  sha_update(&w->sha, (const uint8_t *)p, len);
+  w->got += len;
+  w->z.next_in = (const uint8_t *)p;
+  w->z.avail_in = len;
+  while (w->z.avail_in) {
+    w->z.next_out = w->buf + w->fill;
+    w->z.avail_out = CHUNK - w->fill;
+    lzma_ret r = lzma_code(&w->z, LZMA_RUN);
+    w->fill = CHUNK - w->z.avail_out;
+    if (r != LZMA_OK && r != LZMA_STREAM_END) {
+      w->bad = true;
+      return 0;
+    }
+    if (w->fill == CHUNK && !flush_buf(w, false)) {
+      w->bad = true;
+      return 0;
+    }
+    if (r == LZMA_STREAM_END) break;
+  }
+  double t = now();
+  if (t - w->last > .25) {
+    w->last = t;
+    out("PROGRESS %llu %llu", (unsigned long long)(w->done_before + w->got), (unsigned long long)w->total);
+  }
+  return len;
+}
+
+/* Abbild a von base herunterladen und ab Byte off auf fd schreiben, höchstens limit Bytes */
+static void install_asset(const char *base, const Asset *a, int fd, uint64_t off, uint64_t limit, uint64_t done_before,
+                          uint64_t total) {
+  if (a->raw > limit) fail("%s passt nicht in die Partition.", a->file);
+  Writer w = {.fd = fd, .off = off, .limit = limit, .done_before = done_before, .total = total};
+  w.buf = malloc(CHUNK + 4096);
+  if (!w.buf) fail("Kein Speicher");
+  lzma_stream init = LZMA_STREAM_INIT;
+  w.z = init;
+  if (lzma_stream_decoder(&w.z, UINT64_MAX, 0) != LZMA_OK) fail("xz-Entpacker startet nicht");
+  sha_init(&w.sha);
+  char url[1024], err[CURL_ERROR_SIZE] = "";
+  snprintf(url, sizeof url, "%s/%s", base, a->file);
+  CURL *c = curl_easy_init();
+  curl_common(c, url);
+  curl_easy_setopt(c, CURLOPT_WRITEFUNCTION, on_data);
+  curl_easy_setopt(c, CURLOPT_WRITEDATA, &w);
+  curl_easy_setopt(c, CURLOPT_ERRORBUFFER, err);
+  CURLcode rc = curl_easy_perform(c);
+  curl_easy_cleanup(c);
+  if (w.bad) fail("%s ist beschädigt oder zu groß.", a->file);
+  if (rc != CURLE_OK) fail("Download von %s abgebrochen: %s", a->file, err[0] ? err : curl_easy_strerror(rc));
+  for (;;) { /* was der Entpacker noch zurückhält */
+    w.z.next_in = NULL;
+    w.z.avail_in = 0;
+    w.z.next_out = w.buf + w.fill;
+    w.z.avail_out = CHUNK - w.fill;
+    lzma_ret r = lzma_code(&w.z, LZMA_FINISH);
+    w.fill = CHUNK - w.z.avail_out;
+    if (w.fill == CHUNK && !flush_buf(&w, false)) fail("Schreiben auf die Festplatte fehlgeschlagen: %s", strerror(errno));
+    if (r == LZMA_STREAM_END) break;
+    if (r != LZMA_OK) fail("%s ist beschädigt.", a->file);
+  }
+  if (!flush_buf(&w, true)) fail("Schreiben auf die Festplatte fehlgeschlagen: %s", strerror(errno));
+  lzma_end(&w.z);
+  free(w.buf);
+  char hex[65];
+  sha_hex(&w.sha, hex);
+  if (w.got != a->xz || strcmp(hex, a->sha)) fail("%s ist nicht vollständig angekommen (Prüfsumme falsch).", a->file);
+  if (w.written < a->raw) fail("%s ist kürzer als angegeben.", a->file);
+  out("PROGRESS %llu %llu", (unsigned long long)(done_before + a->xz), (unsigned long long)total);
+}
+
+static void patch_esp(int fd, uint32_t dbs, uint64_t esp_off, const uint8_t sys[16], const uint8_t rec[16]);
+
+static const char *machine_arch(void) {
+  struct utsname u;
+  if (uname(&u)) return "x86_64";
+  return strncmp(u.machine, "arm64", 5) && strncmp(u.machine, "aarch64", 7) ? "x86_64" : "arm64";
+}
+
+static void cmd_install(const char *disk, const char *base) {
+  Disk d;
+  if (!probe_disk(disk, &d)) fail("Keine Festplatte %s", disk);
+  if (d.installer) fail("Das ist das Installationsmedium selbst.");
+  int rootp = d.root ? root_part(disk) : 0;
+  /* Neu installieren aus der Wiederherstellung derselben Platte: GPT und Wiederherstellung bleiben */
+  bool keep = d.root && rootp == 3 && d.nparts >= 3 && !strcmp(d.part[2].name, "ClokeOS Recovery");
+  if (d.root && !keep) fail("Von dieser Festplatte läuft das System gerade.");
+
+  out("STEP Informationen über ClokeOS werden geladen");
+  curl_global_init(CURL_GLOBAL_DEFAULT);
+  Manifest m;
+  fetch_manifest(base, machine_arch(), &m);
+  uint32_t bs = d.bsize;
+  uint64_t mib = 1 << 20;
+  uint64_t esp_b = (m.esp.raw + mib - 1) / mib * mib, sys_b = (m.system.raw + mib - 1) / mib * mib,
+           rec_b = (m.recovery.raw + mib - 1) / mib * mib;
+  NewPart p[3] = {{GUID_ESP, "EFI System Partition", mib / bs, esp_b / bs, {0}},
+                  {GUID_LINUX, "ClokeOS", 0, sys_b / bs, {0}},
+                  {GUID_LINUX, "ClokeOS Recovery", 0, rec_b / bs, {0}}};
+  if (keep) {
+    /* vorhandene Lage übernehmen */
+    if (d.part[0].count * bs < m.esp.raw || d.part[1].count * bs < m.system.raw)
+      fail("Diese Version braucht mehr Platz, als die Partitionen haben. Bitte vom Installationsmedium "
+           "starten und die Festplatte neu einrichten.");
+    for (int i = 0; i < 2; i++) p[i].first = d.part[i].first, p[i].count = d.part[i].count;
+  } else {
+    p[1].first = p[0].first + p[0].count;
+    p[2].first = p[1].first + p[1].count;
+    uint64_t need = (p[2].first + p[2].count) * bs + mib;
+    if (d.bytes < need)
+      fail("Die Festplatte ist zu klein: ClokeOS %s braucht %.1f GB, sie hat %.1f GB.", m.version, need / 1e9,
+           d.bytes / 1e9);
+  }
+  unmount_disk(disk, keep ? 3 : 0);
+  /* fd[i]/off[i]: wohin Partition i geschrieben wird. Sonst die ganze Platte; beim Neuinstallieren
+   * aus der Wiederherstellung derselben Platte lässt sich die nicht zum Schreiben öffnen (ihre
+   * Partition 3 ist die laufende Wurzel), dann die Partitionsgeräte selbst */
+  int fd[2];
+  uint64_t off[2];
+  if (keep) {
+    for (int i = 0; i < 2; i++) {
+      char part[24];
+      snprintf(part, sizeof part, "%ss%d", disk, i + 1);
+      fd[i] = open_raw(part, O_RDWR);
+      if (fd[i] < 0) fail("%s lässt sich nicht beschreiben: %s", part, strerror(errno));
+      off[i] = 0;
+    }
+  } else {
+    fd[0] = fd[1] = open_raw(disk, O_RDWR);
+    if (fd[0] < 0) fail("%s lässt sich nicht beschreiben: %s", disk, strerror(errno));
+    off[0] = p[0].first * bs, off[1] = p[1].first * bs;
+    out("STEP Festplatte wird vorbereitet");
+    write_gpt(fd[0], &d, p, 3);
+  }
+  uint64_t total = m.system.xz + m.esp.xz + (keep ? 0 : m.recovery.xz), done = 0;
+  char step[256];
+  snprintf(step, sizeof step, "STEP ClokeOS %s wird geladen und installiert", m.version);
+  out("%s", step);
+  install_asset(base, &m.system, fd[1], off[1], p[1].count * bs, done, total);
+  done += m.system.xz;
+  if (!keep) {
+    out("STEP Wiederherstellung wird eingerichtet");
+    install_asset(base, &m.recovery, fd[0], p[2].first * bs, p[2].count * bs, done, total);
+    done += m.recovery.xz;
+  }
+  out("STEP Startvolume wird eingerichtet");
+  install_asset(base, &m.esp, fd[0], off[0], p[0].count * bs, done, total);
+  fsync(fd[1]);
+  if (keep) { /* Kennungen der vorhandenen Partitionen */
+    memcpy(p[1].guid, d.part[1].guid, 16);
+    memcpy(p[2].guid, d.part[2].guid, 16);
+  }
+  patch_esp(fd[0], bs, off[0], p[1].guid, p[2].guid);
+  fsync(fd[0]);
+  close(fd[0]);
+  if (fd[1] != fd[0]) close(fd[1]);
+  out("DONE %s", m.version);
+}
+
+/* ---- EFI-Partition (FAT32): Boot-Argumente lesen und schreiben ----------------------------- */
+/* Der Loader liest bei jedem Start \EFI\BOOT\boot-args.txt; boot-uuid= darin nennt die GPT-Partition,
+ * die er als Wurzel nimmt. Das Release legt daneben boot-args-system.txt und boot-args-recovery.txt
+ * ab. Diese Dateien sind kurz (ein Cluster); sie werden nur gelesen und an genau ihrer Stelle
+ * überschrieben, ohne den Dateisystemaufbau anzufassen. */
+
+typedef struct {
+  int fd;
+  uint32_t dbs;  /* Blockgröße der Platte */
+  uint64_t base; /* Byte-Anfang der Partition */
+  uint32_t bps, spc, rsvd, nfats, fatsz, root;
+  uint64_t data;
+} Fat;
+
+static uint64_t clus_off(Fat *f, uint32_t c) { return f->base + f->data + (uint64_t)(c - 2) * f->spc * f->bps; }
+
+static uint32_t fat_next(Fat *f, uint32_t c) {
+  uint32_t blk[1024]; /* ein Block der FAT (Rohgerät: nur ganze Blöcke lesen) */
+  uint64_t pos = f->base + (uint64_t)f->rsvd * f->bps + 4ull * c, b = pos / f->dbs * f->dbs;
+  if (f->dbs > sizeof blk || pread(f->fd, blk, f->dbs, (off_t)b) != (ssize_t)f->dbs) return 0x0fffffff;
+  return blk[(pos - b) / 4] & 0x0fffffff;
+}
+
+static bool fat_init(Fat *f, int fd, uint32_t dbs, uint64_t base) {
+  memset(f, 0, sizeof *f);
+  f->fd = fd, f->dbs = dbs, f->base = base;
+  uint8_t bpb[4096];
+  if (dbs > sizeof bpb || pread(fd, bpb, dbs, (off_t)base) != (ssize_t)dbs) return false;
+  f->bps = bpb[11] | bpb[12] << 8;
+  f->spc = bpb[13];
+  f->rsvd = bpb[14] | bpb[15] << 8;
+  f->nfats = bpb[16];
+  f->fatsz = bpb[36] | bpb[37] << 8 | bpb[38] << 16 | (uint32_t)bpb[39] << 24;
+  f->root = bpb[44] | bpb[45] << 8 | bpb[46] << 16 | (uint32_t)bpb[47] << 24;
+  if (!f->bps || !f->spc || !f->fatsz || (bpb[17] | bpb[18] << 8)) return false; /* nur FAT32 */
+  f->data = (uint64_t)(f->rsvd + f->nfats * f->fatsz) * f->bps;
+  return true;
+}
+
+/* Eintrag name (lange oder kurze Form, ohne Groß/klein) im Ordner ab Cluster dir */
+static bool fat_find(Fat *f, uint32_t dir, const char *name, uint64_t *entry_off, uint8_t ent[32]) {
+  size_t csize = (size_t)f->spc * f->bps;
+  uint8_t *buf = malloc(csize);
+  char lfn[256] = "";
+  bool found = false;
+  for (uint32_t c = dir; buf && c >= 2 && c < 0x0ffffff8 && !found; c = fat_next(f, c)) {
+    if (pread(f->fd, buf, csize, (off_t)clus_off(f, c)) != (ssize_t)csize) break;
+    for (size_t o = 0; o < csize && !found; o += 32) {
+      uint8_t *e = buf + o;
+      if (e[0] == 0) goto done;
+      if (e[0] == 0xe5) {
+        lfn[0] = 0;
+        continue;
+      }
+      if (e[11] == 0x0f) { /* langer Name: 13 Zeichen je Eintrag, rückwärts */
+        int seq = (e[0] & 0x1f) - 1;
+        static const int pos[13] = {1, 3, 5, 7, 9, 14, 16, 18, 20, 22, 24, 28, 30};
+        if (e[0] & 0x40) memset(lfn, 0, sizeof lfn);
+        for (int k = 0; k < 13 && seq * 13 + k < 255; k++) {
+          uint16_t ch = e[pos[k]] | e[pos[k] + 1] << 8;
+          if (ch == 0 || ch == 0xffff) break;
+          lfn[seq * 13 + k] = ch < 128 ? (char)ch : '?';
+        }
+        continue;
+      }
+      if (e[11] & 0x08) { /* Datenträgername ("EFI"), kein Ordner */
+        lfn[0] = 0;
+        continue;
+      }
+      char shortn[13];
+      size_t k = 0;
+      for (int i = 0; i < 8 && e[i] != ' '; i++) shortn[k++] = (char)e[i];
+      if (e[8] != ' ') shortn[k++] = '.';
+      for (int i = 8; i < 11 && e[i] != ' '; i++) shortn[k++] = (char)e[i];
+      shortn[k] = 0;
+      if (!strcasecmp(lfn, name) || !strcasecmp(shortn, name)) {
+        *entry_off = clus_off(f, c) + o;
+        memcpy(ent, e, 32);
+        found = true;
+      }
+      lfn[0] = 0;
+    }
+  }
+done:
+  free(buf);
+  return found;
+}
+
+static uint32_t ent_clus(const uint8_t e[32]) { return (uint32_t)(e[26] | e[27] << 8 | e[20] << 16 | e[21] << 24); }
+
+/* Datei \EFI\BOOT\<name>: Lage des Verzeichniseintrags */
+static bool fat_boot_file(Fat *f, const char *name, uint64_t *eoff, uint8_t ent[32]) {
+  uint8_t e[32];
+  uint64_t o;
+  if (!fat_find(f, f->root, "EFI", &o, e)) return false;
+  if (!fat_find(f, ent_clus(e), "BOOT", &o, e)) return false;
+  return fat_find(f, ent_clus(e), name, eoff, ent);
+}
+
+/* Inhalt einer kurzen Datei (höchstens ein Cluster) als Text */
+static bool fat_read(Fat *f, const char *name, char *out, size_t cap) {
+  uint8_t e[32];
+  uint64_t eo;
+  if (!fat_boot_file(f, name, &eo, e)) return false;
+  uint32_t len = e[28] | e[29] << 8 | e[30] << 16 | (uint32_t)e[31] << 24;
+  size_t csize = (size_t)f->spc * f->bps;
+  if (len >= cap || len > csize || ent_clus(e) < 2) return false;
+  uint8_t *buf = malloc(csize);
+  bool ok = buf && pread(f->fd, buf, csize, (off_t)clus_off(f, ent_clus(e))) == (ssize_t)csize;
+  if (ok) {
+    memcpy(out, buf, len);
+    out[len] = 0;
+  }
+  free(buf);
+  return ok;
+}
+
+/* Kurze Datei an ihrer Stelle überschreiben, Größe im Verzeichniseintrag anpassen */
+static bool fat_write(Fat *f, const char *name, const char *data) {
+  uint8_t e[32];
+  uint64_t eo;
+  size_t len = strlen(data), csize = (size_t)f->spc * f->bps;
+  if (!fat_boot_file(f, name, &eo, e) || len > csize || ent_clus(e) < 2) return false;
+  uint8_t *buf = calloc(1, csize), *b = malloc(f->dbs);
+  bool ok = buf && b;
+  if (ok) {
+    memcpy(buf, data, len);
+    ok = pwrite(f->fd, buf, csize, (off_t)clus_off(f, ent_clus(e))) == (ssize_t)csize;
+  }
+  uint64_t blk = eo / f->dbs * f->dbs;
+  if (ok) ok = pread(f->fd, b, f->dbs, (off_t)blk) == (ssize_t)f->dbs;
+  if (ok) {
+    uint8_t *de = b + (eo - blk);
+    de[28] = len & 0xff, de[29] = len >> 8 & 0xff, de[30] = len >> 16 & 0xff, de[31] = len >> 24 & 0xff;
+    ok = pwrite(f->fd, b, f->dbs, (off_t)blk) == (ssize_t)f->dbs;
+  }
+  free(buf);
+  free(b);
+  return ok;
+}
+
+/* boot-uuid= in einer Boot-Argument-Datei auf guid setzen */
+static bool set_boot_uuid(Fat *f, const char *name, const char *guid) {
+  char args[1024], out[1100];
+  if (!fat_read(f, name, args, sizeof args)) return false;
+  args[strcspn(args, "\r\n")] = 0;
+  char *p = strstr(args, "boot-uuid=");
+  if (p) {
+    char *end = p + strcspn(p, " ");
+    memmove(p, end, strlen(end) + 1);
+  }
+  size_t n = strlen(args);
+  while (n && args[n - 1] == ' ') args[--n] = 0;
+  snprintf(out, sizeof out, "%s boot-uuid=%s\n", args, guid);
+  return fat_write(f, name, out);
+}
+
+/* Nach dem Schreiben der EFI-Partition: Kennungen von System und Wiederherstellung einsetzen */
+static void patch_esp(int fd, uint32_t dbs, uint64_t esp_off, const uint8_t sys[16], const uint8_t rec[16]) {
+  Fat f;
+  char sg[37], rg[37];
+  guid_str(sys, sg);
+  guid_str(rec, rg);
+  if (!fat_init(&f, fd, dbs, esp_off)) fail("Die EFI-Partition ist kein FAT32.");
+  if (!set_boot_uuid(&f, "boot-args-system.txt", sg) || !set_boot_uuid(&f, "boot-args-recovery.txt", rg) ||
+      !set_boot_uuid(&f, "boot-args.txt", sg))
+    fail("Boot-Argumente in der EFI-Partition nicht gesetzt.");
+}
+
+static void cmd_bootnext(const char *which) {
+  /* EFI-Partition der Platte, von der das System läuft */
+  int disk = -1;
+  for (int i = 0; i < 16 && disk < 0; i++) {
+    char name[16];
+    snprintf(name, sizeof name, "disk%d", i);
+    if (root_part(name)) disk = i;
+  }
+  if (disk < 0) fail("Startplatte nicht gefunden");
+  char name[16];
+  snprintf(name, sizeof name, "disk%d", disk);
+  Disk d;
+  if (!probe_disk(name, &d) || d.nparts < 1 || memcmp(d.part[0].type, GUID_ESP, 16)) fail("Keine EFI-Partition");
+  /* Die ganze Platte lässt sich nicht zum Schreiben öffnen, solange eine ihrer Partitionen (die
+   * laufende Wurzel) eingebunden ist; die EFI-Partition selbst ist frei */
+  char esp[24];
+  snprintf(esp, sizeof esp, "%ss1", name);
+  int fd = open_raw(esp, O_RDWR);
+  if (fd < 0) fail("Die EFI-Partition (%s) lässt sich nicht öffnen: %s", esp, strerror(errno));
+  Fat f;
+  if (!fat_init(&f, fd, d.bsize, 0)) fail("Die EFI-Partition ist kein FAT32");
+  char src[64], args[1024];
+  snprintf(src, sizeof src, "boot-args-%s.txt", which);
+  if (!fat_read(&f, src, args, sizeof args)) fail("%s fehlt in der EFI-Partition", src);
+  if (!fat_write(&f, "boot-args.txt", args)) fail("boot-args.txt nicht geschrieben");
+  fsync(fd);
+  close(fd);
+  out("DONE %s", which);
+}
+
+int main(int argc, char **argv) {
+  if (argc >= 2 && !strcmp(argv[1], "disks")) cmd_disks();
+  else if (argc == 4 && !strcmp(argv[1], "install")) cmd_install(argv[2], argv[3]);
+  else if (argc == 3 && !strcmp(argv[1], "erase")) cmd_erase(argv[2]);
+  else if (argc == 3 && !strcmp(argv[1], "bootnext") && (!strcmp(argv[2], "recovery") || !strcmp(argv[2], "system")))
+    cmd_bootnext(argv[2]);
+  else {
+    fprintf(stderr, "Aufruf: clokeos-installer disks | install <diskN> <url> | erase <diskN> | "
+                    "bootnext recovery|system\n");
+    return 2;
+  }
+  return 0;
+}

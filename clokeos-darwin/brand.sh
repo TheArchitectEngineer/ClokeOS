@@ -42,6 +42,7 @@ if [ "$CLOKE_FLAVOR" = desktop ]; then
   cp -R "$HERE/overlay-desktop/." "$tmp/stage/"
   "$HERE/cloakserver/build.sh" "$tmp/stage"
   "$HERE/menubar/build.sh" "$tmp/stage"
+  "$HERE/recovery/installer-build.sh" "$tmp/stage"
   python3 -I "$HERE/cloakserver/bundles.py" "$tmp/stage" "$tmp/stage/System/Library/CoreServices/CloakServer/Resources/icons" \
     "$CLOKE_VERSION" "$CLOKE_BUILD"
   "$HERE/macapps/install.sh" "$tmp/stage"

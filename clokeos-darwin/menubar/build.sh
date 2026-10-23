@@ -49,8 +49,9 @@ inc=(-I"$sysroot/include" -I"$sysroot/include/gtk-3.0" -I"$sysroot/include/glib-
      -I"$sysroot/include/freetype2" -I"$sysroot/include/fribidi")
 # wie bei CloakServer: PLATFORM_MacOSX für PureDarwins Libc-Header, kein ___chkstk_darwin, keine
 # chained fixups
+# -ffile-prefix-map: Pfade dieses Macs (__FILE__ in GLibs Meldungen) nicht ins Image
 cc=(clang -target "$target" -isysroot "$sysroot" -DPLATFORM_MacOSX=1 -fno-stack-check -std=gnu11 -O2
-    -nostdlib -L"$sysroot/libs" -Wl,-platform_version,macos,11.0,11.5 -Wl,-no_fixup_chains)
+    -ffile-prefix-map="$b/"= -ffile-prefix-map="$HERE/"= -nostdlib -L"$sysroot/libs" -Wl,-platform_version,macos,11.0,11.5 -Wl,-no_fixup_chains)
 
 mkdir -p "$stage/lib/gtk-3.0/modules" "$stage/System/Library/CoreServices/CloakServer"
 # Fremdcode: Warnungen aus, wie sie upstream gebaut wird (warning_level=1); ulong kennt nur glibc
