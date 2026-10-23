@@ -12,8 +12,8 @@
 #   clokeos-<arch>-system.ext4.xz     System
 #   clokeos-<arch>-recovery.ext4.xz   Wiederherstellung
 #   clokeos-<arch>-installer.img.xz   startfähiges Installationsmedium für VMs (QEMU)
-#   clokeos-x86_64-usb.img.xz         USB-Stick für echte PCs: startet als RAM-Disk und installiert
-#                                     ohne Internet auf eine SATA- oder NVMe-SSD (recovery/usb.sh)
+#   clokeos-x86_64-usb-offline.img.xz USB-Stick für echte PCs, bringt das System mit (recovery/usb.sh)
+#   clokeos-x86_64-usb-online.img.xz  kleiner USB-Stick, lädt das System aus dem Internet
 #   clokeos-x86_64-disk.img.xz        fertig installierte SSD zum Draufschreiben (recovery/disk.sh)
 #   clokeos-<version>-source.tar.gz   Quellcode dieses Commits und der mitgebauten Fremdquellen (GPL)
 #   SHA256SUMS, RELEASE-NOTES.md
@@ -79,9 +79,10 @@ for arch in "${arches[@]}"; do
     rows+="| \`$name\` | $arch | $(( packed / 1048576 )) MB | $(( raw / 1048576 )) MB |"$'\n'
   done
   if [ "$arch" = x86_64 ]; then # USB-Stick (mit den eben gepackten Abbildern) und SSD-Abbild für echte PCs
-    CLOKEOS_ARCH="$arch" "$here/recovery/usb.sh" "$dist" | tail -1
+    CLOKEOS_ARCH="$arch" "$here/recovery/usb.sh" offline "$dist" | tail -1
+    CLOKEOS_ARCH="$arch" "$here/recovery/usb.sh" online | tail -1
     CLOKEOS_ARCH="$arch" "$here/recovery/disk.sh" | tail -1
-    for k in usb disk; do
+    for k in usb-offline usb-online disk; do
       name="clokeos-$arch-$k.img.xz"
       echo "Packe $name"
       xz -T0 -6 -c "$src/$k.img" > "$dist/$name"
@@ -127,12 +128,17 @@ ClokeOS $CLOKE_VERSION „$CLOKE_CODENAME“ (Build $CLOKE_BUILD) mit dem Deskto
 
 ## Auf einem PC installieren (x86_64, USB-Stick)
 
-1. \`clokeos-x86_64-usb.img.xz\` laden, entpacken (\`xz -dk\`) und auf einen USB-Stick mit mindestens 2 GB schreiben, zum Beispiel mit balenaEtcher oder auf dem Mac: \`diskutil list\`, \`diskutil unmountDisk /dev/diskN\`, \`sudo dd if=clokeos-x86_64-usb.img of=/dev/rdiskN bs=4m\` (N ist der Stick; alles darauf wird gelöscht).
-2. Am PC im Boot-Menü der Firmware den Stick wählen (UEFI, ohne CSM/Legacy, Secure Boot aus, SATA im AHCI-Modus). Das Laden dauert je nach Stick eine bis zwei Minuten; mit gedrückter Taste V startet ClokeOS ausführlich mit Meldungen auf dem Bildschirm.
-3. In der Wiederherstellung „Install ClokeOS“ wählen und die SATA- oder NVMe-SSD angeben. Die SSD wird dabei gelöscht. Ab etwa 1,5 GB RAM ist alles Nötige auf dem Stick, Internet braucht es nicht. Mit 1 GB RAM startet der Stick von selbst eine schlanke Variante, die das System aus dem Internet lädt (per LAN-Kabel, Netzwerkchip siehe unten).
+Zwei Sticks zur Wahl:
+
+- \`clokeos-x86_64-usb-offline.img.xz\` bringt das System mit und installiert ohne Internet. Für die meisten PCs die richtige Wahl.
+- \`clokeos-x86_64-usb-online.img.xz\` ist klein und lädt das System beim Installieren aus dem Internet; dafür braucht der PC ein LAN-Kabel und einen unterstützten Netzwerkchip (siehe unten).
+
+1. Abbild laden, entpacken (\`xz -dk\`) und auf einen USB-Stick mit mindestens 2 GB schreiben, zum Beispiel mit balenaEtcher oder auf dem Mac: \`diskutil list\`, \`diskutil unmountDisk /dev/diskN\`, \`sudo dd if=clokeos-x86_64-usb-offline.img of=/dev/rdiskN bs=4m\` (N ist der Stick; alles darauf wird gelöscht).
+2. **USB-Tastatur und USB-Maus anstecken**, dann am PC im Boot-Menü der Firmware den Stick wählen (UEFI, ohne CSM/Legacy, Secure Boot aus, SATA im AHCI-Modus, Intel VMD/RST aus). Das Laden dauert je nach Stick eine bis zwei Minuten; mit gedrückter Taste V startet ClokeOS ausführlich mit Meldungen auf dem Bildschirm.
+3. In der Wiederherstellung „Install ClokeOS“ wählen und die SATA- oder NVMe-SSD angeben. Die SSD wird dabei gelöscht. Passt die Wiederherstellung samt System nicht in den Speicher unterhalb von 1 GB (je nach Firmware sind dort nur rund 400 MB am Stück frei), startet der Offline-Stick eine schlanke Variante und liest das System während der Installation vom Stick.
 4. Neu starten, den Stick abziehen. Beim ersten Start richtet der Einrichtungsassistent Sprache, Region, deinen Account und das Erscheinungsbild ein.
 
-Voraussetzungen: UEFI, mindestens 1 GB RAM, SATA- oder NVMe-SSD. Netzwerk (für SSH) nur mit Realtek RTL8111/8168/8169 oder Intel 82545EM; neuere Intel-Netzwerkchips (I219, I225) werden nicht erkannt. Bild über die Grafik der Firmware (GOP), Tastatur und Maus über USB oder PS/2.
+Voraussetzungen: UEFI, SATA- oder NVMe-SSD. Tastatur und Maus über USB, beim Einschalten schon angesteckt; eingebaute Notebook-Tastaturen (PS/2) und Touchpads (I²C) gehen noch nicht. Findet ClokeOS keine USB-Tastatur oder -Maus, zeigt es nach 45 Sekunden ein Fenster mit einer Diagnose zum Abfotografieren. Netzwerk nur über LAN mit Realtek RTL8111/8168/8169 oder Intel 82545EM; WLAN und neuere Intel-Netzwerkchips (I219, I225) werden nicht erkannt. Bild über die Grafik der Firmware (GOP).
 
 ## Ohne USB-Stick: fertiges SSD-Abbild (x86_64)
 
@@ -149,8 +155,10 @@ Später startet „Restart in Recovery…“ im ClokeOS-Menü die Wiederherstell
 - Englisch als Grundsprache wie bei macOS, Deutsch unter System Settings > Language & Region oder im Einrichtungsassistenten
 - Einrichtungsassistent beim ersten Start: Sprache, Region mit Zeitzone, eigener Account mit Passwort, Erscheinungsbild
 - Entfernte Anmeldung per SSH (System Settings > Sharing > Remote Login, voreingestellt an): \`ssh <account>@<adresse>\`, die Adresse steht auf derselben Seite
-- USB-Stick für echte PCs: startet als RAM-Disk und installiert ohne Internet auf SATA- oder NVMe-SSDs; mit 1 GB RAM eine schlanke Variante, die aus dem Internet installiert
+- USB-Sticks für echte PCs: offline (bringt das System mit) und online (klein, lädt aus dem Internet); sie starten als RAM-Disk und installieren auf SATA- oder NVMe-SSDs, auch auf PCs, deren Firmware unter 1 GB nur wenig Speicher frei lässt
 - fertiges SSD-Abbild zum Draufschreiben, als Weg ohne Stick
+- Downloads setzen nach Verbindungsabbrüchen an derselben Stelle fort
+- Diagnosefenster, wenn keine USB-Tastatur oder -Maus da ist
 - GTK-Thema ClokeOS in den Farben des Desktops
 - schlankere Wiederherstellung (knapp 600 MB statt 1,4 GB)
 

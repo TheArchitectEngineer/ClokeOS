@@ -5,6 +5,8 @@
  *   clokeos-installer install <diskN> <url>      ClokeOS aus <url>/clokeos-<arch>.txt installieren
  *   clokeos-installer erase <diskN>              Festplatte löschen (leere GPT)
  *   clokeos-installer bootnext recovery|system   nächsten Start in Wiederherstellung oder System
+ *   clokeos-installer stick                      Offline-USB-Stick mit Abbildern? ("STICK <version>")
+ *   <url> stick:                                 die Abbilder von diesem Stick lesen (Abschnitt unten)
  *
  * Ein Release (recovery/release.sh) besteht aus einer Beschreibung clokeos-<arch>.txt und drei mit
  * xz gepackten Partitionsabbildern: EFI-Partition (Loader, Kernel, Boot-Argumente), System (ext4
@@ -464,7 +466,21 @@ static bool parse_asset(const char *v, Asset *a) {
   return sscanf(v, "%127s %llu %llu %64s", a->file, &raw, &xz, a->sha) == 4 && (a->raw = raw, a->xz = xz, true);
 }
 
+static void parse_manifest(char *text, const char *arch, Manifest *m);
+static bool is_stick(const char *base) { return !strcmp(base, "stick:"); }
+static char *stick_text(const char *name);
+static bool stick_has(const char *name);
+
 static void fetch_manifest(const char *base, const char *arch, Manifest *m) {
+  if (is_stick(base)) { /* Offline-USB-Stick: Abbilder unter \ClokeOS\Install auf seiner EFI-Partition */
+    char name[64];
+    snprintf(name, sizeof name, "clokeos-%s.txt", arch);
+    char *text = stick_text(name);
+    if (!text) fail("The ClokeOS files were not found on the USB stick (\\ClokeOS\\Install\\%s).", name);
+    parse_manifest(text, arch, m);
+    free(text);
+    return;
+  }
   char url[1024], *text = NULL, err[CURL_ERROR_SIZE] = "";
   snprintf(url, sizeof url, "%s/clokeos-%s.txt", base, arch);
   CURL *c = curl_easy_init();
@@ -482,6 +498,11 @@ static void fetch_manifest(const char *base, const char *arch, Manifest *m) {
     fail("The ClokeOS server answered with error %ld. Please try again later.", status);
   if (rc != CURLE_OK || !text)
     fail("Could not connect to the ClokeOS server (%s). Is the network connected?", err[0] ? err : curl_easy_strerror(rc));
+  parse_manifest(text, arch, m);
+  free(text);
+}
+
+static void parse_manifest(char *text, const char *arch, Manifest *m) {
   memset(m, 0, sizeof *m);
   char *save = NULL;
   for (char *line = strtok_r(text, "\n", &save); line; line = strtok_r(NULL, "\n", &save)) {
@@ -497,7 +518,6 @@ static void fetch_manifest(const char *base, const char *arch, Manifest *m) {
     else if (!strcmp(k, "system")) parse_asset(v, &m->system);
     else if (!strcmp(k, "recovery")) parse_asset(v, &m->recovery);
   }
-  free(text);
   if (strcmp(m->arch, arch) || !m->esp.raw || !m->system.raw || !m->recovery.raw)
     fail("The release description is incomplete.");
 }
@@ -567,6 +587,8 @@ static size_t on_data(char *p, size_t s, size_t n, void *arg) {
   return len;
 }
 
+static void stick_feed(const char *name, uint64_t size, Writer *w);
+
 /* Abbild a von base herunterladen und ab Byte off auf fd schreiben, höchstens limit Bytes */
 static void install_asset(const char *base, const Asset *a, int fd, uint64_t off, uint64_t limit, uint64_t done_before,
                           uint64_t total) {
@@ -580,12 +602,13 @@ static void install_asset(const char *base, const Asset *a, int fd, uint64_t off
   sha_init(&w.sha);
   char url[1024], err[CURL_ERROR_SIZE] = "";
   snprintf(url, sizeof url, "%s/%s", base, a->file);
+  if (is_stick(base)) stick_feed(a->file, a->xz, &w);
   /* Bricht die Verbindung ab (GitHub setzt lange Downloads gelegentlich zurück, und solange der
    * Installer Nullbereiche auf eine langsame Platte schreibt, liest er nichts), geht es mit einer
    * Range-Anfrage ab dem letzten empfangenen Byte weiter: Entpacker, Prüfsumme und Schreibstelle
    * laufen einfach weiter. Antwortet der Server ohne Range (200 statt 206), meldet libcurl
    * CURLE_RANGE_ERROR, statt Daten doppelt zu liefern. */
-  for (int attempt = 1;; attempt++) {
+  for (int attempt = 1; !is_stick(base); attempt++) {
     CURL *c = curl_easy_init();
     if (!c) fail("Out of memory");
     curl_common(c, url);
@@ -707,7 +730,9 @@ static void cmd_install(const char *disk, const char *base) {
     if (!strncmp(base, "file://", 7)) {
       char local[700];
       snprintf(local, sizeof local, "%s/%s", base + 7, m.recovery.file);
-      if (access(local, R_OK)) {
+      if (access(local, R_OK) && stick_has(m.recovery.file)) {
+        rbase = "stick:"; /* Offline-Stick, auf dem die große RAM-Disk passte */
+      } else if (access(local, R_OK)) {
         snprintf(online, sizeof online, "https://github.com/%s/releases/download/v%s", RELEASES_REPO, m.version);
         rbase = url_reachable(online, m.recovery.file) ? online : NULL;
       }
@@ -733,6 +758,19 @@ static void cmd_install(const char *disk, const char *base) {
   out("DONE %s", m.version);
 }
 
+/* Lesen mit Wiederholung: PureDarwins einziger Treiber für USB-Massenspeicher
+ * (RavynXHCIMassStorageDisk) bricht bei langen Lesevorgängen gelegentlich mit E/A-Fehlern ab */
+static ssize_t pread_retry(int fd, void *buf, size_t n, off_t off) {
+  for (int t = 0;; t++) {
+    ssize_t r = pread(fd, buf, n, off);
+    if (r == (ssize_t)n) return r;
+    if (t == 8) return -1;
+    fprintf(stderr, "read of %zu bytes at %lld failed (%s), retrying\n", n, (long long)off,
+            r < 0 ? strerror(errno) : "short read");
+    sleep(t < 3 ? 1 : 3);
+  }
+}
+
 /* ---- EFI-Partition (FAT32): Boot-Argumente lesen und schreiben ----------------------------- */
 /* Der Loader liest bei jedem Start \EFI\BOOT\boot-args.txt; boot-uuid= darin nennt die GPT-Partition,
  * die er als Wurzel nimmt. Das Release legt daneben boot-args-system.txt und boot-args-recovery.txt
@@ -745,14 +783,17 @@ typedef struct {
   uint64_t base; /* Byte-Anfang der Partition */
   uint32_t bps, spc, rsvd, nfats, fatsz, root;
   uint64_t data;
+  uint32_t *table; /* ganze FAT im Speicher (USB-Stick), sonst NULL */
+  uint64_t nent;
 } Fat;
 
 static uint64_t clus_off(Fat *f, uint32_t c) { return f->base + f->data + (uint64_t)(c - 2) * f->spc * f->bps; }
 
 static uint32_t fat_next(Fat *f, uint32_t c) {
+  if (f->table) return c < f->nent ? f->table[c] & 0x0fffffff : 0x0fffffff;
   uint32_t blk[1024]; /* ein Block der FAT (Rohgerät: nur ganze Blöcke lesen) */
   uint64_t pos = f->base + (uint64_t)f->rsvd * f->bps + 4ull * c, b = pos / f->dbs * f->dbs;
-  if (f->dbs > sizeof blk || pread(f->fd, blk, f->dbs, (off_t)b) != (ssize_t)f->dbs) return 0x0fffffff;
+  if (f->dbs > sizeof blk || pread_retry(f->fd, blk, f->dbs, (off_t)b) != (ssize_t)f->dbs) return 0x0fffffff;
   return blk[(pos - b) / 4] & 0x0fffffff;
 }
 
@@ -760,7 +801,7 @@ static bool fat_init(Fat *f, int fd, uint32_t dbs, uint64_t base) {
   memset(f, 0, sizeof *f);
   f->fd = fd, f->dbs = dbs, f->base = base;
   uint8_t bpb[4096];
-  if (dbs > sizeof bpb || pread(fd, bpb, dbs, (off_t)base) != (ssize_t)dbs) return false;
+  if (dbs > sizeof bpb || pread_retry(fd, bpb, dbs, (off_t)base) != (ssize_t)dbs) return false;
   f->bps = bpb[11] | bpb[12] << 8;
   f->spc = bpb[13];
   f->rsvd = bpb[14] | bpb[15] << 8;
@@ -779,7 +820,7 @@ static bool fat_find(Fat *f, uint32_t dir, const char *name, uint64_t *entry_off
   char lfn[256] = "";
   bool found = false;
   for (uint32_t c = dir; buf && c >= 2 && c < 0x0ffffff8 && !found; c = fat_next(f, c)) {
-    if (pread(f->fd, buf, csize, (off_t)clus_off(f, c)) != (ssize_t)csize) break;
+    if (pread_retry(f->fd, buf, csize, (off_t)clus_off(f, c)) != (ssize_t)csize) break;
     for (size_t o = 0; o < csize && !found; o += 32) {
       uint8_t *e = buf + o;
       if (e[0] == 0) goto done;
@@ -905,6 +946,143 @@ static void patch_esp(int fd, uint32_t dbs, uint64_t esp_off, const uint8_t sys[
     fail("Could not set the boot arguments in the EFI partition.");
 }
 
+/* ---- Abbilder vom Offline-USB-Stick ------------------------------------------------------ */
+/* Passt die große RAM-Disk des Offline-Sticks nicht unter die Grenze von XNU (siehe
+ * loader/xnu-loader.patch), startet die schlanke ohne Abbilder. Die liegen dann als Dateien unter
+ * \ClokeOS\Install auf der EFI-Partition des Sticks (recovery/usb.sh offline) und werden über den
+ * USB-Treiber gelesen: die FAT einmal ganz, die Dateien in zusammenhängenden Stücken bis 1 MB, jeder
+ * Lesevorgang mit Wiederholung, bei Fehlern in Stücken von 64 KB. */
+
+static bool read_robust(int fd, void *buf, size_t n, off_t off, uint32_t dbs) {
+  if (pread_retry(fd, buf, n, off) == (ssize_t)n) return true;
+  size_t piece = 64 << 10;
+  if (piece % dbs) piece = dbs;
+  for (size_t o = 0; o < n; o += piece) {
+    size_t len = n - o < piece ? n - o : piece;
+    if (pread_retry(fd, (uint8_t *)buf + o, len, off + (off_t)o) != (ssize_t)len) return false;
+  }
+  return true;
+}
+
+static struct {
+  bool tried, ok;
+  int fd;
+  Fat f;
+  uint32_t install; /* erster Cluster von \ClokeOS\Install */
+} stick;
+
+static bool stick_open(void) {
+  if (stick.tried) return stick.ok;
+  stick.tried = true;
+  for (int i = 0; i < 16; i++) {
+    char name[16], part[24];
+    snprintf(name, sizeof name, "disk%d", i);
+    Disk d;
+    if (!probe_disk(name, &d) || !d.installer) continue;
+    snprintf(part, sizeof part, "%ss1", name);
+    int fd = open_raw(part, O_RDONLY);
+    if (fd < 0) continue;
+    uint32_t dbs = 0;
+    Fat *f = &stick.f;
+    bool ok = !ioctl(fd, DKIOCGETBLOCKSIZE, &dbs) && dbs && fat_init(f, fd, dbs, 0);
+    size_t bytes = ok ? (size_t)f->fatsz * f->bps : 0;
+    uint32_t *table = ok ? malloc(bytes) : NULL;
+    ok = table && read_robust(fd, table, bytes, (off_t)f->rsvd * f->bps, dbs);
+    if (ok) f->table = table, f->nent = bytes / 4;
+    uint8_t e[32];
+    uint64_t o;
+    ok = ok && fat_find(f, f->root, "ClokeOS", &o, e) && fat_find(f, ent_clus(e), "Install", &o, e);
+    if (!ok) {
+      free(table);
+      f->table = NULL;
+      close(fd);
+      continue;
+    }
+    stick.install = ent_clus(e);
+    stick.fd = fd;
+    stick.ok = true;
+    return true;
+  }
+  return false;
+}
+
+static bool stick_lookup(const char *name, uint32_t *clus, uint64_t *size) {
+  uint8_t e[32];
+  uint64_t o;
+  if (!stick_open() || !fat_find(&stick.f, stick.install, name, &o, e)) return false;
+  *clus = ent_clus(e);
+  *size = e[28] | e[29] << 8 | e[30] << 16 | (uint64_t)e[31] << 24;
+  return true;
+}
+
+static bool stick_has(const char *name) {
+  uint32_t c;
+  uint64_t size;
+  return stick_lookup(name, &c, &size);
+}
+
+/* Datei name vom Stick lesen und stückweise an cb geben (wie die Schreibfunktion von libcurl);
+ * want != 0: so groß muss sie sein. false: nicht da, oder cb hat abgebrochen */
+static bool stick_read(const char *name, uint64_t want, size_t (*cb)(char *, size_t, size_t, void *), void *arg) {
+  uint32_t c;
+  uint64_t left;
+  if (!stick_lookup(name, &c, &left)) return false;
+  if (want && left != want) fail("%s on the USB stick has the wrong size.", name);
+  Fat *f = &stick.f;
+  size_t csize = (size_t)f->spc * f->bps, maxrun = (1u << 20) / csize ? (1u << 20) / csize : 1;
+  uint8_t *buf = malloc(maxrun * csize);
+  if (!buf) fail("Out of memory");
+  while (left) {
+    if (c < 2 || c >= 0x0ffffff8) fail("%s on the USB stick is damaged.", name);
+    uint32_t first = c, next = fat_next(f, c);
+    size_t run = 1;
+    while (run < maxrun && next == c + 1 && (uint64_t)run * csize < left) {
+      c = next;
+      next = fat_next(f, c);
+      run++;
+    }
+    size_t len = run * csize, use = left < len ? (size_t)left : len;
+    if (!read_robust(stick.fd, buf, len, (off_t)clus_off(f, first), f->dbs))
+      fail("Reading %s from the USB stick failed: %s. Please try another USB port.", name, strerror(errno));
+    if (cb((char *)buf, 1, use, arg) != use) {
+      free(buf);
+      return false;
+    }
+    left -= use;
+    c = next;
+  }
+  free(buf);
+  return true;
+}
+
+static char *stick_text(const char *name) {
+  char *text = NULL;
+  if (!stick_read(name, 0, mem_write, &text)) {
+    free(text);
+    return NULL;
+  }
+  return text;
+}
+
+static void stick_feed(const char *name, uint64_t size, Writer *w) {
+  if (stick_read(name, size, on_data, w)) return;
+  if (w->bad) fail("%s is damaged or too large.", name);
+  fail("%s is missing on the USB stick.", name);
+}
+
+/* Offline-Stick mit Abbildern für diese Architektur? Gibt "STICK <version>" aus */
+static int cmd_stick(void) {
+  char name[64];
+  snprintf(name, sizeof name, "clokeos-%s.txt", machine_arch());
+  char *text = stick_text(name);
+  if (!text) return 1;
+  Manifest m;
+  parse_manifest(text, machine_arch(), &m);
+  free(text);
+  out("STICK %s", m.version);
+  return 0;
+}
+
 static void cmd_bootnext(const char *which) {
   /* EFI-Partition der Platte, von der das System läuft */
   int disk = -1;
@@ -943,9 +1121,10 @@ int main(int argc, char **argv) {
   else if (argc == 3 && !strcmp(argv[1], "erase")) cmd_erase(argv[2]);
   else if (argc == 3 && !strcmp(argv[1], "bootnext") && (!strcmp(argv[2], "recovery") || !strcmp(argv[2], "system")))
     cmd_bootnext(argv[2]);
+  else if (argc == 2 && !strcmp(argv[1], "stick")) return cmd_stick();
   else {
-    fprintf(stderr, "Aufruf: clokeos-installer disks | install <diskN> <url> | erase <diskN> | "
-                    "bootnext recovery|system\n");
+    fprintf(stderr, "Aufruf: clokeos-installer disks | install <diskN> <url>|stick: | erase <diskN> | "
+                    "bootnext recovery|system | stick\n");
     return 2;
   }
   return 0;

@@ -25,6 +25,16 @@ if [[ -r /lib/gtk-3.0/modules/libappmenu-gtk-module.so ]]; then
   export GTK_PATH=/lib/gtk-3.0 GTK_MODULES=appmenu-gtk-module
 fi
 cd $HOME
+# Xorg liest Tastatur und Maus nur von USB (/dev/usb_hid_kbd, /dev/usb_hid_mouse), und nur, wenn sie
+# beim Start schon stecken. Fehlt eins davon nach 45 Sekunden, zeigt ein Fenster, was ClokeOS von der
+# Hardware sieht (clokeos-diag), zum Abfotografieren: ohne Eingabe gibt es sonst keinen Weg zu den
+# Meldungen, und die Wiederherstellung vom USB-Stick hat kein SSH.
+if [[ -x /usr/libexec/clokeos-diag && -x /bin/xfce4-terminal ]]; then
+  ( sleep 45
+    [[ -e /dev/usb_hid_kbd && -e /dev/usb_hid_mouse ]] ||
+      /bin/xfce4-terminal --disable-server --title="ClokeOS Diagnostics" --geometry=150x44 --hold \
+        -x /usr/libexec/clokeos-diag ) &!
+fi
 cs=/System/Library/CoreServices/CloakServer/CloakServer
 # dbus-run-session statt dbus-launch: PureDarwins dbus-launch startet auf arm64 nicht.
 [[ -x /bin/dbus-run-session ]] && exec /bin/dbus-run-session -- $cs

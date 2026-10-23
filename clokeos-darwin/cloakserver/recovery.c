@@ -61,11 +61,24 @@ static void rec_init(void) {
   char manifest[256];
   if (!uname(&u)) {
     snprintf(manifest, sizeof manifest, REC_LOCAL_DIR "/clokeos-%s.txt", u.machine);
-    if (!access(manifest, R_OK)) snprintf(rec_releases, sizeof rec_releases, "file://" REC_LOCAL_DIR);
+    if (!access(manifest, R_OK)) {
+      snprintf(rec_releases, sizeof rec_releases, "file://" REC_LOCAL_DIR);
+      return;
+    }
   }
+  /* Offline-USB-Stick, auf dem nur die schlanke RAM-Disk passte: die Abbilder liegen auf dem Stick
+   * selbst, der Installer liest sie von dort ("stick:", recovery/installer.c) */
+  child_wait_begin();
+  FILE *p = popen(INSTALLER " stick 2>/dev/null", "r");
+  if (p) {
+    char out[128] = "";
+    if (fgets(out, sizeof out, p) && !strncmp(out, "STICK ", 6)) snprintf(rec_releases, sizeof rec_releases, "stick:");
+    pclose(p);
+  }
+  child_wait_end();
 }
 
-static bool rec_offline(void) { return !strncmp(rec_releases, "file:", 5); }
+static bool rec_offline(void) { return !strncmp(rec_releases, "file:", 5) || !strcmp(rec_releases, "stick:"); }
 
 /* 8 589 934 592 -> "8.6 GB" (Deutsch "8,6 GB") */
 static void fmt_size(char *out, size_t n, unsigned long long b) {

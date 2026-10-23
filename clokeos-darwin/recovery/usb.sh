@@ -1,41 +1,41 @@
 #!/bin/bash
-# USB-Installationsmedium für echte Rechner (x86_64): ClokeOS vom USB-Stick auf eine SATA- oder
-# NVMe-SSD installieren, auch ohne Internet.
+# USB-Installationsmedien für echte Rechner (x86_64): ClokeOS vom USB-Stick auf eine SATA- oder
+# NVMe-SSD installieren.
 #
-#   recovery/usb.sh [<ordner mit clokeos-<arch>.txt und den .xz-Abbildern>]
+#   recovery/usb.sh online                 usb-online.img: nur die schlanke Wiederherstellung, die das
+#                                          System aus dem Internet lädt (per LAN-Kabel)
+#   recovery/usb.sh offline <ordner>       usb-offline.img: bringt das System mit, aus <ordner> mit
+#                                          clokeos-<arch>.txt und den .xz-Abbildern (recovery/release.sh)
 #
-# Der Stick bekommt eine FAT32-Partition mit Loader, Kernel, Boot-Argumenten und der Wiederherstellung
-# als RAM-Disk, die der Loader (loader/xnu-loader.patch, clokeos_load_ramdisk) in den Arbeitsspeicher
-# lädt; der Kernel startet mit rd=md0 daraus. Vom Stick selbst kann er danach nicht zuverlässig lesen:
-# PureDarwins einziger Treiber für USB-Massenspeicher (RavynXHCIMassStorageDisk im xHCI-Treiber)
-# bricht in QEMU nach kurzer Zeit mit E/A-Fehlern ab, und an USB-2-Controllern (EHCI) fehlt er ganz.
-#   \ramdisk.img       Wiederherstellung und, mit dem Ordner, unter /Library/ClokeOS/Install die
-#                      EFI-Partition und das System des Releases: installiert ohne Internet
-#                      (CloakServer, rec_init); die Wiederherstellungspartition lädt der Installer
-#                      nach oder lässt sie weg, sie passt nicht mehr mit hinein
-#   \ramdisk-lite.img  nur die Wiederherstellung, ohne SSH und Entwicklerwerkzeuge, für Rechner, in
-#                      deren Speicher unter 1 GB die große nicht passt (1 GB RAM): lädt das System
-#                      aus dem Internet
-# XNU erreicht eine RAM-Disk nur unterhalb von gut 900 MB (siehe den Loader), deshalb die zwei Größen.
+# Der Stick hat eine FAT32-Partition mit Loader, Kernel und Boot-Argumenten; die Wiederherstellung
+# lädt der Loader (loader/xnu-loader.patch, clokeos_load_ramdisk) als RAM-Disk in den Arbeitsspeicher,
+# der Kernel startet mit rd=md0 daraus. XNU erreicht eine RAM-Disk nur unterhalb von 0x3E800000 (knapp
+# 1 GB), und dort ist je nach Firmware wenig am Stück frei (ein HP-Notebook mit 8 GB: 381 MB). Der
+# Loader nimmt deshalb die erste, die passt:
+#   \ramdisk.img        nur offline: Wiederherstellung und unter /Library/ClokeOS/Install die Abbilder
+#                       von EFI-Partition und System, gut 700 MB: installiert aus dem Arbeitsspeicher
+#   \ramdisk-lite.img   nur die Wiederherstellung, ohne SSH und Entwicklerwerkzeuge, gut 250 MB
+# Startet auf dem Offline-Stick die schlanke, liest der Installer die Abbilder unter \ClokeOS\Install
+# vom Stick selbst ("stick:", recovery/installer.c), über PureDarwins Treiber für USB-Massenspeicher
+# (RavynXHCIMassStorageDisk), mit Wiederholungen bei Lesefehlern. Auf dem Online-Stick lädt sie aus
+# dem Internet. GPT-Name "ClokeOS Installer": der Installer bietet den Stick nicht als Ziel an.
 #
-# CLOKEOS_USB_MODE=partition (Versuch) legt die Wiederherstellung stattdessen als ext4-Partition auf
-# den Stick und startet mit boot-uuid= davon, ohne RAM-Disk. Das braucht kaum Arbeitsspeicher, steht
-# und fällt aber mit dem USB-Treiber.
-#
-# Ergebnis: ~/ClokeOS-work/out/recovery-<arch>/usb.img (vorher recovery/build.sh). Auf den Stick:
-#   sudo dd if=usb.img of=/dev/rdiskN bs=4m    (macOS; oder balenaEtcher)
+# Ergebnis: ~/ClokeOS-work/out/recovery-<arch>/usb-<art>.img (vorher recovery/build.sh). Auf den Stick:
+#   sudo dd if=usb-offline.img of=/dev/rdiskN bs=4m    (macOS; oder balenaEtcher)
 # Braucht einen Rechner mit UEFI (ohne CSM, Secure Boot aus).
 set -euo pipefail
 export CLOKEOS_FLAVOR=desktop
 source "$(dirname "$0")/../config.sh"
 RESIZE2FS="$BREW/opt/e2fsprogs/sbin/resize2fs"
-DUMPE2FS="$BREW/opt/e2fsprogs/sbin/dumpe2fs"
-need "$DEBUGFS" "$E2FSCK" "$TUNE2FS" "$RESIZE2FS" "$DUMPE2FS" "$MKE2FS" python3 mcopy mformat mtype mdir mmd uuidgen
+need "$DEBUGFS" "$E2FSCK" "$TUNE2FS" "$RESIZE2FS" "$MKE2FS" python3 mcopy mformat mtype mdir mmd uuidgen
 export MTOOLS_SKIP_CHECK=1
-payload="${1:-}"
-mode="${CLOKEOS_USB_MODE:-ramdisk}"
-ramdisk=1
-[ "$mode" = partition ] && ramdisk=0
+kind="${1:-}"
+payload="${2:-}"
+case "$kind" in
+  online) ;;
+  offline) [ -f "$payload/clokeos-$CLOKE_ARCH.txt" ] || { echo "Keine Beschreibung clokeos-$CLOKE_ARCH.txt in ${payload:-<ordner>}" >&2; exit 1; } ;;
+  *) sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
+esac
 
 out="$WORK/out/recovery-$CLOKE_ARCH"
 tmp="$WORK/tmp/usb-$CLOKE_ARCH"
@@ -43,31 +43,27 @@ tmp="$WORK/tmp/usb-$CLOKE_ARCH"
 rm -rf "$tmp"
 mkdir -p "$tmp"
 
-# --- Wurzel: die Wiederherstellung, dazu die Abbilder ---------------------------------------
+# Abbilder aus der Beschreibung: Datei zum Schlüssel (esp, system, recovery)
+asset() { awk -F'[= ]' -v k="$1" '$1 == k {print $2}' "$payload/clokeos-$CLOKE_ARCH.txt"; }
+
+# --- große RAM-Disk (offline): Wiederherstellung mit den Abbildern von EFI-Partition und System -----
+# Die Wiederherstellungspartition passt nicht mehr mit hinein; der Installer nimmt sie vom Stick.
 root="$tmp/root.ext4"
-cp -c "$out/recovery.ext4" "$root" 2>/dev/null || cp "$out/recovery.ext4" "$root"
-extra=16
-files=()
-if [ -n "$payload" ]; then
-  [ -f "$payload/clokeos-$CLOKE_ARCH.txt" ] || { echo "Keine Beschreibung clokeos-$CLOKE_ARCH.txt in $payload" >&2; exit 1; }
+if [ "$kind" = offline ]; then
+  cp -c "$out/recovery.ext4" "$root" 2>/dev/null || cp "$out/recovery.ext4" "$root"
   files=("$payload/clokeos-$CLOKE_ARCH.txt")
-  parts="esp system recovery"
-  # in der RAM-Disk ist kein Platz für die Wiederherstellung: der Installer lädt sie nach
-  [ "$ramdisk" = 1 ] && parts="esp system"
-  for k in $parts; do
-    f=$(awk -F'[= ]' -v k="$k" '$1 == k {print $2}' "$payload/clokeos-$CLOKE_ARCH.txt")
+  for k in esp system; do
+    f=$(asset $k)
     [ -f "$payload/$f" ] || { echo "Fehlt: $payload/$f" >&2; exit 1; }
     files+=("$payload/$f")
   done
-  extra=$(( extra + $(du -cm "${files[@]}" | tail -1 | cut -f1) ))
-fi
-# erst auf das Minimum, dann um die Abbilder und Platz für Protokolle und /tmp vergrößern
-"$E2FSCK" -fy "$root" >/dev/null 2>&1 || true
-"$RESIZE2FS" -M "$root" >/dev/null 2>&1
-size_mb=$(( $(stat -f %z "$root") / 1048576 ))
-"$RESIZE2FS" "$root" "$(( (size_mb + extra + 15) / 16 * 16 ))M" >/dev/null 2>&1
-"$TUNE2FS" -U random -L "Installer" "$root" >/dev/null
-if [ ${#files[@]} -gt 0 ]; then
+  extra=$(( 16 + $(du -cm "${files[@]}" | tail -1 | cut -f1) ))
+  # erst auf das Minimum, dann um die Abbilder und Platz für Protokolle und /tmp vergrößern
+  "$E2FSCK" -fy "$root" >/dev/null 2>&1 || true
+  "$RESIZE2FS" -M "$root" >/dev/null 2>&1
+  size_mb=$(( $(stat -f %z "$root") / 1048576 ))
+  "$RESIZE2FS" "$root" "$(( (size_mb + extra + 15) / 16 * 16 ))M" >/dev/null 2>&1
+  "$TUNE2FS" -U random -L "Installer" "$root" >/dev/null
   {
     echo "mkdir /Library/ClokeOS"
     echo "mkdir /Library/ClokeOS/Install"
@@ -76,10 +72,12 @@ if [ ${#files[@]} -gt 0 ]; then
   "$DEBUGFS" -w -f "$tmp/payload.cmds" "$root" > "$tmp/payload.log" 2>&1
   "$DEBUGFS" -R "stat /Library/ClokeOS/Install/clokeos-$CLOKE_ARCH.txt" "$root" 2>/dev/null | grep -q '^Inode' ||
     { cat "$tmp/payload.log" >&2; exit 1; }
+  "$E2FSCK" -fy "$root" >/dev/null 2>&1 || true
+  "$E2FSCK" -fn "$root" > "$tmp/e2fsck.log" 2>&1 || { cat "$tmp/e2fsck.log" >&2; exit 1; }
+  rd_mb=$(( $(stat -f %z "$root") / 1048576 ))
+  [ "$rd_mb" -le 880 ] || { echo "RAM-Disk zu groß: $rd_mb MB (höchstens 880, siehe loader/xnu-loader.patch)" >&2; exit 1; }
 fi
-"$E2FSCK" -fy "$root" >/dev/null 2>&1 || true
-"$E2FSCK" -fn "$root" > "$tmp/e2fsck.log" 2>&1 || { cat "$tmp/e2fsck.log" >&2; exit 1; }
-rsize=$(stat -f %z "$root")
+
 # --- schlanke RAM-Disk: nur die Wiederherstellung, ohne alles, was sie zum Installieren aus dem
 # Internet nicht braucht. Auf einem Notebook mit 1 GB RAM war das größte freie Stück unter der Grenze
 # des Loaders 381 MB groß; die RAM-Disk soll deutlich darunter bleiben.
@@ -107,7 +105,7 @@ LITE_DROP='
 '
 LITE_KEEP_USR_BIN=' X Xorg xkbcomp launchctl env iconv clokefetch gtf '
 lite="$tmp/lite.ext4"
-if [ "$ramdisk" = 1 ]; then
+if true; then
   lroot="$tmp/lite-root"
   mkdir -p "$lroot" # rdump legt den Baum in einen vorhandenen Ordner
   "$DEBUGFS" -R "rdump / $lroot" "$out/recovery.ext4" >/dev/null 2>&1 || true
@@ -135,8 +133,8 @@ if [ "$ramdisk" = 1 ]; then
   rm -rf "$lroot"
 fi
 
-# --- Dateien der EFI-Partition ---------------------------------------------------------------
-# einzeln aus EFI/BOOT (mcopy -s benennt einen ausgepackten Ordner EFI in EFI_ um)
+# --- EFI-Partition des Sticks ----------------------------------------------------------------
+# Dateien einzeln aus EFI/BOOT (mcopy -s benennt einen ausgepackten Ordner EFI in EFI_ um)
 mkdir -p "$tmp/boot"
 for f in $(mdir -b -i "$out/esp.img@@0" ::/EFI/BOOT | sed 's|^::/EFI/BOOT/||'); do
   case "$f" in boot-args-*|.|..) continue ;; esac
@@ -144,36 +142,30 @@ for f in $(mdir -b -i "$out/esp.img@@0" ::/EFI/BOOT | sed 's|^::/EFI/BOOT/||'); 
 done
 [ -f "$tmp/boot/BOOTX64.EFI" ] && [ -f "$tmp/boot/kernel" ] || { echo "Loader oder Kernel fehlt in esp.img" >&2; exit 1; }
 base=$(tr -d '\r\n' < "$tmp/boot/boot-args.txt" | sed -E 's/ *boot-uuid=[^ ]*//g; s/ *rd=[^ ]*//g')
-part_guid=$(uuidgen | tr a-f A-F)
-
-if [ "$ramdisk" = 1 ]; then
-  rd_mb=$(( rsize / 1048576 ))
-  [ "$rd_mb" -le 880 ] || { echo "RAM-Disk zu groß: $rd_mb MB (höchstens 880, siehe loader/xnu-loader.patch)" >&2; exit 1; }
-  printf '%s rd=md0\n' "$base" > "$tmp/boot/boot-args.txt"
-  esize=$(( (rsize + $(stat -f %z "$lite") + $(du -sk "$tmp/boot" | cut -f1) * 1024 + 96 * 1048576) / 1048576 * 1048576 ))
-else
-  # Wurzel auf der zweiten Partition des Sticks; boot-uuid= nennt ihre GPT-Kennung
-  printf '%s boot-uuid=%s\n' "$base" "$part_guid" > "$tmp/boot/boot-args.txt"
-  esize=$(( 64 * 1048576 ))
-fi
+printf '%s rd=md0\n' "$base" > "$tmp/boot/boot-args.txt"
+stick_files=()
+[ "$kind" = offline ] && for k in esp system recovery; do stick_files+=("$payload/$(asset $k)"); done
+bytes=$(( $(stat -f %z "$lite") + $(du -sk "$tmp/boot" | cut -f1) * 1024 ))
+[ "$kind" = offline ] && bytes=$(( bytes + $(stat -f %z "$root") + $(du -ck "${stick_files[@]}" | tail -1 | cut -f1) * 1024 ))
+esize=$(( (bytes + 96 * 1048576) / 1048576 * 1048576 ))
 esp="$tmp/usb-esp.img"
 truncate -s "$esize" "$esp"
 mformat -i "$esp" -F -v CLOKEOS -T $(( esize / 512 )) -h 64 -s 32 ::
 mmd -i "$esp" ::/EFI ::/EFI/BOOT
 mcopy -i "$esp" "$tmp/boot/"* ::/EFI/BOOT/
-mtype -i "$esp" ::/EFI/BOOT/boot-args.txt | grep -q 'rd=md0\|boot-uuid=' || { echo "boot-args.txt fehlt im USB-Abbild" >&2; exit 1; }
-
-# GPT-Name "ClokeOS Installer": der Installer bietet den Stick nicht als Ziel an
-if [ "$ramdisk" = 1 ]; then
+mtype -i "$esp" ::/EFI/BOOT/boot-args.txt | grep -q 'rd=md0' || { echo "boot-args.txt fehlt im USB-Abbild" >&2; exit 1; }
+if [ "$kind" = offline ]; then
   mcopy -i "$esp" "$root" ::/ramdisk.img
-  mcopy -i "$esp" "$lite" ::/ramdisk-lite.img
-  python3 -I "$HERE/recovery/imagetool.py" gpt "$out/usb.img" "$esp" - "ClokeOS Installer" "$part_guid"
-else
-  python3 -I "$HERE/recovery/imagetool.py" gpt "$out/usb.img" "$esp" "$root" "ClokeOS Installer" "$part_guid"
+  mmd -i "$esp" ::/ClokeOS ::/ClokeOS/Install
+  mcopy -i "$esp" "$payload/clokeos-$CLOKE_ARCH.txt" "${stick_files[@]}" ::/ClokeOS/Install/
 fi
-if [ "$ramdisk" = 1 ]; then
-  echo "USB-Installationsmedium: $out/usb.img (RAM-Disk $(( rsize / 1048576 )) MB$([ -n "$payload" ] && echo " mit Abbildern für die Installation ohne Internet"), schlanke $(( $(stat -f %z "$lite") / 1048576 )) MB)"
+mcopy -i "$esp" "$lite" ::/ramdisk-lite.img
+img="$out/usb-$kind.img"
+rm -f "$img"
+python3 -I "$HERE/recovery/imagetool.py" gpt "$img" "$esp" - "ClokeOS Installer" "$(uuidgen)" >/dev/null
+if [ "$kind" = offline ]; then
+  echo "USB-Stick offline: $img ($(( $(stat -f %z "$img") / 1048576 )) MB; RAM-Disk $(( $(stat -f %z "$root") / 1048576 )) MB mit den Abbildern, schlanke $(( $(stat -f %z "$lite") / 1048576 )) MB, Abbilder auch auf dem Stick)"
 else
-  echo "USB-Installationsmedium: $out/usb.img (Wiederherstellung als Partition, $(( rsize / 1048576 )) MB)"
+  echo "USB-Stick online: $img ($(( $(stat -f %z "$img") / 1048576 )) MB; schlanke RAM-Disk $(( $(stat -f %z "$lite") / 1048576 )) MB)"
 fi
 rm -rf "$tmp"

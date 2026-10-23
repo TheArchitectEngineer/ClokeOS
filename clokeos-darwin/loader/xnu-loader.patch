@@ -236,7 +236,7 @@ diff -ruN a/src/jump.S b/src/jump.S
 \ No newline at end of file
 diff -ruN a/src/main.c b/src/main.c
 --- a/src/main.c	2026-08-17 22:51:23
-+++ b/src/main.c	2026-10-23 13:38:52
++++ b/src/main.c	2026-10-23 17:09:32
 @@ -6,6 +6,7 @@
  #include "macho.h"
  #include "jump.h"
@@ -254,7 +254,7 @@ diff -ruN a/src/main.c b/src/main.c
    UINTN len = 0;
    CHAR8 *copy = NULL;
  
-@@ -51,6 +52,287 @@
+@@ -51,6 +52,384 @@
    return EFI_SUCCESS;
  }
  
@@ -519,6 +519,103 @@ diff -ruN a/src/main.c b/src/main.c
 +  log_info(L"connect all: %lu handles\r\n", (UINT64)n);
 +}
 +
++/* ClokeOS: started from the USB installer, copy the firmware's ACPI tables
++ * onto the stick, as \ClokeOS\ACPI\<signature><n>.aml. PureDarwin has no ACPI
++ * interpreter, so the tables are how a notebook's I2C touchpad (bus, address,
++ * interrupt pin) can be found: boot once, then read them on another computer.
++ * Written by the firmware's own FAT driver, so this does not depend on
++ * PureDarwin's USB storage driver. Failures are only logged. */
++static EFI_FILE_PROTOCOL *clokeos_open_dir(EFI_FILE_PROTOCOL *root, CONST CHAR16 *path) {
++  EFI_FILE_PROTOCOL *d = NULL;
++  if (EFI_ERROR(uefi_call_wrapper(root->Open, 5, root, &d, (CHAR16 *)path,
++                                  EFI_FILE_MODE_READ | EFI_FILE_MODE_WRITE | EFI_FILE_MODE_CREATE,
++                                  EFI_FILE_DIRECTORY)))
++    return NULL;
++  return d;
++}
++
++static VOID clokeos_write_file(EFI_FILE_PROTOCOL *dir, CONST CHAR16 *name, VOID *data, UINTN len) {
++  EFI_FILE_PROTOCOL *f = NULL;
++  UINT64 mode = EFI_FILE_MODE_READ | EFI_FILE_MODE_WRITE | EFI_FILE_MODE_CREATE;
++  if (EFI_ERROR(uefi_call_wrapper(dir->Open, 5, dir, &f, (CHAR16 *)name, mode, 0)))
++    return;
++  uefi_call_wrapper(f->Delete, 1, f); /* from an earlier start: shorter tables would leave a tail */
++  if (EFI_ERROR(uefi_call_wrapper(dir->Open, 5, dir, &f, (CHAR16 *)name, mode, 0)))
++    return;
++  uefi_call_wrapper(f->Write, 3, f, &len, data);
++  uefi_call_wrapper(f->Close, 1, f);
++}
++
++static VOID clokeos_dump_acpi(AppContext *ctx) {
++  static const EFI_GUID acpi20 = ACPI_20_TABLE_GUID;
++  UINT64 rsdp = 0;
++  for (UINTN i = 0; i < ctx->st->NumberOfTableEntries; i++)
++    if (CompareMem(&ctx->st->ConfigurationTable[i].VendorGuid, &acpi20, sizeof(EFI_GUID)) == 0)
++      rsdp = (UINT64)(UINTN)ctx->st->ConfigurationTable[i].VendorTable;
++  if (!rsdp)
++    return;
++  UINT64 xsdt = *(UINT64 *)(UINTN)(rsdp + 24);
++  if (!xsdt)
++    return;
++  EFI_FILE_PROTOCOL *root = NULL, *top = NULL, *dir = NULL;
++  if (EFI_ERROR(app_open_self_volume(ctx, &root)))
++    return;
++  top = clokeos_open_dir(root, L"\\ClokeOS");
++  dir = clokeos_open_dir(root, L"\\ClokeOS\\ACPI");
++  if (dir) {
++    UINT32 xlen = *(UINT32 *)(UINTN)(xsdt + 4);
++    UINT64 *ent = (UINT64 *)(UINTN)(xsdt + 36);
++    UINTN n = (xlen - 36) / 8, written = 0;
++    UINT64 tables[64 + 1];
++    UINTN count = 0;
++    for (UINTN i = 0; i < n && count < 64; i++)
++      if (ent[i])
++        tables[count++] = ent[i];
++    for (UINTN i = 0; i < count; i++) { /* the DSDT hangs off the FADT */
++      CHAR8 *t = (CHAR8 *)(UINTN)tables[i];
++      if (t[0] == 'F' && t[1] == 'A' && t[2] == 'C' && t[3] == 'P') {
++        UINT32 flen = *(UINT32 *)(t + 4);
++        UINT64 dsdt = flen >= 148 ? *(UINT64 *)(t + 140) : 0;
++        if (!dsdt)
++          dsdt = *(UINT32 *)(t + 40);
++        if (dsdt)
++          tables[count++] = dsdt;
++        break;
++      }
++    }
++    UINTN seen[64 + 1] = {0}; /* how many tables of each signature so far, by index of the first */
++    for (UINTN i = 0; i < count; i++) {
++      CHAR8 *t = (CHAR8 *)(UINTN)tables[i];
++      UINT32 len = *(UINT32 *)(t + 4);
++      if (len < 36 || len > (16u << 20))
++        continue;
++      UINTN nth = 0, first = i;
++      for (UINTN k = 0; k < i; k++)
++        if (CompareMem(tables[k] ? (VOID *)(UINTN)tables[k] : t, t, 4) == 0) {
++          first = k;
++          break;
++        }
++      nth = seen[first]++;
++      CHAR16 name[16];
++      name[0] = t[0], name[1] = t[1], name[2] = t[2], name[3] = t[3];
++      UINTN p = 4;
++      if (nth) { /* SSDT, SSDT1, SSDT2, ... */
++        if (nth >= 10)
++          name[p++] = L'0' + (CHAR16)(nth / 10);
++        name[p++] = L'0' + (CHAR16)(nth % 10);
++      }
++      name[p++] = L'.', name[p++] = L'a', name[p++] = L'm', name[p++] = L'l', name[p] = 0;
++      clokeos_write_file(dir, name, t, len);
++      written++;
++    }
++    log_info(L"ACPI: %lu tables written to \\ClokeOS\\ACPI\r\n", (UINT64)written);
++    uefi_call_wrapper(dir->Close, 1, dir);
++  }
++  if (top)
++    uefi_call_wrapper(top->Close, 1, top);
++  uefi_call_wrapper(root->Close, 1, root);
++}
++
 +static EFI_STATUS clokeos_load_ramdisk(AppContext *ctx) {
 +  EFI_FILE_PROTOCOL *root = NULL;
 +  if (EFI_ERROR(app_open_self_volume(ctx, &root)))
@@ -542,7 +639,7 @@ diff -ruN a/src/main.c b/src/main.c
  static EFI_STATUS load_ramdisk(AppContext *ctx) {
    EFI_FILE_PROTOCOL *root = NULL;
    FileBuffer image = {0};
-@@ -96,7 +378,7 @@
+@@ -96,7 +475,7 @@
  }
  
  #if defined(__x86_64__)
@@ -551,7 +648,7 @@ diff -ruN a/src/main.c b/src/main.c
    UINT64 *src64 = (UINT64 *)(UINTN)g_copy_src;
    UINT64 *dst64 = (UINT64 *)(UINTN)g_copy_dst;
    UINTN   words = (UINTN)((g_copy_bytes + 7) >> 3);
-@@ -246,6 +528,61 @@
+@@ -246,6 +625,61 @@
    if (EFI_ERROR(status))
      return status;
  
@@ -613,7 +710,7 @@ diff -ruN a/src/main.c b/src/main.c
    log_info(L"XNU EFI loader start\r\n");
  
    {
-@@ -440,10 +777,47 @@
+@@ -440,10 +874,48 @@
  
    log_info(L"entry vm=0x%lx -> host=0x%lx\r\n", entry_vmaddr, (UINT64)(UINTN)host_entry);
  
@@ -654,6 +751,7 @@ diff -ruN a/src/main.c b/src/main.c
 +  if (ctx.ramdisk_size != 0) {
 +    /* after placing the RAMDisk, so the drivers' allocations cannot take its room */
 +    clokeos_connect_all(&ctx);
++    clokeos_dump_acpi(&ctx);
 +    status = append_ramdisk_boot_arg(&ctx, &cmdline, &cmdline_owned);
 +    if (EFI_ERROR(status))
 +      log_error(L"failed to append rd=md0: %r\r\n", status);
@@ -664,7 +762,7 @@ diff -ruN a/src/main.c b/src/main.c
    BootArgsState boot_state = {0};
  
    ReleaseBootInfoGuard(&ctx, &bootinfo_guard_base, &bootinfo_guard_pages);
-@@ -456,42 +830,6 @@
+@@ -456,42 +928,6 @@
    if (EFI_ERROR(status)) {
      log_error(L"failed to collect memory map: %r\r\n", status);
      return status;
