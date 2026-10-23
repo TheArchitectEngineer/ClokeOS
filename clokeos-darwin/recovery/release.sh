@@ -122,7 +122,7 @@ Später startet „Neustart in Wiederherstellung …“ im ClokeOS-Menü die Wie
 ## Was drin ist
 
 - CloakServer, der Fensterserver von ClokeOS: Menüleiste, Dock, Launchpad, Anmeldung, Hell- und Dunkelmodus, Fenster mit Schatten und Glas
-- Globale Menüleiste wie bei macOS: Die Menüs von GTK-Programmen (Fundus, Terminal …) stehen oben in der Leiste statt im Fenster
+- Globale Menüleiste wie bei macOS: Die Menüs der Programme stehen oben in der Leiste statt im Fenster, bei GTK-Programmen wie Fundus und Terminal ebenso wie bei Mac-Programmen
 - Wiederherstellung mit Installer, Online-Hilfe, Festplattendienstprogramm und Terminal
 - $macnote
 

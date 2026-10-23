@@ -75,7 +75,8 @@ for f in "$CF"/include/CoreFoundation/*; do
   [ -L "$f" ] && [ ! -e "$f" ] && ln -sfn "$SDK/System/Library/Frameworks/CoreFoundation.framework/Headers/$(basename "$f")" "$obj/cfhdr/"
 done
 
-CC=(clang -target "$TARGET" -isysroot "$SDK" -O2 -g0 -w -fblocks -fexceptions -fobjc-exceptions
+# -ffile-prefix-map: keine Pfade dieses Macs (__FILE__ in Assertions) in den Frameworks
+CC=(clang -target "$TARGET" -isysroot "$SDK" -O2 -g0 -w -ffile-prefix-map="$WORK/"= -ffile-prefix-map="$HERE/"= -fblocks -fexceptions -fobjc-exceptions
     -fconstant-cfstrings -Xclang -fno-constant-nsarray-literals -Xclang -fno-constant-nsdictionary-literals
     -Xclang -fno-constant-nsnumber-literals
     -include "$M/include/cloke_cf_compat.h" -include "$CF/CoreFoundation_Prefix.h" -include "$CF/macros.h"

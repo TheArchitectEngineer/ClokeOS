@@ -116,7 +116,8 @@ done < "$obj/patched.list"
 # private Header (OpenGL/CGLInternal.h, X11/extensions/XKBrules.h), nimmt aus Apples CFCGTypes.h
 # und ApplicationServices.h heraus, was mit Darling oder X11 kollidiert, und ergänzt OpenGL.h,
 # ImageIO.h und Onyx2Ds Schalter für libtiff.
-CC=(clang -target "$TARGET" -isysroot "$SDK" -O2 -g0 -w -fblocks -fexceptions -fobjc-exceptions
+# -ffile-prefix-map: keine Pfade dieses Macs (__FILE__ in Assertions) in den Frameworks
+CC=(clang -target "$TARGET" -isysroot "$SDK" -O2 -g0 -w -ffile-prefix-map="$WORK/"= -ffile-prefix-map="$HERE/"= -fblocks -fexceptions -fobjc-exceptions
     -fconstant-cfstrings -Xclang -fno-constant-nsarray-literals -Xclang -fno-constant-nsdictionary-literals
     -Xclang -fno-constant-nsnumber-literals
     -include math.h -include stdlib.h -include CoreFoundation/CoreFoundation.h -include Foundation/Foundation.h
