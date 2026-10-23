@@ -30,3 +30,7 @@ nichts, außer CFPreferences.c.
                                               method_invoke_stret gibt es auf arm64 nicht (KVC)
   darling-cocotron/AppKit/…                   IMP-Aufrufe mit Typumwandlung (NSApplication: Sheet-Ende,
                                               NSTypesetter_concrete: layoutNextFragment)
+
+darling-cocotron/AppKit/NSMenu.subproj/NSMenuItem.m.sed: Darling-Fehler, -initWithTitle:action:keyEquivalent:
+setzte keinen Modifikator (Apple: ⌘). Kürzel galten ohne ⌘, Menüs zeigten "Q" statt "⌘Q". Gefunden mit
+der globalen Menüleiste (appkit/clokemenu.m, 23.10.2026).

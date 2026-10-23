@@ -67,6 +67,9 @@ Dateien:
   Darling.
 - `appkit/x11present.m`: AppKit-Fenster ohne OpenGL auf den Bildschirm (XShmPutImage, sonst
   XPutImage). `CLOKE_X11_DEBUG=1` zeigt Weg und Dauer, `CLOKE_NO_XSHM=1` erzwingt XPutImage.
+- `appkit/clokemenu.m`: Hauptmenü in CloakServers globaler Menüleiste statt im Fenster (Eigenschaft
+  `_CLOKE_MENU`, Rückmeldung `_CLOKE_MENU_ACTIVATE`), ohne Eingriff in Darlings Quellen.
+  `CLOKE_MENU_IM_FENSTER=1` zeigt das Menü wieder im Fenster.
 - `appkit/imageio.m`: ImageIO (CGImageSource, CGImageDestination) über Onyx2D.
 - `appkit/xkbrules.c`: die eine Funktion aus libxkbfile, die PureDarwin fehlt.
 - `appkit/sysstubs.c`: Platzhalter für OpenGL, IOKit und LaunchServices, nicht exportiert.
