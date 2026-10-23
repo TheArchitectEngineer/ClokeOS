@@ -236,7 +236,7 @@ diff -ruN a/src/jump.S b/src/jump.S
 \ No newline at end of file
 diff -ruN a/src/main.c b/src/main.c
 --- a/src/main.c	2026-08-17 22:51:23
-+++ b/src/main.c	2026-10-23 12:59:49
++++ b/src/main.c	2026-10-23 13:38:52
 @@ -6,6 +6,7 @@
  #include "macho.h"
  #include "jump.h"
@@ -254,7 +254,7 @@ diff -ruN a/src/main.c b/src/main.c
    UINTN len = 0;
    CHAR8 *copy = NULL;
  
-@@ -51,6 +52,267 @@
+@@ -51,6 +52,287 @@
    return EFI_SUCCESS;
  }
  
@@ -499,6 +499,26 @@ diff -ruN a/src/main.c b/src/main.c
 +/* \ramdisk.img brings the system along (install without internet); when it
 + * does not fit (computers with 1 GB RAM), \ramdisk-lite.img has only the
 + * recovery, which then downloads the system. Neither file: no RAMDisk. */
++/* ClokeOS: started from the USB installer, the firmware often brings up only
++ * the boot device. PureDarwin's SATA driver (RavynAHCIPort) reads each port's
++ * device signature before it lets the port receive FISes, so on a port the
++ * firmware never touched it sees 0xffffffff and skips the disk. Connecting
++ * every driver once, as the UEFI shell's "connect -r" does, has the firmware
++ * initialise all ports, which leaves valid signatures behind. */
++static VOID clokeos_connect_all(AppContext *ctx) {
++  UINTN n = 0;
++  EFI_HANDLE *handles = NULL;
++  EFI_STATUS st = uefi_call_wrapper(ctx->bs->LocateHandleBuffer, 5, AllHandles, NULL, NULL, &n, &handles);
++  if (EFI_ERROR(st)) {
++    log_error(L"connect all: no handle list (%r)\r\n", st);
++    return;
++  }
++  for (UINTN i = 0; i < n; i++)
++    uefi_call_wrapper(ctx->bs->ConnectController, 4, handles[i], NULL, NULL, TRUE);
++  uefi_call_wrapper(ctx->bs->FreePool, 1, handles);
++  log_info(L"connect all: %lu handles\r\n", (UINT64)n);
++}
++
 +static EFI_STATUS clokeos_load_ramdisk(AppContext *ctx) {
 +  EFI_FILE_PROTOCOL *root = NULL;
 +  if (EFI_ERROR(app_open_self_volume(ctx, &root)))
@@ -522,7 +542,7 @@ diff -ruN a/src/main.c b/src/main.c
  static EFI_STATUS load_ramdisk(AppContext *ctx) {
    EFI_FILE_PROTOCOL *root = NULL;
    FileBuffer image = {0};
-@@ -96,7 +358,7 @@
+@@ -96,7 +378,7 @@
  }
  
  #if defined(__x86_64__)
@@ -531,7 +551,7 @@ diff -ruN a/src/main.c b/src/main.c
    UINT64 *src64 = (UINT64 *)(UINTN)g_copy_src;
    UINT64 *dst64 = (UINT64 *)(UINTN)g_copy_dst;
    UINTN   words = (UINTN)((g_copy_bytes + 7) >> 3);
-@@ -246,6 +508,61 @@
+@@ -246,6 +528,61 @@
    if (EFI_ERROR(status))
      return status;
  
@@ -593,7 +613,7 @@ diff -ruN a/src/main.c b/src/main.c
    log_info(L"XNU EFI loader start\r\n");
  
    {
-@@ -440,10 +757,45 @@
+@@ -440,10 +777,47 @@
  
    log_info(L"entry vm=0x%lx -> host=0x%lx\r\n", entry_vmaddr, (UINT64)(UINTN)host_entry);
  
@@ -632,6 +652,8 @@ diff -ruN a/src/main.c b/src/main.c
 +    return status;
 +  }
 +  if (ctx.ramdisk_size != 0) {
++    /* after placing the RAMDisk, so the drivers' allocations cannot take its room */
++    clokeos_connect_all(&ctx);
 +    status = append_ramdisk_boot_arg(&ctx, &cmdline, &cmdline_owned);
 +    if (EFI_ERROR(status))
 +      log_error(L"failed to append rd=md0: %r\r\n", status);
@@ -642,7 +664,7 @@ diff -ruN a/src/main.c b/src/main.c
    BootArgsState boot_state = {0};
  
    ReleaseBootInfoGuard(&ctx, &bootinfo_guard_base, &bootinfo_guard_pages);
-@@ -456,42 +808,6 @@
+@@ -456,42 +830,6 @@
    if (EFI_ERROR(status)) {
      log_error(L"failed to collect memory map: %r\r\n", status);
      return status;

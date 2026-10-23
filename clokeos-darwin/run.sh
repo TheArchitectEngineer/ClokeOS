@@ -135,7 +135,8 @@ if [ -n "$disk2" ]; then
   # CLOKEOS_VM_DISK2=nvme oder ahci: als NVMe- oder SATA-SSD wie in einem echten PC (Standard virtio)
   case "${CLOKEOS_VM_DISK2:-virtio}" in
     nvme) args+=(-drive if=none,id=disk2,format=raw,file="$disk2" -device nvme,serial=clokeos2,drive=disk2) ;;
-    ahci) args+=(-drive if=none,id=disk2,format=raw,file="$disk2" -device ahci,id=ahci2 -device ide-hd,bus=ahci2.0,drive=disk2) ;;
+    # ahci: am eingebauten SATA-Controller des Chipsatzes (ICH9, Port 2) wie in einem PC
+    ahci) args+=(-drive if=none,id=disk2,format=raw,file="$disk2" -device ide-hd,bus=ide.2,drive=disk2) ;;
     *) args+=(-drive if=none,id=disk2,format=raw,file="$disk2" -device virtio-blk-pci,drive=disk2) ;;
   esac
 fi
