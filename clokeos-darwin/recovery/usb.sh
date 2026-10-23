@@ -13,8 +13,9 @@
 #                      EFI-Partition und das System des Releases: installiert ohne Internet
 #                      (CloakServer, rec_init); die Wiederherstellungspartition lädt der Installer
 #                      nach oder lässt sie weg, sie passt nicht mehr mit hinein
-#   \ramdisk-lite.img  nur die Wiederherstellung, für Rechner, in deren Speicher unter 1 GB die große
-#                      nicht passt (1 GB RAM): lädt das System aus dem Internet
+#   \ramdisk-lite.img  nur die Wiederherstellung, ohne SSH und Entwicklerwerkzeuge, für Rechner, in
+#                      deren Speicher unter 1 GB die große nicht passt (1 GB RAM): lädt das System
+#                      aus dem Internet
 # XNU erreicht eine RAM-Disk nur unterhalb von gut 900 MB (siehe den Loader), deshalb die zwei Größen.
 #
 # CLOKEOS_USB_MODE=partition (Versuch) legt die Wiederherstellung stattdessen als ext4-Partition auf
@@ -29,7 +30,7 @@ export CLOKEOS_FLAVOR=desktop
 source "$(dirname "$0")/../config.sh"
 RESIZE2FS="$BREW/opt/e2fsprogs/sbin/resize2fs"
 DUMPE2FS="$BREW/opt/e2fsprogs/sbin/dumpe2fs"
-need "$DEBUGFS" "$E2FSCK" "$TUNE2FS" "$RESIZE2FS" "$DUMPE2FS" python3 mcopy mformat mtype mdir mmd uuidgen
+need "$DEBUGFS" "$E2FSCK" "$TUNE2FS" "$RESIZE2FS" "$DUMPE2FS" "$MKE2FS" python3 mcopy mformat mtype mdir mmd uuidgen
 export MTOOLS_SKIP_CHECK=1
 payload="${1:-}"
 mode="${CLOKEOS_USB_MODE:-ramdisk}"
@@ -79,15 +80,59 @@ fi
 "$E2FSCK" -fy "$root" >/dev/null 2>&1 || true
 "$E2FSCK" -fn "$root" > "$tmp/e2fsck.log" 2>&1 || { cat "$tmp/e2fsck.log" >&2; exit 1; }
 rsize=$(stat -f %z "$root")
-# kleine RAM-Disk ohne Abbilder: nur die Wiederherstellung, auf ihr Minimum plus Platz für /tmp
+# --- schlanke RAM-Disk: nur die Wiederherstellung, ohne alles, was sie zum Installieren aus dem
+# Internet nicht braucht. Auf einem Notebook mit 1 GB RAM war das größte freie Stück unter der Grenze
+# des Loaders 381 MB groß; die RAM-Disk soll deutlich darunter bleiben.
+# Weg: SSH (Server und Client, eigenes OpenSSL), Werkzeuge zum Bauen (cctools, Autotools, Compiler,
+# Wine-Skripte), andere Fenstermanager und Xfce-Sitzung, X-Demos, Animationen der Warte-Zeiger.
+# Was die Wiederherstellung startet, bleibt: Xorg, xinit, xrdb, xkbcomp, dbus, CloakServer,
+# xfce4-terminal, netsurf-gtk3, clokeos-installer, die Shell-Werkzeuge.
+LITE_DROP='
+  bin/ssh bin/ssh-keygen sbin/sshd libexec/sshd-auth libexec/sshd-session libexec/sftp-server
+  bin/i3 bin/i3-* bin/i3bar bin/i3status bin/dmenu bin/dmenu_* bin/puredarwin-sway bin/startxfce4
+  bin/xfce4-session bin/xfce4-session-* bin/xfdesktop bin/xfdesktop-settings bin/xfce4-panel
+  bin/xfce4-popup-* bin/xfce4-appfinder bin/xfce4-*-settings bin/xfce4-settings-* bin/xfsettingsd
+  bin/xfwm4 bin/xfwm4-* bin/thunar-settings bin/xflock4 bin/xfrun4 bin/xfce4-about bin/xfce4-find-cursor
+  lib/xfce4/panel lib/xfce4/xfwm4 lib/xfce4/session lib/xfce4/settings
+  bin/xcalc bin/xclock bin/xeyes bin/xmessage bin/resize bin/uxterm bin/koi8rxterm bin/xkeystone
+  bin/sqlite3 bin/mpicalc bin/tcc bin/bmake bin/cjpeg bin/djpeg bin/jpegtran bin/rdjpgcom bin/wrjpgcom
+  bin/pcre2test bin/pcre2grep bin/xmllint bin/xmlcatalog bin/gdbus-codegen bin/glib-compile-*
+  bin/glib-genmarshal bin/glib-gettextize bin/glib-mkenums bin/gtester bin/gtester-report
+  bin/gtk-builder-tool bin/gtk-encode-symbolic-svg bin/gdk-pixbuf-csource bin/gdk-pixbuf-pixdata
+  bin/dbus-test-tool bin/psl-make-dafsa bin/pango-view bin/pango-segmentation bin/rsvg-convert
+  bin/csslint-0.6 bin/pcmplay bin/mousemon
+  usr/share/autoconf usr/share/automake-* usr/share/aclocal* usr/share/bison usr/share/wine-build
+  usr/share/vim usr/share/bash-completion
+  share/icons/Adwaita/cursors/progress share/icons/Adwaita/cursors/wait
+'
+LITE_KEEP_USR_BIN=' X Xorg xkbcomp launchctl env iconv clokefetch gtf '
 lite="$tmp/lite.ext4"
 if [ "$ramdisk" = 1 ]; then
-  cp -c "$out/recovery.ext4" "$lite" 2>/dev/null || cp "$out/recovery.ext4" "$lite"
-  "$RESIZE2FS" -M "$lite" >/dev/null 2>&1
-  lmb=$(( $(stat -f %z "$lite") / 1048576 ))
-  "$RESIZE2FS" "$lite" "$(( (lmb + 16 + 15) / 16 * 16 ))M" >/dev/null 2>&1
-  "$TUNE2FS" -U random -L "Installer" "$lite" >/dev/null
+  lroot="$tmp/lite-root"
+  mkdir -p "$lroot" # rdump legt den Baum in einen vorhandenen Ordner
+  "$DEBUGFS" -R "rdump / $lroot" "$out/recovery.ext4" >/dev/null 2>&1 || true
+  [ -f "$lroot/usr/libexec/clokeos-installer" ] || { echo "Wiederherstellung ließ sich nicht auspacken" >&2; exit 1; }
+  (
+    cd "$lroot"
+    for p in $LITE_DROP; do rm -rf -- $p; done
+    for f in usr/bin/*; do
+      case "$LITE_KEEP_USR_BIN" in *" ${f#usr/bin/} "*) ;; *) rm -rf -- "$f" ;; esac
+    done
+  )
+  echo off > "$lroot/etc/clokeos-remote-login" # ohne sshd: clokeos-sshd schläft
+  xattr -rc "$lroot" 2>/dev/null || true
+  DEBUGFS="$DEBUGFS" python3 -I "$HERE/recovery/imagetool.py" owners "$out/recovery.ext4" "$lroot" "$tmp/lite-owners.cmds"
+  lused=$(du -sm "$lroot" | cut -f1)
+  lfiles=$(find "$lroot" | wc -l | tr -d ' ')
+  lmb=$(( ((lused + 24) * 11 / 10 + 7) / 8 * 8 ))
+  "$MKE2FS" -q -t ext4 -O ^orphan_file,metadata_csum_seed -N $(( lfiles * 3 / 2 + 2048 )) -m 0 -J size=16 \
+    -L Installer -d "$lroot" "$lite" "${lmb}M"
+  "$DEBUGFS" -w -f "$tmp/lite-owners.cmds" "$lite" > "$tmp/lite-owners.log" 2>&1
+  "$E2FSCK" -fy "$lite" >/dev/null 2>&1 || true
   "$E2FSCK" -fn "$lite" > "$tmp/e2fsck-lite.log" 2>&1 || { cat "$tmp/e2fsck-lite.log" >&2; exit 1; }
+  "$DEBUGFS" -R 'stat /usr/libexec/clokeos-installer' "$lite" 2>/dev/null | grep -q 'User: *0 ' ||
+    { echo "Besitzer in der schlanken RAM-Disk nicht gesetzt" >&2; exit 1; }
+  rm -rf "$lroot"
 fi
 
 # --- Dateien der EFI-Partition ---------------------------------------------------------------
