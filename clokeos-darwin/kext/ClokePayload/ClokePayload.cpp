@@ -32,7 +32,7 @@ static uint64_t gSize;
 static int gMajor = -1;
 static void *gNode;
 
-static int pl_open(dev_t, int flags, int, proc_t) { return (flags & 3) != 0 ? EROFS : 0; } /* nur lesen */
+static int pl_open(dev_t, int flags, int, proc_t) { return (flags & FWRITE) ? EROFS : 0; } /* nur lesen; O_RDONLY kommt als FREAD an */
 static int pl_close(dev_t, int, int, proc_t) { return 0; }
 
 static int pl_read(dev_t, struct uio *uio, int) {
