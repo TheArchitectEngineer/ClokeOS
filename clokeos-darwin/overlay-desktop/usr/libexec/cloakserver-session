@@ -32,7 +32,7 @@ cd $HOME
 # die Wiederherstellung vom USB-Stick hat kein SSH.
 if [[ -x /usr/libexec/clokeos-diag && -x /bin/xfce4-terminal ]]; then
   ( sleep 45
-    [[ ( -e /dev/usb_hid_kbd || -e /dev/clokeos_kbd ) && ( -e /dev/usb_hid_mouse || -e /dev/clokeos_mouse ) ]] ||
+    [[ ( -e /dev/usb_hid_kbd || -e /dev/clokeos_kbd ) && ( -e /dev/usb_hid_mouse || -e /dev/clokeos_mouse || -e /dev/clokeos_touchpad ) ]] ||
       /bin/xfce4-terminal --disable-server --title="ClokeOS Diagnostics" --geometry=150x44 --hold \
         -x /usr/libexec/clokeos-diag ) &!
 fi

@@ -31,7 +31,7 @@ for i in en0 en1 en2 en3; do a=$(ipconfig getifaddr $i 2>/dev/null); [[ -n $a ]]
 print "Network: ${net:-no address}"
 print
 print "Kernel messages (USB, HID, PS/2):"
-dmesg 2>/dev/null | grep -i -E 'xhci|ehci|uhci|ohci|usb|hid|ps2|8042' |
+dmesg 2>/dev/null | grep -i -E 'xhci|ehci|uhci|ohci|usb|hid|ps2|8042|i2c' |
   grep -v -E 'armed|checkpoint|DMA |DCBAA|Paired port|Extended Cap|HCSPARAMS|BAR|assigned-addresses' | tail -12 | cut -c1-150
 print
 print "Xorg:"
