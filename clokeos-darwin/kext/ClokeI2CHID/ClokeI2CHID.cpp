@@ -426,9 +426,15 @@ bool ClokeI2CHID::start(IOService *provider) {
       break;
     }
   }
+  uint32_t bar0 = pci->extendedConfigRead32(0x10);
+  if (bar0 & 1) { /* Ein-/Ausgabe-Ports statt Speicher: kein LPSS-I²C */
+    LOG("%04x:%04x: BAR0 0x%08x is an I/O BAR, not an I2C controller", vendor, device, bar0);
+    return false;
+  }
   map = pci->mapDeviceMemoryWithIndex(0);
-  if (!map) {
-    LOG("%04x:%04x: BAR0 not mapped", vendor, device);
+  if (!map || map->getLength() < 0x1000) {
+    LOG("%04x:%04x: BAR0 not mapped or smaller than 4 KB (%llu)", vendor, device, map ? (unsigned long long)map->getLength() : 0ull);
+    OSSafeReleaseNULL(map);
     return false;
   }
   base = (volatile uint8_t *)map->getVirtualAddress();
