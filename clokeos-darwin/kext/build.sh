@@ -57,6 +57,9 @@ kexts=()
 for dir in "$src"/*/; do
   [ -f "$dir/Info.plist" ] || continue
   name=$(basename "$dir")
+  # kc-builder liest die Info.plist mit einem eigenen Parser, der nach einem XML-Kommentar den Rest des
+  # Wörterbuchs verliert (der Treiber hatte dann keine Match-Schlüssel und wurde nie zugeordnet)
+  ! grep -q '<!--' "$dir/Info.plist" || { echo "$dir/Info.plist: keine XML-Kommentare (kc-builder)" >&2; exit 1; }
   id=$(plutil -extract CFBundleIdentifier raw "$dir/Info.plist")
   ver=$(plutil -extract CFBundleVersion raw "$dir/Info.plist")
   objs=()

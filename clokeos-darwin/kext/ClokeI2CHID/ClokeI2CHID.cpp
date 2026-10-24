@@ -410,7 +410,8 @@ void ClokeI2CHID::poll(IOTimerEventSource *) {
 }
 
 bool ClokeI2CHID::start(IOService *provider) {
-  if (!IOService::start(provider) || !provider->metaCast("IOPCIDevice")) return false;
+  LOG("start on %s", provider->getName());
+  if (!IOService::start(provider)) return false;
   pci = (IOPCIDevice *)provider;
   uint16_t vendor = pci->extendedConfigRead16(0), device = pci->extendedConfigRead16(2);
   /* Speicher und Busmaster an, D0 */

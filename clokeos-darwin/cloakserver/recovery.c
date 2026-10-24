@@ -496,6 +496,72 @@ static void rec_open_option(int i) {
   }
 }
 
+static double rp_t0; /* Zeit des letzten Seitenwechsels: Return darf das Löschen nicht gleich auslösen */
+
+static void rec_do(int a) {
+  rp_t0 = now_s();
+  switch (a) {
+  case A_CONT:
+    if (rp == RP_CHOOSE) rec_open_option(rsel);
+    else if (rp == RP_INTRO) {
+      rec_load_disks();
+      rdsel = -1;
+      int t[16];
+      if (rec_targets(t) == 1) rdsel = t[0];
+      rp = RP_DISK;
+    }
+    break;
+  case A_HOME: rp = RP_CHOOSE; break;
+  case A_BACK: rp = RP_INTRO; break;
+  case A_INSTALL: rp = RP_CONFIRM; break;
+  case A_CANCEL: rp = RP_DISK; break;
+  case A_GO: rec_start_install(); break;
+  case A_REBOOT:
+    XSync(dpy, False);
+    spawn_as("/bin/reboot", true);
+    break;
+  }
+}
+
+/* Tastatur: Pfeile wählen, Return geht weiter, Esc zurück; für Rechner ohne Maus oder Touchpad */
+static void rec_key(KeySym ks) {
+  int t[16], nt = rec_targets(t);
+  bool ret = ks == XK_Return || ks == XK_KP_Enter, esc = ks == XK_Escape;
+  bool down = ks == XK_Down || ks == XK_Tab, up = ks == XK_Up;
+  switch (rp) {
+  case RP_CHOOSE:
+    if (down) rsel = rsel < 0 ? 0 : (rsel + 1) % 4;
+    else if (up) rsel = rsel <= 0 ? 3 : rsel - 1;
+    else if (ks >= XK_1 && ks <= XK_4) rsel = (int)(ks - XK_1);
+    else if (ret && rsel >= 0) rec_do(A_CONT);
+    break;
+  case RP_INTRO:
+    if (ret) rec_do(A_CONT);
+    else if (esc) rec_do(A_HOME);
+    break;
+  case RP_DISK: {
+    int k = -1;
+    for (int i = 0; i < nt; i++)
+      if (t[i] == rdsel) k = i;
+    if (nt && (down || up)) rdsel = t[down ? (k + 1) % nt : (k <= 0 ? nt - 1 : k - 1)];
+    else if (ret && rdsel >= 0 && nt) rec_do(A_INSTALL);
+    else if (esc) rec_do(A_BACK);
+    break;
+  }
+  case RP_CONFIRM:
+    if (ret && now_s() - rp_t0 > .8) rec_do(A_GO);
+    else if (esc) rec_do(A_CANCEL);
+    break;
+  case RP_DONE:
+    if (ret) rec_do(A_REBOOT);
+    break;
+  case RP_ERROR:
+    if (ret || esc) rec_do(A_HOME);
+    break;
+  }
+  rec_redraw();
+}
+
 static void rec_click(Client *c, int x, int y) {
   RecBtn b[4];
   int nb = rec_buttons(c, b), a = hit_btn(b, nb, x, y);
@@ -518,27 +584,7 @@ static void rec_click(Client *c, int x, int y) {
     rec_redraw();
     return;
   }
-  switch (a) {
-  case A_CONT:
-    if (rp == RP_CHOOSE) rec_open_option(rsel);
-    else if (rp == RP_INTRO) {
-      rec_load_disks();
-      rdsel = -1;
-      int t[16];
-      if (rec_targets(t) == 1) rdsel = t[0];
-      rp = RP_DISK;
-    }
-    break;
-  case A_HOME: rp = RP_CHOOSE; break;
-  case A_BACK: rp = RP_INTRO; break;
-  case A_INSTALL: rp = RP_CONFIRM; break;
-  case A_CANCEL: rp = RP_DISK; break;
-  case A_GO: rec_start_install(); break;
-  case A_REBOOT:
-    XSync(dpy, False);
-    spawn_as("/bin/reboot", true);
-    break;
-  }
+  rec_do(a);
   rec_redraw();
 }
 

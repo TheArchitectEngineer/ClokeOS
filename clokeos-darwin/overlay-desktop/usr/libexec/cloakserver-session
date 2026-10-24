@@ -39,9 +39,9 @@ diag_window() {
   /bin/xfce4-terminal --disable-server --title="ClokeOS Diagnostics" --geometry=150x46 --hold \
     -x /bin/zsh -c 'while true; do clear; /usr/libexec/clokeos-diag; sleep 20; done'
 }
-no_input() {
-  [[ ! -e /dev/usb_hid_kbd && ! -e /dev/usb_hid_mouse ]] &&
-    ! dmesg 2>/dev/null | grep -q -E 'ClokePS2: (keyboard|mouse) byte|ClokeI2CHID: first input report'
+no_input() { # keine Maus und kein Touchpad hat bisher etwas gemeldet (Tastatur allein genügt nicht)
+  [[ ! -e /dev/usb_hid_mouse ]] &&
+    ! dmesg 2>/dev/null | grep -q -E 'ClokePS2: mouse byte|ClokeI2CHID: first input report'
 }
 bootargs=$(sysctl -n kern.bootargs 2>/dev/null)
 if [[ -x /usr/libexec/clokeos-diag && -x /bin/xfce4-terminal ]]; then

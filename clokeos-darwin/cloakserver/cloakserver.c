@@ -1757,7 +1757,7 @@ static Client *own_window(int w, int h, const char *title, void (*draw)(Client *
     c->data = data;
     c->can_delete = false;
     /* manage() hat die Ereignismaske auf PropertyChange gesetzt; eigene Fenster zeichnen selbst. */
-    XSelectInput(dpy, win, ExposureMask | ButtonPressMask | PropertyChangeMask);
+    XSelectInput(dpy, win, ExposureMask | ButtonPressMask | KeyPressMask | PropertyChangeMask);
     update_client_list();
     draw_frame(c);
     draw_own(c);
@@ -4289,6 +4289,10 @@ static void on_key(XKeyEvent *e) {
     } else if (ks == XK_Return && menu_hover >= 0) {
       activate_item(menu_hover);
     }
+    return;
+  }
+  if (focused && focused->draw == rec_paint && !(e->state & Mod1Mask)) { /* Wiederherstellung per Tastatur */
+    rec_key(ks);
     return;
   }
   if (ks == XK_Tab && (e->state & Mod1Mask)) { /* Alt+Tab: nächstes Fenster */
