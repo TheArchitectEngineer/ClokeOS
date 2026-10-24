@@ -116,7 +116,7 @@ CLOKE_USER_NAME="Guest"   # CloakServer zeigt ihn auf Deutsch als „Gast“
 CLOKE_USER_UID=501
 # Online-Releases für Installer und Wiederherstellung (öffentliches Repo, recovery/release.sh):
 # die Wiederherstellung lädt von dort clokeos-<arch>.txt und die Partitionsabbilder.
-CLOKE_RELEASES_REPO="Karl-Lauterbach24/ClokeOS"
+CLOKE_RELEASES_REPO="cloke-tech/ClokeOS"
 # Zum Testen ohne GitHub: CLOKEOS_RELEASES_URL=http://10.0.2.2:8099 (Host aus Sicht der VM)
 CLOKE_RELEASES_URL="${CLOKEOS_RELEASES_URL:-https://github.com/$CLOKE_RELEASES_REPO/releases/latest/download}"
 CLOKE_IMG="$WORK/out/clokeos-$CLOKE_VERSION-$CLOKE_ARCH.img"

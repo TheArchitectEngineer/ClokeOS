@@ -2,7 +2,7 @@
 
 A macOS-like operating system built on the Darwin kernel (XNU), with a cape as its logo.
 
-**Download:** the [latest release](https://github.com/Karl-Lauterbach24/ClokeOS/releases/latest) has USB installers for PCs (offline and online), a ready-made SSD image and installer images for virtual machines (x86_64 and arm64). See [Installing ClokeOS](#installing-clokeos).
+**Download:** the [latest release](https://github.com/cloke-tech/ClokeOS/releases/latest) has USB installers for PCs (offline and online), a ready-made SSD image and installer images for virtual machines (x86_64 and arm64). See [Installing ClokeOS](#installing-clokeos).
 
 ![ClokeOS desktop in QEMU: Fundus (Thunar) and Terminal with clokefetch, the Dock below; windows with rounded corners and soft shadows](clokeos-darwin/screenshots/desktop.png)
 

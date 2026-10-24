@@ -13,7 +13,7 @@
 #define INSTALLER "/usr/libexec/clokeos-installer"
 #define RECOVERY_MARK "/etc/clokeos-recovery"
 
-#define REC_ONLINE "https://github.com/Karl-Lauterbach24/ClokeOS/releases/latest/download"
+#define REC_ONLINE "https://github.com/cloke-tech/ClokeOS/releases/latest/download"
 static char rec_releases[512] = REC_ONLINE;
 /* Das USB-Installationsmedium (recovery/usb.sh) bringt die Abbilder mit: dann ohne Internet */
 #define REC_LOCAL_DIR "/Library/ClokeOS/Install"
