@@ -162,6 +162,47 @@ enum {
 enum { CMD_READ = 0x100, CMD_STOP = 0x200, CMD_RESTART = 0x400 };
 enum { INTR_TX_ABRT = 0x40, INTR_STOP_DET = 0x200 };
 
+/* ---- Adresse für einen BAR, den die Firmware nicht vergeben hat ----------------------------------
+ * HPs Firmware lässt die LPSS-I²C-Controller im PCI-Modus ohne Adresse (BAR0 = 4: 64 Bit, Adresse 0);
+ * Windows weist sie beim Start zu, PureDarwin tut es nicht. Der Treiber sieht sich dazu alle
+ * PCI-Geräte an, merkt sich den niedrigsten belegten Speicherbereich und legt BAR0 knapp darunter,
+ * wo im Fenster der Firmware sehr wahrscheinlich nichts liegt. Ob dort wirklich der Controller
+ * antwortet, zeigt dessen Kennung (IC_COMP_TYPE); sonst wird BAR0 zurückgesetzt. */
+static uint64_t gLowHigh = ~0ull, gLowLow = ~0ull; /* niedrigste belegte Adresse: ab 4 GB, unter 4 GB */
+static unsigned gAssigned;
+
+static void scanBars() {
+  gLowHigh = gLowLow = ~0ull;
+  OSDictionary *m = IOService::serviceMatching("IOPCIDevice");
+  OSIterator *it = m ? IOService::getMatchingServices(m) : nullptr;
+  OSSafeReleaseNULL(m);
+  if (!it) return;
+  while (OSObject *o = it->getNextObject()) {
+    IOService *sv = OSDynamicCast(IOService, o);
+    if (!sv) continue;
+    IOPCIDevice *d = (IOPCIDevice *)sv;
+    uint32_t id = d->extendedConfigRead32(0);
+    if ((id & 0xffff) == 0xffff) continue;
+    unsigned nbar = (d->extendedConfigRead8(0x0e) & 0x7f) == 0 ? 6 : 2;
+    char line[120];
+    int n = snprintf(line, sizeof line, "%04x:%04x", id & 0xffff, id >> 16);
+    for (unsigned i = 0; i < nbar; i++) {
+      uint32_t v = d->extendedConfigRead32(0x10 + 4 * i);
+      if (!v || (v & 1)) continue;
+      uint64_t base = v & ~0xfull;
+      if ((v & 6) == 4 && i + 1 < nbar) base |= (uint64_t)d->extendedConfigRead32(0x14 + 4 * i) << 32, i++;
+      if (!base) continue;
+      n += snprintf(line + n, sizeof line - (size_t)n, " 0x%llx", (unsigned long long)base);
+      if (base >> 32) { if (base < gLowHigh) gLowHigh = base; }
+      else if (base < gLowLow) gLowLow = base;
+    }
+    LOG("PCI %s", line);
+  }
+  it->release();
+  LOG("lowest memory BAR: above 4 GB 0x%llx, below 4 GB 0x%llx", (unsigned long long)gLowHigh,
+      (unsigned long long)gLowLow);
+}
+
 /* Felder eines Berichts im Report-Deskriptor (Bit-Lage) */
 struct Field {
   int off = -1, size = 0;
@@ -435,21 +476,52 @@ bool ClokeI2CHID::start(IOService *provider) {
    * wie RavynXHCIPort die Adresse aus dem Konfigurationsbereich lesen, die die Firmware vergeben hat,
    * und den physischen Speicher selbst abbilden. BAR0 eines LPSS-Controllers sind 4 KB. */
   uint64_t phys = bar0 & ~0xfull;
-  if ((bar0 & 6) == 4) phys |= (uint64_t)pci->extendedConfigRead32(0x14) << 32;
+  bool is64 = (bar0 & 6) == 4;
+  if (is64) phys |= (uint64_t)pci->extendedConfigRead32(0x14) << 32;
   LOG("%04x:%04x: BAR0 config 0x%08x -> physical 0x%llx", vendor, device, bar0, (unsigned long long)phys);
-  if (!phys || phys == 0xfffffff0ull) {
-    LOG("%04x:%04x: the firmware assigned no address to BAR0", vendor, device);
+  bool assigned = false;
+  for (int attempt = 0; attempt < 4; attempt++) {
+    if (phys && phys != 0xfffffff0ull) {
+      IOMemoryDescriptor *md = IOMemoryDescriptor::withPhysicalAddress(phys, 0x1000, kIODirectionNone);
+      map = md ? md->map(kIOMapInhibitCache) : nullptr;
+      OSSafeReleaseNULL(md);
+      if (map && map->getLength() >= 0x1000) {
+        base = (volatile uint8_t *)map->getVirtualAddress();
+        if (!assigned) break;
+        /* vergebene Adresse: nur gelten lassen, wenn dort der Controller antwortet. Im Reset liefert
+         * IC_COMP_TYPE 0; das LPSS-Reset-Register (0x204) ist immer da, leere Adressen lesen als 0xffffffff */
+        uint32_t t = rd(IC_COMP_TYPE), rr = rd(LPSS_RESETS);
+        LOG("%04x:%04x: probe at 0x%llx: COMP_TYPE 0x%08x, LPSS resets 0x%08x", vendor, device, (unsigned long long)phys, t, rr);
+        if (t == 0x44570140 || (t == 0 && rr != 0xffffffffu)) break;
+      }
+      OSSafeReleaseNULL(map);
+      base = nullptr;
+    }
+    /* keine (brauchbare) Adresse: selbst eine suchen und BAR0 dorthin legen */
+    if (attempt == 3) break;
+    if (!attempt) scanBars();
+    uint64_t low = (is64 && gLowHigh != ~0ull) ? gLowHigh : gLowLow;
+    if (low == ~0ull || low < 0x30000000ull) break;
+    uint64_t cand = (low - 0x200000 - (uint64_t)(gAssigned + (unsigned)attempt) * 0x1000 - (uint64_t)attempt * 0x1000000) & ~0xfffull;
+    if (!is64 && (cand >> 32)) break;
+    pci->extendedConfigWrite16(4, (uint16_t)(pci->extendedConfigRead16(4) & ~0x0002u)); /* Speicher aus */
+    pci->extendedConfigWrite32(0x10, (uint32_t)(cand & 0xfffffff0u) | (bar0 & 0xf));
+    if (is64) pci->extendedConfigWrite32(0x14, (uint32_t)(cand >> 32));
+    pci->extendedConfigWrite16(4, (uint16_t)(pci->extendedConfigRead16(4) | 0x0006));
+    phys = cand;
+    assigned = true;
+    LOG("%04x:%04x: assigning BAR0 = 0x%llx (attempt %d)", vendor, device, (unsigned long long)cand, attempt + 1);
+  }
+  if (!map) {
+    if (assigned) { /* zurücksetzen: Speicher aus, BAR wieder leer */
+      pci->extendedConfigWrite16(4, (uint16_t)(pci->extendedConfigRead16(4) & ~0x0002u));
+      pci->extendedConfigWrite32(0x10, bar0);
+      if (is64) pci->extendedConfigWrite32(0x14, 0);
+    }
+    LOG("%04x:%04x: no usable address for BAR0", vendor, device);
     return false;
   }
-  IOMemoryDescriptor *md = IOMemoryDescriptor::withPhysicalAddress(phys, 0x1000, kIODirectionNone);
-  map = md ? md->map(kIOMapInhibitCache) : nullptr;
-  OSSafeReleaseNULL(md);
-  if (!map || map->getLength() < 0x1000) {
-    LOG("%04x:%04x: could not map 4 KB at 0x%llx", vendor, device, (unsigned long long)phys);
-    OSSafeReleaseNULL(map);
-    return false;
-  }
-  base = (volatile uint8_t *)map->getVirtualAddress();
+  if (assigned) gAssigned++;
   wr(LPSS_RESETS, 0x7); /* LPSS: Funktion und DMA aus dem Reset */
   IODelay(100);
   uint32_t type = rd(IC_COMP_TYPE);
