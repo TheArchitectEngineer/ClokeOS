@@ -118,7 +118,7 @@ cd clokeos-darwin && CLOKEOS_FLAVOR=desktop ./brand.sh && CLOKEOS_FLAVOR=desktop
 
 CloakServer (`clokeos-darwin/cloakserver/`) is ClokeOS' window server, for now an X11 window manager with its own UI, written in C with Xlib, cairo, pango and librsvg:
 
-- Wallpaper "Golden Gate": `drawBay()` from `clokeos.html` ported line by line to cairo (`wall.c`) with the same random generator, so stars, lights and fog sit in the same places; light by day, dark from 7 pm to 7 am
+- Wallpaper: pink papercut layers (`wallpapers/make.swift` builds the light and the plum dark variant from the artwork into `overlay-desktop/Library/ClokeOS/Wallpapers/`, `wall.c` draws it covering the screen); the old "Golden Gate" bridge stays as a fallback if the files are missing. The HTML prototype still has the bridge
 - Menu bar: ClokeOS menu (About ClokeOS, System Settings, Activity Monitor, Applications, Sleep, Restart…, Shut Down…, Restart in Recovery…, Log Out), the active app's name and menus, network with IP address, search (opens Launchpad), appearance (auto, light, dark), clock with date
 - Global menu bar as on macOS: the active app's menus sit at the top next to the cape, not in the window, with submenus, check marks and shortcuts written as on macOS (⌃⌥⇧⌘). GTK apps like Fundus (Thunar) and Terminal export their menu bar via the GTK module `appmenu-gtk-module` over D-Bus (from vala-panel-appmenu 25.04, LGPL-3, with a small patch, `menubar/appmenu-clokeos.patch`); the helper `cloakmenu` reads it as the logged-in user and passes it to CloakServer. Mac apps put their menu into the window property `_CLOKE_MENU`; Darling's AppKit does that (`macapps/appkit/clokemenu.m`)
 - Language as on macOS: English by default, German in System Settings > Language & Region and in the setup assistant. CloakServer, login, menu bar and app names switch immediately; date and clock follow the language. Strings are English in the code, `L()` translates them (`cloakserver/l10n.c`, translations in `strings-de.h`, also for the installer; `cloakserver/l10n-check.py` reports missing ones). App bundles have English names (Notes.app, Calculator.app …), their German names are in `Contents/Resources/de.lproj/InfoPlist.strings` as on macOS
@@ -225,7 +225,7 @@ Measured on a Mac with Apple silicon (minimal image, time from QEMU start; the l
 
 Drivers ClokeOS uses: virtio disk and network (`IOVirtIOBlock`, `IOVirtIONet`), NVMe (`IONVMEFamily`), SATA (`RavynAHCIPort`), xHCI with USB keyboard, mouse and mass storage (`RavynXHCIPort`, `IOUSBHIDDriver`), Realtek RTL8111 and Intel 82545EM LAN, display via GOP. Missing:
 
-- **More than one CPU core.** PureDarwin only starts the first core.
+- **More than one CPU core** works with PureDarwin's `PDACPIPlatform` (uACPI interpreter, reads the MADT, starts the other cores): `kext/build.sh` builds `kernel` with it and `kernel-up` without. Four cores in QEMU; on real PCs hold **U** at power-on to load `kernel-up` if the multi-core kernel does not start.
 - **Graphics acceleration.** Drawing is in software.
 - **Wi-Fi, I²C touchpads, audio on most hardware.**
 
@@ -238,7 +238,8 @@ Drivers ClokeOS uses: virtio disk and network (`IOVirtIOBlock`, `IOVirtIONet`), 
 - **ClokePS2** takes over the PS/2 controller (i8042) instead of PureDarwin's ApplePS2Controller, which only passes keys to the text console and has no mouse driver at all. It translates scan codes (set 1) into HID usages, supports PS/2 mice and touchpads in PS/2 mode with wheel, and creates `/dev/clokeos_kbd` and `/dev/clokeos_mouse` in the format of PureDarwin's USB HID devices, which Xorg's `puredarwininput` reads (`overlay-desktop/etc/X11/xorg.conf`). Tested in QEMU with `CLOKEOS_VM_INPUT=ps2` (keys, pointer movement, clicks).
 - `inputfix.py` completes the key table in `puredarwininput`: Insert, Home, Delete, End, Page Up/Down, Print, the whole keypad, the ISO key `<>|` and the menu key were missing, for USB keyboards too.
 
-Next: an I²C HID touchpad driver (Intel LPSS DesignWare I²C). PureDarwin has no ACPI interpreter, so when started from the USB stick the loader copies the firmware's ACPI tables onto the stick (`\ClokeOS\ACPI`), which is where a notebook's touchpad bus, address and interrupt pin are described.
+- **ClokeI2CHID** drives I²C HID touchpads on Intel LPSS (DesignWare I²C): it assigns BAR0 itself when the firmware left it empty (HP notebooks), probes the usual addresses, parses the report descriptor and polls every 10 ms; `/dev/clokeos_touchpad`. With the uACPI interpreter in `PDACPIPlatform` the touchpad's real address and GPIO interrupt could be read from the ACPI tables instead; the loader still copies the firmware's ACPI tables onto the stick (`\ClokeOS\ACPI`) for analysis.
+- **ClokePayload** serves the install images that the loader staged in reserved memory as `/dev/clokeos_payload`, because PureDarwin's USB mass storage driver fails after a few dozen MB on real hardware.
 
 ### Recovery and installation
 
