@@ -651,25 +651,15 @@ static void du_paint(Client *c, cairo_t *cr) {
   paint_btns(cr, b, nb);
 }
 
-static void du_click(Client *c, int x, int y) {
-  RecBtn b[3];
-  int nb = du_buttons(c, b), a = hit_btn(b, nb, x, y);
-  if (a < 0) {
-    double yy = 20;
-    for (int i = 0; i < nrdisks; i++) {
-      int h = (1 + rdisks[i].nparts) * 26 + 12;
-      if (y >= yy - 4 && y < yy + h - 8) {
-        dsel = i;
-        dconfirm = false;
-        dmsg[0] = 0;
-      }
-      yy += h;
-    }
-  } else if (a == A_HOME) {
+static double du_t0; /* Zeit der Rückfrage: Return darf das Löschen nicht gleich auslösen */
+
+static void du_do(int a) {
+  if (a == A_HOME) {
     rec_load_disks();
     dmsg[0] = 0;
   } else if (a == A_CONT) {
     dconfirm = true;
+    du_t0 = now_s();
   } else if (a == A_CANCEL) {
     dconfirm = false;
   } else if (a == A_GO && dsel >= 0) {
@@ -690,6 +680,41 @@ static void du_click(Client *c, int x, int y) {
     if (ok) snprintf(dmsg, sizeof dmsg, L("“%s” was erased."), rdisks[dsel].label);
     dconfirm = false;
     rec_load_disks();
+  }
+}
+
+/* Tastatur: Pfeile wählen die Festplatte, Return fragt zurück und löscht, Esc bricht ab */
+static void du_key(Client *c, KeySym ks) {
+  bool ret = ks == XK_Return || ks == XK_KP_Enter, esc = ks == XK_Escape;
+  bool down = ks == XK_Down || ks == XK_Tab, up = ks == XK_Up;
+  RecDisk *d = dsel >= 0 && dsel < nrdisks ? &rdisks[dsel] : NULL;
+  if (dconfirm) {
+    if (ret && now_s() - du_t0 > .8) du_do(A_GO);
+    else if (esc) du_do(A_CANCEL);
+  } else if (nrdisks && (down || up)) {
+    dsel = dsel < 0 ? 0 : (dsel + (down ? 1 : nrdisks - 1)) % nrdisks;
+    dmsg[0] = 0;
+  } else if (ret && d && !d->root && !d->installer) du_do(A_CONT);
+  else if (ks == XK_r || ks == XK_R) du_do(A_HOME);
+  draw_own(c);
+}
+
+static void du_click(Client *c, int x, int y) {
+  RecBtn b[3];
+  int nb = du_buttons(c, b), a = hit_btn(b, nb, x, y);
+  if (a < 0) {
+    double yy = 20;
+    for (int i = 0; i < nrdisks; i++) {
+      int h = (1 + rdisks[i].nparts) * 26 + 12;
+      if (y >= yy - 4 && y < yy + h - 8) {
+        dsel = i;
+        dconfirm = false;
+        dmsg[0] = 0;
+      }
+      yy += h;
+    }
+  } else {
+    du_do(a);
   }
   draw_own(c);
 }

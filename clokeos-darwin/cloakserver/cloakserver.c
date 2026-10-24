@@ -4295,6 +4295,10 @@ static void on_key(XKeyEvent *e) {
     rec_key(ks);
     return;
   }
+  if (focused && focused->draw == du_paint && !(e->state & Mod1Mask)) { /* Festplattendienstprogramm */
+    du_key(focused, ks);
+    return;
+  }
   if (ks == XK_Tab && (e->state & Mod1Mask)) { /* Alt+Tab: nächstes Fenster */
     Client *last = NULL;
     for (Client *c = clients; c; c = c->next)

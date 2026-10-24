@@ -431,15 +431,25 @@ bool ClokeI2CHID::start(IOService *provider) {
     LOG("%04x:%04x: BAR0 0x%08x is an I/O BAR, not an I2C controller", vendor, device, bar0);
     return false;
   }
-  map = pci->mapDeviceMemoryWithIndex(0);
+  /* PureDarwins IOPCIFamily legt hier keine IODeviceMemory an (mapDeviceMemoryWithIndex liefert 0);
+   * wie RavynXHCIPort die Adresse aus dem Konfigurationsbereich lesen, die die Firmware vergeben hat,
+   * und den physischen Speicher selbst abbilden. BAR0 eines LPSS-Controllers sind 4 KB. */
+  uint64_t phys = bar0 & ~0xfull;
+  if ((bar0 & 6) == 4) phys |= (uint64_t)pci->extendedConfigRead32(0x14) << 32;
+  LOG("%04x:%04x: BAR0 config 0x%08x -> physical 0x%llx", vendor, device, bar0, (unsigned long long)phys);
+  if (!phys || phys == 0xfffffff0ull) {
+    LOG("%04x:%04x: the firmware assigned no address to BAR0", vendor, device);
+    return false;
+  }
+  IOMemoryDescriptor *md = IOMemoryDescriptor::withPhysicalAddress(phys, 0x1000, kIODirectionNone);
+  map = md ? md->map(kIOMapInhibitCache) : nullptr;
+  OSSafeReleaseNULL(md);
   if (!map || map->getLength() < 0x1000) {
-    LOG("%04x:%04x: BAR0 not mapped or smaller than 4 KB (%llu)", vendor, device, map ? (unsigned long long)map->getLength() : 0ull);
+    LOG("%04x:%04x: could not map 4 KB at 0x%llx", vendor, device, (unsigned long long)phys);
     OSSafeReleaseNULL(map);
     return false;
   }
   base = (volatile uint8_t *)map->getVirtualAddress();
-  LOG("%04x:%04x: BAR0 0x%llx, command 0x%04x", vendor, device, (unsigned long long)map->getPhysicalAddress(),
-      pci->extendedConfigRead16(4));
   wr(LPSS_RESETS, 0x7); /* LPSS: Funktion und DMA aus dem Reset */
   IODelay(100);
   uint32_t type = rd(IC_COMP_TYPE);
