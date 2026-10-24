@@ -161,6 +161,12 @@ if [ "$kind" = offline ]; then
   mcopy -i "$esp" "$payload/clokeos-$CLOKE_ARCH.txt" "${stick_files[@]}" ::/ClokeOS/Install/
 fi
 mcopy -i "$esp" "$lite" ::/ramdisk-lite.img
+# Platzhalter für die Diagnose: die Wiederherstellung überschreibt ihn an Ort und Stelle
+# (clokeos-installer stick-write, cloakserver-session), lesbar am Mac
+mmd -i "$esp" ::/ClokeOS 2>/dev/null || true
+{ printf 'ClokeOS diagnostics: nothing written yet. The recovery on the stick writes here every 30 seconds.\n'
+  head -c 131072 /dev/zero | tr '\0' ' '; } > "$tmp/diag.txt"
+mcopy -i "$esp" "$tmp/diag.txt" ::/ClokeOS/diag.txt
 img="$out/usb-$kind.img"
 rm -f "$img"
 python3 -I "$HERE/recovery/imagetool.py" gpt "$img" "$esp" - "ClokeOS Installer" "$(uuidgen)" >/dev/null

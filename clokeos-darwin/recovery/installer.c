@@ -6,6 +6,7 @@
  *   clokeos-installer erase <diskN>              Festplatte löschen (leere GPT)
  *   clokeos-installer bootnext recovery|system   nächsten Start in Wiederherstellung oder System
  *   clokeos-installer stick                      Offline-USB-Stick mit Abbildern? ("STICK <version>")
+ *   clokeos-installer stick-write <name> <datei>  \ClokeOS\<name> auf dem Stick an Ort und Stelle überschreiben
  *   <url> stick:                                 die Abbilder von diesem Stick lesen (Abschnitt unten)
  *
  * Ein Release (recovery/release.sh) besteht aus einer Beschreibung clokeos-<arch>.txt und drei mit
@@ -1083,6 +1084,58 @@ static int cmd_stick(void) {
   return 0;
 }
 
+/* Datei \ClokeOS\<name> auf dem Stick mit dem Inhalt von src überschreiben: an Ort und Stelle,
+ * Cluster für Cluster, Größe bleibt (recovery/usb.sh legt die Datei mit Leerzeichen gefüllt an).
+ * Für die Diagnose (cloakserver-session): sie ist dann am Mac lesbar, auch ohne Foto. */
+static int cmd_stick_write(const char *name, const char *src) {
+  FILE *in = fopen(src, "rb");
+  if (!in) fail("Cannot read %s", src);
+  static char data[1 << 20];
+  size_t len = fread(data, 1, sizeof data, in);
+  fclose(in);
+  for (int i = 0; i < 16; i++) {
+    char dname[16], part[24];
+    snprintf(dname, sizeof dname, "disk%d", i);
+    Disk d;
+    if (!probe_disk(dname, &d) || !d.installer) continue;
+    snprintf(part, sizeof part, "%ss1", dname);
+    int fd = open_raw(part, O_RDWR);
+    if (fd < 0) fail("Could not open %s for writing: %s", part, strerror(errno));
+    uint32_t dbs = 0;
+    Fat f;
+    uint8_t e[32];
+    uint64_t eo;
+    if (ioctl(fd, DKIOCGETBLOCKSIZE, &dbs) || !dbs || !fat_init(&f, fd, dbs, 0) ||
+        !fat_find(&f, f.root, "ClokeOS", &eo, e) || !fat_find(&f, ent_clus(e), name, &eo, e)) {
+      close(fd);
+      continue;
+    }
+    uint64_t size = e[28] | e[29] << 8 | e[30] << 16 | (uint64_t)e[31] << 24, done = 0;
+    size_t csize = (size_t)f.spc * f.bps;
+    uint8_t *buf = malloc(csize);
+    if (!buf) fail("Out of memory");
+    for (uint32_t c = ent_clus(e); c >= 2 && c < 0x0ffffff8 && done < size; c = fat_next(&f, c)) {
+      memset(buf, ' ', csize);
+      size_t n = csize;
+      if (done + n > size) n = (size_t)(size - done);
+      if (done < len) memcpy(buf, data + done, len - done < n ? len - done : n);
+      if (pwrite(fd, buf, csize, (off_t)clus_off(&f, c)) != (ssize_t)csize) {
+        free(buf);
+        close(fd);
+        fail("Writing to the USB stick failed: %s", strerror(errno));
+      }
+      done += csize;
+    }
+    free(buf);
+    fsync(fd);
+    close(fd);
+    out("DONE %llu of %llu bytes", (unsigned long long)(len < size ? len : size), (unsigned long long)size);
+    return 0;
+  }
+  fail("%s is missing on the USB stick.", name);
+  return 1;
+}
+
 static void cmd_bootnext(const char *which) {
   /* EFI-Partition der Platte, von der das System läuft */
   int disk = -1;
@@ -1122,6 +1175,7 @@ int main(int argc, char **argv) {
   else if (argc == 3 && !strcmp(argv[1], "bootnext") && (!strcmp(argv[2], "recovery") || !strcmp(argv[2], "system")))
     cmd_bootnext(argv[2]);
   else if (argc == 2 && !strcmp(argv[1], "stick")) return cmd_stick();
+  else if (argc == 4 && !strcmp(argv[1], "stick-write")) return cmd_stick_write(argv[2], argv[3]);
   else {
     fprintf(stderr, "Aufruf: clokeos-installer disks | install <diskN> <url>|stick: | erase <diskN> | "
                     "bootnext recovery|system | stick\n");

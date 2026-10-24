@@ -31,16 +31,37 @@ cd $HOME
 # (clokeos-diag), zum Abfotografieren: ohne Eingabe gibt es sonst keinen Weg zu den Meldungen, und
 # die Wiederherstellung vom USB-Stick hat kein SSH.
 # Mit D beim Einschalten (Loader: clokeos_diag=1) kommt das Fenster gleich und immer, alle 20 Sekunden
-# neu gezeichnet: für Rechner, an denen Tastatur oder Maus zwar erkannt werden, aber nicht reagieren.
-if [[ -x /usr/libexec/clokeos-diag && -x /bin/xfce4-terminal && $(sysctl -n kern.bootargs 2>/dev/null) == *clokeos_diag=1* ]]; then
-  ( sleep 15
-    /bin/xfce4-terminal --disable-server --title="ClokeOS Diagnostics" --geometry=150x46 --hold \
-      -x /bin/zsh -c 'while true; do clear; /usr/libexec/clokeos-diag; sleep 20; done' ) &!
-elif [[ -x /usr/libexec/clokeos-diag && -x /bin/xfce4-terminal ]]; then
-  ( sleep 45
-    [[ ( -e /dev/usb_hid_kbd || -e /dev/clokeos_kbd ) && ( -e /dev/usb_hid_mouse || -e /dev/clokeos_mouse || -e /dev/clokeos_touchpad ) ]] ||
-      /bin/xfce4-terminal --disable-server --title="ClokeOS Diagnostics" --geometry=150x44 --hold \
-        -x /usr/libexec/clokeos-diag ) &!
+# neu gezeichnet. Vom USB-Stick (rd=md0) kommt es auch von selbst, wenn nach 60 Sekunden weder ein
+# Tastatur-Byte noch ein Touchpad-Bericht angekommen ist (Geräte erkannt, aber ohne Reaktion), und die
+# Diagnose landet alle 30 Sekunden in ClokeOS/diag.txt auf dem Stick (clokeos-installer stick-write),
+# zum Lesen am Mac ohne Foto.
+diag_window() {
+  /bin/xfce4-terminal --disable-server --title="ClokeOS Diagnostics" --geometry=150x46 --hold \
+    -x /bin/zsh -c 'while true; do clear; /usr/libexec/clokeos-diag; sleep 20; done'
+}
+no_input() {
+  [[ ! -e /dev/usb_hid_kbd && ! -e /dev/usb_hid_mouse ]] &&
+    ! dmesg 2>/dev/null | grep -q -E 'ClokePS2: (keyboard|mouse) byte|ClokeI2CHID: first input report'
+}
+bootargs=$(sysctl -n kern.bootargs 2>/dev/null)
+if [[ -x /usr/libexec/clokeos-diag && -x /bin/xfce4-terminal ]]; then
+  if [[ $bootargs == *clokeos_diag=1* ]]; then
+    ( sleep 15; diag_window ) &!
+  elif [[ $bootargs == *rd=md0* ]]; then
+    ( sleep 60; no_input && diag_window ) &!
+  else
+    ( sleep 45
+      [[ ( -e /dev/usb_hid_kbd || -e /dev/clokeos_kbd ) && ( -e /dev/usb_hid_mouse || -e /dev/clokeos_mouse || -e /dev/clokeos_touchpad ) ]] ||
+        diag_window ) &!
+  fi
+  if [[ $bootargs == *rd=md0* && -x /usr/libexec/clokeos-installer ]]; then
+    ( sleep 20
+      while true; do
+        /usr/libexec/clokeos-diag > /var/tmp/clokeos-diag.txt 2>&1
+        /usr/libexec/clokeos-installer stick-write diag.txt /var/tmp/clokeos-diag.txt > /var/tmp/clokeos-diag.log 2>&1
+        sleep 30
+      done ) &!
+  fi
 fi
 cs=/System/Library/CoreServices/CloakServer/CloakServer
 # dbus-run-session statt dbus-launch: PureDarwins dbus-launch startet auf arm64 nicht.
