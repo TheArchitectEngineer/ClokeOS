@@ -95,11 +95,11 @@ while read -r line; do
   [ -n "$k" ] && args+=(-kext "$base/root/Extensions/$k")
 done < "$base/pd-rebuild-kc"
 for k in ${kexts[@]+"${kexts[@]}"}; do args+=(-kext "$k"); done
-# Zwei Kernel: kernel-up mit der einfachen AppleI386PlatformExpert (ein Kern, bewährt) und kernel mit
+# Zwei Kernel: kernel mit der einfachen AppleI386PlatformExpert (ein Kern, bewährt, Standard) und kernel-smp mit
 # PureDarwins ACPI-Plattform PDACPIPlatform (uACPI-Interpreter, liest die MADT und startet die weiteren
 # Prozessorkerne; boot-arg cpus=N begrenzt sie). Beide passen auf den Knoten "ACPI"; in einer Kopie mit
-# höherem IOProbeScore gewinnt die ACPI-Plattform. Der Loader nimmt kernel-up, wenn beim Einschalten U
-# gehalten wird. CLOKEOS_SMP=0: kernel ist dann ebenfalls der mit einem Kern.
+# höherem IOProbeScore gewinnt die ACPI-Plattform. Der Loader nimmt kernel-smp, wenn beim Einschalten M
+# gehalten wird (auf der echten Hardware noch nicht bewährt, deshalb nicht der Standard).
 smp="$tmp/PDACPIPlatform.kext"
 rm -rf "$smp"
 cp -R "$base/root/Extensions/PDACPIPlatform.kext" "$smp"
@@ -124,10 +124,6 @@ build_kc() { # <ausgabe> [weitere kc-builder-Argumente]
   done
   python3 -I "$HERE/kcfix.py" "$o" >/dev/null
 }
-build_kc "$WORK/out/kernel-up"
-if [ "${CLOKEOS_SMP:-1}" = 1 ]; then
-  build_kc "$WORK/out/kernel" -kext "$smp"
-else
-  cp "$WORK/out/kernel-up" "$WORK/out/kernel"
-fi
-echo "Kernel Collection: $WORK/out/kernel und kernel-up (${#kexts[@]} eigene Treiber, SMP ${CLOKEOS_SMP:-1})"
+build_kc "$WORK/out/kernel"
+build_kc "$WORK/out/kernel-smp" -kext "$smp"
+echo "Kernel Collection: $WORK/out/kernel und kernel-smp (${#kexts[@]} eigene Treiber)"

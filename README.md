@@ -225,7 +225,7 @@ Measured on a Mac with Apple silicon (minimal image, time from QEMU start; the l
 
 Drivers ClokeOS uses: virtio disk and network (`IOVirtIOBlock`, `IOVirtIONet`), NVMe (`IONVMEFamily`), SATA (`RavynAHCIPort`), xHCI with USB keyboard, mouse and mass storage (`RavynXHCIPort`, `IOUSBHIDDriver`), Realtek RTL8111 and Intel 82545EM LAN, display via GOP. Missing:
 
-- **More than one CPU core** works with PureDarwin's `PDACPIPlatform` (uACPI interpreter, reads the MADT, starts the other cores): `kext/build.sh` builds `kernel` with it and `kernel-up` without. Four cores in QEMU; on real PCs hold **U** at power-on to load `kernel-up` if the multi-core kernel does not start.
+- **More than one CPU core** works with PureDarwin's `PDACPIPlatform` (uACPI interpreter, reads the MADT, starts the other cores): `kext/build.sh` builds `kernel-smp` with it and `kernel` without. Four cores in QEMU. Because the multi-core kernel did not start on the first real laptop, the single-core `kernel` is the default; hold **M** at power-on to load `kernel-smp`.
 - **Graphics acceleration.** Drawing is in software.
 - **Wi-Fi, I²C touchpads, audio on most hardware.**
 

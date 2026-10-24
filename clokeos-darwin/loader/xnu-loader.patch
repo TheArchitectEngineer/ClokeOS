@@ -305,7 +305,7 @@ diff -ruN a/src/main.c b/src/main.c
 +      g_key_r = TRUE;
 +    if (key.UnicodeChar == L'd' || key.UnicodeChar == L'D')
 +      g_key_d = TRUE;
-+    if (key.UnicodeChar == L'u' || key.UnicodeChar == L'U')
++    if (key.UnicodeChar == L'm' || key.UnicodeChar == L'M')
 +      g_key_u = TRUE;
 +  }
 +}
@@ -930,13 +930,13 @@ diff -ruN a/src/main.c b/src/main.c
    EFI_HANDLE found_handle = NULL;
  
 -  status = file_read_all_from_any_volume(
-+  /* ClokeOS: U held at power-on loads \EFI\BOOT\kernel-up, the single-processor kernel, when the disk has
-+   * one (a stick whose default kernel starts the other cores, in case that does not work on this PC) */
++  /* ClokeOS: M held at power-on loads \EFI\BOOT\kernel-smp, the kernel that starts the other cores (untested
++   * on many PCs, so the default kernel stays single-processor), when the disk has one */
 +  scan_boot_keys(&ctx);
 +  status = EFI_NOT_FOUND;
 +  if (g_key_u) {
-+    status = file_read_all_from_any_volume(&ctx, L"\\EFI\\BOOT\\kernel-up", &kernel, &found_handle);
-+    log_info(L"key U: single-processor kernel: %r\r\n", status);
++    status = file_read_all_from_any_volume(&ctx, L"\\EFI\\BOOT\\kernel-smp", &kernel, &found_handle);
++    log_info(L"key M: multi-processor kernel: %r\r\n", status);
 +  }
 +  if (EFI_ERROR(status))
 +    status = file_read_all_from_any_volume(
