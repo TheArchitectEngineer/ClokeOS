@@ -451,6 +451,12 @@ static void rec_start_install(void) {
     close(fd[0]);
     dup2(fd[1], 1);
     if (fd[1] != 1) close(fd[1]);
+    /* Meldungen des Installers (Wiederholungen, Lesefehler) in eine Datei, die clokeos-diag zeigt */
+    int lg = open("/var/tmp/installer.log", O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (lg >= 0) {
+      dup2(lg, 2);
+      if (lg != 2) close(lg);
+    }
     execl(INSTALLER, "clokeos-installer", "install", rdisks[rdsel].name, rec_releases, (char *)NULL);
     printf("ERROR %s (%s).\n", L("The installer is missing"), INSTALLER);
     _exit(127);

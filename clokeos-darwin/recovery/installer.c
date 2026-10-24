@@ -536,12 +536,33 @@ typedef struct {
   uint64_t got;
   double last;
   bool bad;
+  int werr; /* errno des letzten fehlgeschlagenen Schreibens */
 } Writer;
 
 static double now(void) {
   struct timeval tv;
   gettimeofday(&tv, NULL);
   return tv.tv_sec + tv.tv_usec / 1e6;
+}
+
+/* Schreiben mit Wiederholung, danach in kleineren Stücken: manche NVMe-Treiber lehnen große Aufträge
+ * mit "Input/output error" ab, und USB-Sticks machen kurze Aussetzer */
+static bool pwrite_robust(int fd, const uint8_t *buf, size_t len, off_t off) {
+  for (int t = 0; t < 3; t++) {
+    if (pwrite(fd, buf, len, off) == (ssize_t)len) return true;
+    fprintf(stderr, "write of %zu bytes at %lld failed (%s), retrying\n", len, (long long)off, strerror(errno));
+    usleep(200000);
+  }
+  static const size_t pieces[] = {131072, 16384, 4096};
+  for (size_t k = 0; k < sizeof pieces / sizeof pieces[0]; k++) {
+    bool ok = true;
+    for (size_t o = 0; o < len && ok; o += pieces[k]) {
+      size_t n = len - o < pieces[k] ? len - o : pieces[k];
+      ok = pwrite(fd, buf + o, n, off + (off_t)o) == (ssize_t)n || pwrite(fd, buf + o, n, off + (off_t)o) == (ssize_t)n;
+    }
+    if (ok) return true;
+  }
+  return false;
 }
 
 static bool flush_buf(Writer *w, bool final) {
@@ -552,7 +573,10 @@ static bool flush_buf(Writer *w, bool final) {
     memset(w->buf + w->fill, 0, len - w->fill);
   }
   if (w->written + len > w->limit) return false;
-  if (pwrite(w->fd, w->buf, len, (off_t)(w->off + w->written)) != (ssize_t)len) return false;
+  if (!pwrite_robust(w->fd, w->buf, len, (off_t)(w->off + w->written))) {
+    w->werr = errno;
+    return false;
+  }
   w->written += len;
   w->fill = 0;
   return true;
@@ -622,6 +646,8 @@ static void install_asset(const char *base, const Asset *a, int fd, uint64_t off
     long code = 0;
     curl_easy_getinfo(c, CURLINFO_RESPONSE_CODE, &code);
     curl_easy_cleanup(c);
+    if (w.bad && w.werr)
+      fail("Writing to the disk failed at %llu MB: %s", (unsigned long long)((w.off + w.written) >> 20), strerror(w.werr));
     if (w.bad) fail("%s is damaged or too large.", a->file);
     if (rc == CURLE_OK) break;
     bool again = strncmp(url, "file:", 5) && attempt < 10 && rc != CURLE_RANGE_ERROR && rc != CURLE_WRITE_ERROR &&
@@ -638,11 +664,13 @@ static void install_asset(const char *base, const Asset *a, int fd, uint64_t off
     w.z.avail_out = CHUNK - w.fill;
     lzma_ret r = lzma_code(&w.z, LZMA_FINISH);
     w.fill = CHUNK - w.z.avail_out;
-    if (w.fill == CHUNK && !flush_buf(&w, false)) fail("Writing to the disk failed: %s", strerror(errno));
+    if (w.fill == CHUNK && !flush_buf(&w, false))
+      fail("Writing to the disk failed at %llu MB: %s", (unsigned long long)((w.off + w.written) >> 20), strerror(w.werr));
     if (r == LZMA_STREAM_END) break;
     if (r != LZMA_OK) fail("%s is damaged.", a->file);
   }
-  if (!flush_buf(&w, true)) fail("Writing to the disk failed: %s", strerror(errno));
+  if (!flush_buf(&w, true))
+    fail("Writing to the disk failed at %llu MB: %s", (unsigned long long)((w.off + w.written) >> 20), strerror(w.werr));
   lzma_end(&w.z);
   free(w.buf);
   char hex[65];
@@ -956,13 +984,17 @@ static void patch_esp(int fd, uint32_t dbs, uint64_t esp_off, const uint8_t sys[
 
 static bool read_robust(int fd, void *buf, size_t n, off_t off, uint32_t dbs) {
   if (pread_retry(fd, buf, n, off) == (ssize_t)n) return true;
-  size_t piece = 64 << 10;
-  if (piece % dbs) piece = dbs;
-  for (size_t o = 0; o < n; o += piece) {
-    size_t len = n - o < piece ? n - o : piece;
-    if (pread_retry(fd, (uint8_t *)buf + o, len, off + (off_t)o) != (ssize_t)len) return false;
+  static const size_t tiers[] = {65536, 8192};
+  for (size_t k = 0; k < sizeof tiers / sizeof tiers[0]; k++) {
+    size_t piece = tiers[k] % dbs ? dbs : tiers[k];
+    bool ok = true;
+    for (size_t o = 0; o < n && ok; o += piece) {
+      size_t len = n - o < piece ? n - o : piece;
+      ok = pread_retry(fd, (uint8_t *)buf + o, len, off + (off_t)o) == (ssize_t)len;
+    }
+    if (ok) return true;
   }
-  return true;
+  return false;
 }
 
 static struct {
@@ -1028,6 +1060,7 @@ static bool stick_read(const char *name, uint64_t want, size_t (*cb)(char *, siz
   uint32_t c;
   uint64_t left;
   if (!stick_lookup(name, &c, &left)) return false;
+  uint64_t total = left;
   if (want && left != want) fail("%s on the USB stick has the wrong size.", name);
   Fat *f = &stick.f;
   size_t csize = (size_t)f->spc * f->bps, maxrun = (1u << 20) / csize ? (1u << 20) / csize : 1;
@@ -1044,7 +1077,8 @@ static bool stick_read(const char *name, uint64_t want, size_t (*cb)(char *, siz
     }
     size_t len = run * csize, use = left < len ? (size_t)left : len;
     if (!read_robust(stick.fd, buf, len, (off_t)clus_off(f, first), f->dbs))
-      fail("Reading %s from the USB stick failed: %s. Please try another USB port.", name, strerror(errno));
+      fail("Reading %s from the USB stick failed at %llu MB: %s. Please try another USB port.", name,
+           (unsigned long long)((total - left) >> 20), strerror(errno));
     if (cb((char *)buf, 1, use, arg) != use) {
       free(buf);
       return false;
@@ -1067,6 +1101,8 @@ static char *stick_text(const char *name) {
 
 static void stick_feed(const char *name, uint64_t size, Writer *w) {
   if (stick_read(name, size, on_data, w)) return;
+  if (w->bad && w->werr)
+    fail("Writing to the disk failed at %llu MB: %s", (unsigned long long)((w->off + w->written) >> 20), strerror(w->werr));
   if (w->bad) fail("%s is damaged or too large.", name);
   fail("%s is missing on the USB stick.", name);
 }

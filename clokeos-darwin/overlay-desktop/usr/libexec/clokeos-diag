@@ -33,5 +33,9 @@ for i in en0 en1 en2 en3; do a=$(ipconfig getifaddr $i 2>/dev/null); [[ -n $a ]]
 print "Network: ${net:-no address}"
 print "Kernel (ClokePS2, ClokeI2CHID, PS/2, HID):"
 dmesg 2>/dev/null | grep -E 'Cloke|PS2|IOUSBHID' | tail -16 | cut -c1-148
+print "Disk and USB errors:"
+dmesg 2>/dev/null | grep -i -E 'nvme|I/O error|timed out|timeout|abort|xhci.*(error|fail|stall)|usb.*(error|fail|stall|reset)' | grep -v -E 'armed|checkpoint' | tail -8 | cut -c1-148
+print "Installer log:"
+tail -6 /var/tmp/installer.log 2>/dev/null | cut -c1-148
 print "Xorg input:"
 grep -E 'Keyboard[0-9]|Mouse[0-9]|\(EE\)' /var/log/Xorg.0.log 2>/dev/null | grep -E 'cannot|Couldn|EE|acquired|Adding' | tail -7 | cut -c1-148
