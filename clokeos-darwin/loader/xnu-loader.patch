@@ -12,7 +12,7 @@ diff -ruN a/include/boot.h b/include/boot.h
  typedef struct boot_video_info {
 diff -ruN a/include/common.h b/include/common.h
 --- a/include/common.h	2026-08-17 22:51:23
-+++ b/include/common.h	2026-10-23 10:02:11
++++ b/include/common.h	2026-10-24 16:22:07
 @@ -32,6 +32,15 @@
   * this keeps the boot-info block (and therefore topOfKernelData) aligned too. */
  #define XNU_BOOTINFO_ALIGN      0x4000ULL
@@ -29,6 +29,16 @@ diff -ruN a/include/common.h b/include/common.h
  /* Size of one L2 block entry in the kernel's bootstrap page tables, which is
   * determined by the page granule XNU was built for: 32MB with 16KB pages,
   * 2MB with 4KB pages. */
+@@ -87,6 +96,9 @@
+   /* Page-rounded RAMDisk retained through ExitBootServices. */
+   EFI_PHYSICAL_ADDRESS ramdisk_phys;
+   UINT64 ramdisk_size;
++  /* ClokeOS: install images in reserved memory (main.c clokeos_load_payload) */
++  EFI_PHYSICAL_ADDRESS payload_phys;
++  UINT64 payload_size;
+ #if defined(__aarch64__)
+   /* Release XNU expects the trust-cache EXTRADATA range below the KC. */
+   EFI_PHYSICAL_ADDRESS trustcache_phys;
 diff -ruN a/include/console.h b/include/console.h
 --- a/include/console.h	2026-08-17 22:51:23
 +++ b/include/console.h	2026-10-23 08:52:31
@@ -168,8 +178,8 @@ diff -ruN a/src/console.c b/src/console.c
  }
 diff -ruN a/src/devtree.c b/src/devtree.c
 --- a/src/devtree.c	2026-08-17 22:51:23
-+++ b/src/devtree.c	2026-10-23 08:52:59
-@@ -1116,18 +1116,19 @@
++++ b/src/devtree.c	2026-10-24 16:22:07
+@@ -1116,18 +1116,32 @@
    }
  #endif
  
@@ -197,6 +207,19 @@ diff -ruN a/src/devtree.c b/src/devtree.c
 +    dt_prop(ctx, memory_map, "RAMDisk", &ramdisk_info, sizeof(ramdisk_info));
 +    log_info(L"DT: RAMDisk at 0x%lx size=0x%lx\r\n",
 +             (UINT64)ctx->ramdisk_phys, ctx->ramdisk_size);
++  }
++
++  /* ClokeOS: install images in reserved memory, read by the kext ClokePayload */
++  if (ctx->payload_size != 0) {
++    if (memory_map == NULL) {
++      memory_map = dt_create_node(ctx);
++      dt_prop_str(ctx, memory_map, "name", "memory-map");
++    }
++    MemoryMapFileInfo payload_info;
++    payload_info.paddr = (UINT64)ctx->payload_phys;
++    payload_info.length = ctx->payload_size;
++    dt_prop(ctx, memory_map, "ClokePayload", &payload_info, sizeof(payload_info));
++    log_info(L"DT: ClokePayload at 0x%lx size=0x%lx\r\n", (UINT64)ctx->payload_phys, ctx->payload_size);
 +  }
  
    if (memory_map != NULL)
@@ -236,7 +259,7 @@ diff -ruN a/src/jump.S b/src/jump.S
 \ No newline at end of file
 diff -ruN a/src/main.c b/src/main.c
 --- a/src/main.c	2026-08-17 22:51:23
-+++ b/src/main.c	2026-10-24 13:41:03
++++ b/src/main.c	2026-10-24 16:22:07
 @@ -6,6 +6,7 @@
  #include "macho.h"
  #include "jump.h"
@@ -254,7 +277,7 @@ diff -ruN a/src/main.c b/src/main.c
    UINTN len = 0;
    CHAR8 *copy = NULL;
  
-@@ -51,6 +52,419 @@
+@@ -51,6 +52,572 @@
    return EFI_SUCCESS;
  }
  
@@ -651,6 +674,157 @@ diff -ruN a/src/main.c b/src/main.c
 +  uefi_call_wrapper(root->Close, 1, root);
 +}
 +
++/* ClokeOS: the installer on a stick that had to start the slim RAM disk reads
++ * its images from the stick through PureDarwin's USB mass storage driver,
++ * which fails after a few dozen MB on real hardware. The firmware reads the
++ * stick reliably, so the loader copies the images (\ClokeOS\Install: manifest
++ * plus the three .xz files) into memory the kernel must not touch
++ * (EfiReservedMemoryType; the loader hands XNU the firmware's map unchanged and
++ * XNU leaves reserved ranges alone). Layout: one header page of text lines,
++ *   CLOKEOS-PAYLOAD 1
++ *   <file name> <offset> <size>
++ * then the files, each page aligned. The kext ClokePayload serves the range as
++ * /dev/clokeos_payload; /chosen/memory-map/ClokePayload tells it where. */
++#define PAYLOAD_HDR 4096u
++
++static VOID pl_puts(CHAR8 *hdr, UINTN *pos, CONST CHAR8 *s) {
++  while (*s && *pos < PAYLOAD_HDR - 1)
++    hdr[(*pos)++] = *s++;
++}
++
++static VOID pl_putu(CHAR8 *hdr, UINTN *pos, UINT64 v) {
++  CHAR8 t[24];
++  UINTN n = 0;
++  if (!v)
++    t[n++] = '0';
++  while (v && n < sizeof t) {
++    t[n++] = (CHAR8)('0' + (v % 10));
++    v /= 10;
++  }
++  while (n && *pos < PAYLOAD_HDR - 1)
++    hdr[(*pos)++] = t[--n];
++}
++
++static VOID pl_wide(CHAR16 *dst, CONST CHAR8 *name) {
++  CONST CHAR16 *dir = L"\\ClokeOS\\Install\\";
++  UINTN i = 0;
++  for (; dir[i]; i++)
++    dst[i] = dir[i];
++  for (UINTN k = 0; name[k] && i < 150; k++)
++    dst[i++] = (CHAR16)name[k];
++  dst[i] = 0;
++}
++
++static EFI_STATUS clokeos_load_payload(AppContext *ctx) {
++  EFI_FILE_PROTOCOL *root = NULL, *f = NULL;
++  static CHAR8 man[8192];
++  CHAR8 nm[4][100];
++  UINTN sz[4] = {0, 0, 0, 0}, off[4] = {0, 0, 0, 0}, total = PAYLOAD_HDR;
++  CHAR16 path[170];
++  EFI_STATUS st;
++
++  SetMem(nm, sizeof nm, 0);
++  if (EFI_ERROR(app_open_self_volume(ctx, &root)))
++    return EFI_NOT_FOUND;
++  st = file_open(root, L"\\ClokeOS\\Install\\clokeos-x86_64.txt", EFI_FILE_MODE_READ, 0, &f);
++  if (EFI_ERROR(st)) {
++    uefi_call_wrapper(root->Close, 1, root);
++    return EFI_NOT_FOUND; /* no offline stick */
++  }
++  UINTN msize = sizeof man - 1;
++  st = uefi_call_wrapper(f->Read, 3, f, &msize, man);
++  uefi_call_wrapper(f->Close, 1, f);
++  if (EFI_ERROR(st) || !msize) {
++    uefi_call_wrapper(root->Close, 1, root);
++    return EFI_DEVICE_ERROR;
++  }
++  man[msize] = 0;
++  CopyMem(nm[0], "clokeos-x86_64.txt", 19);
++  static CONST CHAR8 *const keys[3] = {"esp=", "system=", "recovery="};
++  for (UINTN k = 0; k < 3; k++) {
++    UINTN klen = 0;
++    while (keys[k][klen])
++      klen++;
++    for (UINTN i = 0; i + klen < msize; i++) {
++      if ((i == 0 || man[i - 1] == '\n') && CompareMem(man + i, keys[k], klen) == 0) {
++        UINTN n = 0;
++        for (UINTN j = i + klen; j < msize && man[j] != ' ' && man[j] != '\n' && man[j] != '\r' && n < 99; j++)
++          nm[k + 1][n++] = man[j];
++        break;
++      }
++    }
++    if (!nm[k + 1][0]) {
++      uefi_call_wrapper(root->Close, 1, root);
++      return EFI_NOT_FOUND;
++    }
++  }
++  for (UINTN i = 0; i < 4; i++) {
++    UINTN s = 0;
++    pl_wide(path, nm[i]);
++    st = file_open(root, path, EFI_FILE_MODE_READ, 0, &f);
++    if (!EFI_ERROR(st)) {
++      st = file_get_size(f, &s);
++      uefi_call_wrapper(f->Close, 1, f);
++    }
++    if (EFI_ERROR(st) || !s) {
++      log_error(L"payload: %s is missing (%r)\r\n", path, st);
++      uefi_call_wrapper(root->Close, 1, root);
++      return EFI_NOT_FOUND;
++    }
++    sz[i] = s;
++    off[i] = total;
++    total += (s + 4095) & ~(UINTN)4095;
++  }
++  UINTN pages = total >> EFI_PAGE_SHIFT;
++  EFI_PHYSICAL_ADDRESS addr = 0;
++  st = uefi_call_wrapper(ctx->bs->AllocatePages, 4, AllocateAnyPages, EfiReservedMemoryType, pages, &addr);
++  if (EFI_ERROR(st)) {
++    log_info(L"payload: no room for %lu MiB (%r), the installer will read from the stick\r\n", (UINT64)(total >> 20), st);
++    uefi_call_wrapper(root->Close, 1, root);
++    return st;
++  }
++  UINT8 *base = (UINT8 *)(UINTN)addr;
++  SetMem(base, PAYLOAD_HDR, 0);
++  CHAR8 *hdr = (CHAR8 *)base;
++  UINTN pos = 0;
++  pl_puts(hdr, &pos, "CLOKEOS-PAYLOAD 1\n");
++  log_info(L"payload: reading %lu MiB to 0x%lx\r\n", (UINT64)(total >> 20), (UINT64)addr);
++  for (UINTN i = 0; i < 4; i++) {
++    pl_wide(path, nm[i]);
++    st = file_open(root, path, EFI_FILE_MODE_READ, 0, &f);
++    UINTN done = 0, step = 8u << 20;
++    while (!EFI_ERROR(st) && done < sz[i]) {
++      UINTN n = sz[i] - done < step ? sz[i] - done : step;
++      st = uefi_call_wrapper(f->Read, 3, f, &n, base + off[i] + done);
++      if (EFI_ERROR(st) || !n)
++        break;
++      done += n;
++    }
++    if (f)
++      uefi_call_wrapper(f->Close, 1, f);
++    f = NULL;
++    if (done != sz[i]) {
++      log_error(L"payload: %s: read %lu of %lu bytes (%r)\r\n", path, (UINT64)done, (UINT64)sz[i], st);
++      uefi_call_wrapper(root->Close, 1, root);
++      uefi_call_wrapper(ctx->bs->FreePages, 2, addr, pages);
++      return EFI_DEVICE_ERROR;
++    }
++    pl_puts(hdr, &pos, nm[i]);
++    pl_puts(hdr, &pos, " ");
++    pl_putu(hdr, &pos, off[i]);
++    pl_puts(hdr, &pos, " ");
++    pl_putu(hdr, &pos, sz[i]);
++    pl_puts(hdr, &pos, "\n");
++  }
++  uefi_call_wrapper(root->Close, 1, root);
++  ctx->payload_phys = addr;
++  ctx->payload_size = (UINT64)pages << EFI_PAGE_SHIFT;
++  log_info(L"payload: ready at 0x%lx\r\n", (UINT64)addr);
++  return EFI_SUCCESS;
++}
++
++static BOOLEAN g_rd_lite;
++
 +static EFI_STATUS clokeos_load_ramdisk(AppContext *ctx) {
 +  EFI_FILE_PROTOCOL *root = NULL;
 +  if (EFI_ERROR(app_open_self_volume(ctx, &root)))
@@ -662,8 +836,10 @@ diff -ruN a/src/main.c b/src/main.c
 +    status = clokeos_try_ramdisk(ctx, root, names[i]);
 +    if (status != EFI_NOT_FOUND)
 +      any = TRUE;
-+    if (!EFI_ERROR(status))
++    if (!EFI_ERROR(status)) {
++      g_rd_lite = i == 1;
 +      break;
++    }
 +  }
 +  uefi_call_wrapper(root->Close, 1, root);
 +  if (!any)
@@ -674,7 +850,7 @@ diff -ruN a/src/main.c b/src/main.c
  static EFI_STATUS load_ramdisk(AppContext *ctx) {
    EFI_FILE_PROTOCOL *root = NULL;
    FileBuffer image = {0};
-@@ -96,7 +510,7 @@
+@@ -96,7 +663,7 @@
  }
  
  #if defined(__x86_64__)
@@ -683,7 +859,7 @@ diff -ruN a/src/main.c b/src/main.c
    UINT64 *src64 = (UINT64 *)(UINTN)g_copy_src;
    UINT64 *dst64 = (UINT64 *)(UINTN)g_copy_dst;
    UINTN   words = (UINTN)((g_copy_bytes + 7) >> 3);
-@@ -246,6 +660,63 @@
+@@ -246,6 +813,63 @@
    if (EFI_ERROR(status))
      return status;
  
@@ -747,7 +923,7 @@ diff -ruN a/src/main.c b/src/main.c
    log_info(L"XNU EFI loader start\r\n");
  
    {
-@@ -440,10 +911,50 @@
+@@ -440,10 +1064,53 @@
  
    log_info(L"entry vm=0x%lx -> host=0x%lx\r\n", entry_vmaddr, (UINT64)(UINTN)host_entry);
  
@@ -788,6 +964,9 @@ diff -ruN a/src/main.c b/src/main.c
 +    return status;
 +  }
 +  if (ctx.ramdisk_size != 0) {
++    /* the slim RAM disk carries no images: put them where the kernel can read them reliably */
++    if (g_rd_lite)
++      clokeos_load_payload(&ctx);
 +    /* after placing the RAMDisk, so the drivers' allocations cannot take its room */
 +    clokeos_connect_all(&ctx);
 +    clokeos_dump_acpi(&ctx);
@@ -801,7 +980,7 @@ diff -ruN a/src/main.c b/src/main.c
    BootArgsState boot_state = {0};
  
    ReleaseBootInfoGuard(&ctx, &bootinfo_guard_base, &bootinfo_guard_pages);
-@@ -456,42 +967,6 @@
+@@ -456,42 +1123,6 @@
    if (EFI_ERROR(status)) {
      log_error(L"failed to collect memory map: %r\r\n", status);
      return status;

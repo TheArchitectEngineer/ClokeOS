@@ -63,6 +63,10 @@ struct EventQueue {
   void push(const uint8_t *rec) {
     IOLockLock(lock);
     if (open) {
+      /* Rückstau (Xorg kommt auf dem einen Kern nicht nach): nur die letzten 8 Ereignisse behalten, sonst
+       * läuft der Zeiger noch lange nach dem Loslassen weiter */
+      unsigned pending = (tail + kSize - head) % kSize;
+      if (pending > 24 * 12) head = (tail + kSize - 8 * 12) % kSize;
       unsigned next = (tail + 12) % kSize;
       if (next != head) {
         memcpy(buf + tail, rec, 12);
@@ -225,6 +229,8 @@ class ClokeI2CHID : public IOService {
   Field btn[3], fx, fy, fwheel;
   uint8_t *rbuf = nullptr;
   uint8_t lastButtons = 0;
+  uint8_t lastRep[64] = {};
+  unsigned lastLen = 0, dupRun = 0;
   uint32_t abrtSrc = 0; /* IC_TX_ABRT_SOURCE des letzten Abbruchs; Bit 0: Adresse ohne ACK */
   unsigned polls = 0, reports = 0, mouseReports = 0, readErrors = 0;
 
@@ -441,7 +447,15 @@ void ClokeI2CHID::poll(IOTimerEventSource *) {
       if (!reports++)
         LOG("first input report: length %u, id %u (mouse id %u)", len, len > 2 ? rbuf[2] : 0, mouseId);
       if (!mouseId || rbuf[2] == mouseId) mouseReports++;
-      report(rbuf + 2, len - 2);
+      /* Ohne den Interrupt-Pin sieht der Treiber nicht, ob ein Bericht neu ist; manche Touchpads liefern
+       * den letzten erneut. Gleiche Berichte hintereinander werden nach dem zweiten verworfen. */
+      if (len == lastLen && len <= sizeof lastRep && !memcmp(rbuf, lastRep, len)) dupRun++;
+      else {
+        dupRun = 0;
+        lastLen = len;
+        if (len <= sizeof lastRep) memcpy(lastRep, rbuf, len);
+      }
+      if (dupRun < 2) report(rbuf + 2, len - 2);
     }
   } else
     readErrors++;

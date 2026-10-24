@@ -997,6 +997,56 @@ static bool read_robust(int fd, void *buf, size_t n, off_t off, uint32_t dbs) {
   return false;
 }
 
+/* Die Abbilder im Speicher: der Loader hat sie in reservierten Speicher gelegt (kext/ClokePayload),
+ * /dev/clokeos_payload gibt sie her. Das umgeht PureDarwins USB-Treiber für Massenspeicher, der auf
+ * echter Hardware nach einigen Dutzend MB mit E/A-Fehlern aufgibt. */
+static struct {
+  bool tried, ok;
+  int fd;
+  int n;
+  struct { char name[100]; uint64_t off, size; } f[8];
+} blob;
+
+static bool blob_open(void) {
+  if (blob.tried) return blob.ok;
+  blob.tried = true;
+  int fd = open("/dev/clokeos_payload", O_RDONLY);
+  if (fd < 0) return false;
+  char hdr[4096];
+  ssize_t n = pread(fd, hdr, sizeof hdr - 1, 0);
+  if (n < 20 || strncmp(hdr, "CLOKEOS-PAYLOAD 1\n", 18)) {
+    close(fd);
+    return false;
+  }
+  hdr[n] = 0;
+  char *save = NULL;
+  for (char *line = strtok_r(hdr, "\n", &save); line; line = strtok_r(NULL, "\n", &save)) {
+    char name[100];
+    unsigned long long off, size;
+    if (blob.n < 8 && sscanf(line, "%99s %llu %llu", name, &off, &size) == 3 && strchr(name, '.')) {
+      snprintf(blob.f[blob.n].name, sizeof blob.f[blob.n].name, "%s", name);
+      blob.f[blob.n].off = off;
+      blob.f[blob.n].size = size;
+      blob.n++;
+    }
+  }
+  blob.fd = fd;
+  blob.ok = blob.n > 0;
+  if (!blob.ok) close(fd);
+  return blob.ok;
+}
+
+static bool blob_find(const char *name, uint64_t *off, uint64_t *size) {
+  if (!blob_open()) return false;
+  for (int i = 0; i < blob.n; i++)
+    if (!strcmp(blob.f[i].name, name)) {
+      *off = blob.f[i].off;
+      *size = blob.f[i].size;
+      return true;
+    }
+  return false;
+}
+
 static struct {
   bool tried, ok;
   int fd;
@@ -1050,7 +1100,8 @@ static bool stick_lookup(const char *name, uint32_t *clus, uint64_t *size) {
 
 static bool stick_has(const char *name) {
   uint32_t c;
-  uint64_t size;
+  uint64_t off, size;
+  if (blob_open()) return blob_find(name, &off, &size);
   return stick_lookup(name, &c, &size);
 }
 
@@ -1059,6 +1110,20 @@ static bool stick_has(const char *name) {
 static bool stick_read(const char *name, uint64_t want, size_t (*cb)(char *, size_t, size_t, void *), void *arg) {
   uint32_t c;
   uint64_t left;
+  if (blob_open()) { /* aus dem Speicher */
+    uint64_t off;
+    if (!blob_find(name, &off, &left)) return false;
+    if (want && left != want) fail("%s has the wrong size in memory.", name);
+    static uint8_t mbuf[1 << 20];
+    for (uint64_t done = 0; done < left;) {
+      size_t n = left - done < sizeof mbuf ? (size_t)(left - done) : sizeof mbuf;
+      if (pread_retry(blob.fd, mbuf, n, (off_t)(off + done)) != (ssize_t)n)
+        fail("Reading %s from memory failed at %llu MB: %s.", name, (unsigned long long)(done >> 20), strerror(errno));
+      if (cb((char *)mbuf, 1, n, arg) != n) return false;
+      done += n;
+    }
+    return true;
+  }
   if (!stick_lookup(name, &c, &left)) return false;
   uint64_t total = left;
   if (want && left != want) fail("%s on the USB stick has the wrong size.", name);

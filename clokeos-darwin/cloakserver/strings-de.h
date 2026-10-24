@@ -169,6 +169,8 @@
 {"Could not open %s for writing: %s", "%s lässt sich nicht zum Schreiben öffnen: %s"},
 {"Writing to the USB stick failed: %s", "Schreiben auf den USB-Stick fehlgeschlagen: %s"},
 {"%s on the USB stick has the wrong size.", "%s hat auf dem USB-Stick die falsche Größe."},
+{"%s has the wrong size in memory.", "%s hat im Speicher die falsche Größe."},
+{"Reading %s from memory failed at %llu MB: %s.", "%s ließ sich bei %llu MB nicht aus dem Speicher lesen: %s."},
 {"%s on the USB stick is damaged.", "%s ist auf dem USB-Stick beschädigt."},
 {"Reading %s from the USB stick failed at %llu MB: %s. Please try another USB port.", "%s ließ sich bei %llu MB nicht vom USB-Stick lesen: %s. Bitte einen anderen USB-Anschluss versuchen."},
 {"The ClokeOS files were not found on the USB stick (\\ClokeOS\\Install\\%s).", "Die ClokeOS-Dateien wurden auf dem USB-Stick nicht gefunden (\\ClokeOS\\Install\\%s)."},

@@ -4710,6 +4710,7 @@ int main(int argc, char **argv) {
       if (!XPending(dpy)) break;
     }
     tick();
+    if (recovery && rp == RP_RUN) rec_redraw(); /* Restzeit und Balken laufen auch ohne Meldung des Installers weiter */
     bool anim = animate();
     /* Ein Klick in ein inaktives Programmfenster friert den Zeiger ein, bis XAllowEvents kommt
      * (grab_buttons). Geht das einmal schief, steht der Zeiger für immer: hier noch einmal lösen. */
