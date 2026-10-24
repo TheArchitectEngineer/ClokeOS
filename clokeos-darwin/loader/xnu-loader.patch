@@ -1,6 +1,6 @@
 diff -ruN a/include/boot.h b/include/boot.h
 --- a/include/boot.h	2026-08-17 22:51:23
-+++ b/include/boot.h	2026-10-23 08:52:31
++++ b/include/boot.h	2026-10-24 20:00:49
 @@ -226,6 +226,8 @@
  
  EFI_STATUS boot_build_args(AppContext *ctx, const CHAR8 *cmdline, MachoLoadResult *load_result, BootArgsState *state);
@@ -12,7 +12,7 @@ diff -ruN a/include/boot.h b/include/boot.h
  typedef struct boot_video_info {
 diff -ruN a/include/common.h b/include/common.h
 --- a/include/common.h	2026-08-17 22:51:23
-+++ b/include/common.h	2026-10-24 16:22:07
++++ b/include/common.h	2026-10-24 20:00:49
 @@ -32,6 +32,15 @@
   * this keeps the boot-info block (and therefore topOfKernelData) aligned too. */
  #define XNU_BOOTINFO_ALIGN      0x4000ULL
@@ -41,7 +41,7 @@ diff -ruN a/include/common.h b/include/common.h
    EFI_PHYSICAL_ADDRESS trustcache_phys;
 diff -ruN a/include/console.h b/include/console.h
 --- a/include/console.h	2026-08-17 22:51:23
-+++ b/include/console.h	2026-10-23 08:52:31
++++ b/include/console.h	2026-10-24 20:00:49
 @@ -6,4 +6,8 @@
  VOID log_info(CONST CHAR16 *fmt, ...);
  VOID log_error(CONST CHAR16 *fmt, ...);
@@ -55,7 +55,7 @@ diff -ruN a/include/console.h b/include/console.h
 +#endif
 diff -ruN a/include/jump.h b/include/jump.h
 --- a/include/jump.h	2026-08-17 22:51:23
-+++ b/include/jump.h	2026-10-23 08:52:31
++++ b/include/jump.h	2026-10-24 20:00:49
 @@ -3,16 +3,25 @@
  
  #include "common.h"
@@ -88,7 +88,7 @@ diff -ruN a/include/jump.h b/include/jump.h
 +#endif
 diff -ruN a/src/boot.c b/src/boot.c
 --- a/src/boot.c	2026-08-17 22:51:23
-+++ b/src/boot.c	2026-10-23 09:03:27
++++ b/src/boot.c	2026-10-24 20:00:49
 @@ -250,7 +250,7 @@
    return EFI_SUCCESS;
  }
@@ -135,7 +135,7 @@ diff -ruN a/src/boot.c b/src/boot.c
        UINT32 rmin_virt_pg = 0xFFFFFFFFU;
 diff -ruN a/src/console.c b/src/console.c
 --- a/src/console.c	2026-08-17 22:51:23
-+++ b/src/console.c	2026-10-23 08:52:31
++++ b/src/console.c	2026-10-24 20:00:49
 @@ -2,15 +2,21 @@
  #include "serial.h"
  #include <stdarg.h>
@@ -178,7 +178,7 @@ diff -ruN a/src/console.c b/src/console.c
  }
 diff -ruN a/src/devtree.c b/src/devtree.c
 --- a/src/devtree.c	2026-08-17 22:51:23
-+++ b/src/devtree.c	2026-10-24 16:22:07
++++ b/src/devtree.c	2026-10-24 20:00:49
 @@ -1116,18 +1116,32 @@
    }
  #endif
@@ -224,9 +224,37 @@ diff -ruN a/src/devtree.c b/src/devtree.c
  
    if (memory_map != NULL)
      dt_add_child(ctx, chosen, memory_map);
+diff -ruN a/src/fileio.c b/src/fileio.c
+--- a/src/fileio.c	2026-08-17 22:51:23
++++ b/src/fileio.c	2026-10-24 20:00:49
+@@ -109,6 +109,24 @@
+   if (out_handle)
+     *out_handle = NULL;
+ 
++  /* ClokeOS: first the volume this loader was started from. Otherwise a stick that boots a PC with an
++   * installed ClokeOS would take kernel and boot-args.txt from the disk's EFI partition, whichever
++   * the firmware lists first, and mix the two systems. */
++  {
++    EFI_LOADED_IMAGE *li = NULL;
++    EFI_FILE_PROTOCOL *self_root = NULL;
++    if (!EFI_ERROR(app_get_loaded_image(ctx, &li)) && li && li->DeviceHandle &&
++        !EFI_ERROR(app_open_self_volume(ctx, &self_root))) {
++      EFI_STATUS self_status = file_read_all(ctx, self_root, path, out_buf);
++      uefi_call_wrapper(self_root->Close, 1, self_root);
++      if (!EFI_ERROR(self_status)) {
++        if (out_handle)
++          *out_handle = li->DeviceHandle;
++        return EFI_SUCCESS;
++      }
++    }
++  }
++
+   status = uefi_call_wrapper(
+       ctx->bs->LocateHandleBuffer,
+       5,
 diff -ruN a/src/jump.S b/src/jump.S
 --- a/src/jump.S	2026-08-17 22:51:23
-+++ b/src/jump.S	2026-10-23 08:52:31
++++ b/src/jump.S	2026-10-24 20:00:49
 @@ -90,7 +90,9 @@
  .text
  .code64
@@ -259,7 +287,7 @@ diff -ruN a/src/jump.S b/src/jump.S
 \ No newline at end of file
 diff -ruN a/src/main.c b/src/main.c
 --- a/src/main.c	2026-08-17 22:51:23
-+++ b/src/main.c	2026-10-24 18:54:31
++++ b/src/main.c	2026-10-24 20:00:49
 @@ -6,6 +6,7 @@
  #include "macho.h"
  #include "jump.h"
