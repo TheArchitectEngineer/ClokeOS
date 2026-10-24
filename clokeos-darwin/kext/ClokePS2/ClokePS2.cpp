@@ -20,6 +20,7 @@
 #include <IOKit/IOLib.h>
 #include <IOKit/IOLocks.h>
 #include <IOKit/IOService.h>
+#include <IOKit/IOTimerEventSource.h>
 #include <IOKit/IOWorkLoop.h>
 #include <architecture/i386/pio.h>
 
@@ -207,6 +208,10 @@ class ClokePS2 : public IOService {
   void kbdByte(uint8_t b);
   void mouseByte(uint8_t b);
   void interrupt(IOInterruptEventSource *, int);
+  void drain(bool fromIrq);
+  void pollTick(IOTimerEventSource *);
+  IOTimerEventSource *pollTimer = nullptr;
+  unsigned irqs = 0, polled = 0, kbdBytes = 0, mouseBytes = 0, ticks = 0;
   bool bsdReady(void *, IOService *, IONotifier *);
   IONotifier *bsdNotifier = nullptr;
 
@@ -266,6 +271,7 @@ bool ClokePS2::auxCmd(uint8_t c, uint8_t *ack) {
 bool ClokePS2::start(IOService *provider) {
   if (!IOService::start(provider)) return false;
   uint8_t st = inb(kCmd);
+  LOG("status 0x%02x", st);
   if (st == 0xff) { /* kein i8042 an den Ports */
     LOG("no controller (status 0xff)");
     return false;
@@ -281,6 +287,7 @@ bool ClokePS2::start(IOService *provider) {
     LOG("no answer from the controller");
     return false;
   }
+  LOG("config 0x%02x", cfg);
   cfg &= (uint8_t)~0x03;
   cfg |= 0x40; /* Scancodes in Satz 1 übersetzen */
   cmd(0x60);
@@ -289,8 +296,9 @@ bool ClokePS2::start(IOService *provider) {
   /* Tastatur */
   cmd(0xae);
   writeData(0xf4); /* Abtasten an */
-  uint8_t b;
-  waitRead(&b, 100);
+  uint8_t b = 0;
+  bool ack = waitRead(&b, 100);
+  LOG("keyboard enable: %s 0x%02x", ack ? "answer" : "no answer", b);
 
   /* Maus/Touchpad am Aux-Port */
   cmd(0xa8);
@@ -325,13 +333,21 @@ bool ClokePS2::start(IOService *provider) {
   if (!wl) return false;
   auto action = OSMemberFunctionCast(IOInterruptEventAction, this, &ClokePS2::interrupt);
   irqKbd = IOInterruptEventSource::interruptEventSource(this, action, provider, 1);
-  if (!irqKbd || wl->addEventSource(irqKbd) != kIOReturnSuccess) return false;
+  if (!irqKbd || wl->addEventSource(irqKbd) != kIOReturnSuccess) {
+    LOG("keyboard interrupt (IRQ 1) not available, polling only");
+    OSSafeReleaseNULL(irqKbd);
+  }
   if (haveMouse) {
     irqMouse = IOInterruptEventSource::interruptEventSource(this, action, provider, 12);
     if (!irqMouse || wl->addEventSource(irqMouse) != kIOReturnSuccess) haveMouse = false;
   }
-  irqKbd->enable();
-  if (haveMouse) irqMouse->enable();
+  if (irqKbd) irqKbd->enable();
+  if (haveMouse && irqMouse) irqMouse->enable();
+  /* Zusätzlich alle 10 ms abfragen: auf manchen Rechnern kommen die Interrupts des Controllers nicht
+   * an (Weiterleitung über ACPI/IOAPIC, die PureDarwin nicht kennt); die Bytes gehen sonst verloren */
+  pollTimer = IOTimerEventSource::timerEventSource(this, OSMemberFunctionCast(IOTimerEventSource::Action, this,
+                                                                             &ClokePS2::pollTick));
+  if (pollTimer && wl->addEventSource(pollTimer) == kIOReturnSuccess) pollTimer->setTimeoutMS(10);
 
   cmd(0x20);
   waitRead(&cfg, 100);
@@ -365,6 +381,11 @@ bool ClokePS2::bsdReady(void *, IOService *, IONotifier *) {
 
 void ClokePS2::stop(IOService *provider) {
   if (bsdNotifier) bsdNotifier->remove();
+  if (pollTimer) {
+    pollTimer->cancelTimeout();
+    if (wl) wl->removeEventSource(pollTimer);
+  }
+  OSSafeReleaseNULL(pollTimer);
   if (irqKbd) irqKbd->disable();
   if (irqMouse) irqMouse->disable();
   if (gNodeKbd) devfs_remove(gNodeKbd);
@@ -381,12 +402,30 @@ void ClokePS2::stop(IOService *provider) {
 }
 
 void ClokePS2::interrupt(IOInterruptEventSource *, int) {
+  irqs++;
+  drain(true);
+}
+
+void ClokePS2::pollTick(IOTimerEventSource *) {
+  drain(false);
+  if (++ticks == 3000) /* nach 30 s einmal festhalten, was ankam */
+    LOG("after 30 s: %u interrupts, %u polled reads, %u keyboard and %u mouse bytes", irqs, polled, kbdBytes, mouseBytes);
+  pollTimer->setTimeoutMS(10);
+}
+
+void ClokePS2::drain(bool fromIrq) {
   for (int i = 0; i < 64; i++) {
     uint8_t st = inb(kCmd);
     if (!(st & kOBF)) break;
     uint8_t b = inb(kData);
-    if (st & kAux) mouseByte(b);
-    else kbdByte(b);
+    if (!fromIrq) polled++;
+    if (st & kAux) {
+      if (mouseBytes++ < 4) LOG("mouse byte 0x%02x (%s)", b, fromIrq ? "interrupt" : "polled");
+      mouseByte(b);
+    } else {
+      if (kbdBytes++ < 6) LOG("keyboard byte 0x%02x (%s)", b, fromIrq ? "interrupt" : "polled");
+      kbdByte(b);
+    }
   }
 }
 

@@ -30,7 +30,13 @@ cd $HOME
 # 45 Sekunden jede Tastatur oder jede Maus, zeigt ein Fenster, was ClokeOS von der Hardware sieht
 # (clokeos-diag), zum Abfotografieren: ohne Eingabe gibt es sonst keinen Weg zu den Meldungen, und
 # die Wiederherstellung vom USB-Stick hat kein SSH.
-if [[ -x /usr/libexec/clokeos-diag && -x /bin/xfce4-terminal ]]; then
+# Mit D beim Einschalten (Loader: clokeos_diag=1) kommt das Fenster gleich und immer, alle 20 Sekunden
+# neu gezeichnet: für Rechner, an denen Tastatur oder Maus zwar erkannt werden, aber nicht reagieren.
+if [[ -x /usr/libexec/clokeos-diag && -x /bin/xfce4-terminal && $(sysctl -n kern.bootargs 2>/dev/null) == *clokeos_diag=1* ]]; then
+  ( sleep 15
+    /bin/xfce4-terminal --disable-server --title="ClokeOS Diagnostics" --geometry=150x46 --hold \
+      -x /bin/zsh -c 'while true; do clear; /usr/libexec/clokeos-diag; sleep 20; done' ) &!
+elif [[ -x /usr/libexec/clokeos-diag && -x /bin/xfce4-terminal ]]; then
   ( sleep 45
     [[ ( -e /dev/usb_hid_kbd || -e /dev/clokeos_kbd ) && ( -e /dev/usb_hid_mouse || -e /dev/clokeos_mouse || -e /dev/clokeos_touchpad ) ]] ||
       /bin/xfce4-terminal --disable-server --title="ClokeOS Diagnostics" --geometry=150x44 --hold \

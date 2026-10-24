@@ -184,6 +184,8 @@ class ClokeI2CHID : public IOService {
   Field btn[3], fx, fy, fwheel;
   uint8_t *rbuf = nullptr;
   uint8_t lastButtons = 0;
+  uint32_t abrtSrc = 0; /* IC_TX_ABRT_SOURCE des letzten Abbruchs; Bit 0: Adresse ohne ACK */
+  unsigned polls = 0, reports = 0, mouseReports = 0, readErrors = 0;
 
   uint32_t rd(unsigned r) { return *(volatile uint32_t *)(base + r); }
   void wr(unsigned r, uint32_t v) { *(volatile uint32_t *)(base + r) = v; }
@@ -212,6 +214,7 @@ bool ClokeI2CHID::enable(bool on) {
 
 /* Schreiben, dann (mit Neustart) lesen; ohne Interrupts, die FIFOs werden abgefragt */
 bool ClokeI2CHID::xfer(uint8_t target, const uint8_t *w, unsigned nw, uint8_t *r, unsigned nr) {
+  abrtSrc = 0;
   enable(false);
   wr(IC_TAR, target);
   (void)rd(IC_CLR_INTR);
@@ -220,6 +223,7 @@ bool ClokeI2CHID::xfer(uint8_t target, const uint8_t *w, unsigned nw, uint8_t *r
   for (int spins = 0; spins < 200000 && (sent < total || got < nr); spins++) {
     uint32_t raw = rd(IC_RAW_INTR_STAT);
     if (raw & INTR_TX_ABRT) {
+      abrtSrc = rd(IC_TX_ABRT_SOURCE);
       (void)rd(IC_CLR_TX_ABRT);
       return false;
     }
@@ -249,7 +253,10 @@ bool ClokeI2CHID::probe(uint8_t a, uint16_t descReg) {
   uint8_t reg[2] = {(uint8_t)descReg, (uint8_t)(descReg >> 8)}, d[30] = {};
   if (!xfer(a, reg, 2, d, 30)) return false;
   uint16_t len = (uint16_t)(d[0] | d[1] << 8), ver = (uint16_t)(d[2] | d[3] << 8);
-  if (len != 30 || ver != 0x0100) return false;
+  if (len != 30 || ver != 0x0100) {
+    LOG("  0x%02x register 0x%04x: no HID descriptor (length %u, version %04x)", a, descReg, len, ver);
+    return false;
+  }
   uint16_t repLen = (uint16_t)(d[4] | d[5] << 8), repReg = (uint16_t)(d[6] | d[7] << 8);
   inputReg = (uint16_t)(d[8] | d[9] << 8);
   maxInput = (uint16_t)(d[10] | d[11] << 8);
@@ -389,8 +396,16 @@ void ClokeI2CHID::report(const uint8_t *r, unsigned n) {
 void ClokeI2CHID::poll(IOTimerEventSource *) {
   if (xfer(addr, nullptr, 0, rbuf, maxInput)) {
     unsigned len = (unsigned)(rbuf[0] | rbuf[1] << 8);
-    if (len > 2 && len <= maxInput) report(rbuf + 2, len - 2);
-  }
+    if (len > 2 && len <= maxInput) {
+      if (!reports++)
+        LOG("first input report: length %u, id %u (mouse id %u)", len, len > 2 ? rbuf[2] : 0, mouseId);
+      if (!mouseId || rbuf[2] == mouseId) mouseReports++;
+      report(rbuf + 2, len - 2);
+    }
+  } else
+    readErrors++;
+  if (++polls == 3000)
+    LOG("after 30 s: %u reports (%u mouse), %u read errors", reports, mouseReports, readErrors);
   timer->setTimeoutMS(10);
 }
 
@@ -416,6 +431,8 @@ bool ClokeI2CHID::start(IOService *provider) {
     return false;
   }
   base = (volatile uint8_t *)map->getVirtualAddress();
+  LOG("%04x:%04x: BAR0 0x%llx, command 0x%04x", vendor, device, (unsigned long long)map->getPhysicalAddress(),
+      pci->extendedConfigRead16(4));
   wr(LPSS_RESETS, 0x7); /* LPSS: Funktion und DMA aus dem Reset */
   IODelay(100);
   uint32_t type = rd(IC_COMP_TYPE);
@@ -445,8 +462,11 @@ bool ClokeI2CHID::start(IOService *provider) {
   static const uint16_t regs[] = {0x0001, 0x0020, 0x0000, 0x0030};
   bool found = false;
   for (uint8_t a : addrs) {
-    for (uint16_t r : regs)
+    for (uint16_t r : regs) {
       if ((found = probe(a, r))) break;
+      if (abrtSrc & 1) break; /* Adresse antwortet nicht: die übrigen Register gar nicht erst */
+      if (r == regs[0]) LOG("  0x%02x answers (abort source 0x%x)", a, abrtSrc);
+    }
     if (found) break;
   }
   if (!found) {

@@ -236,7 +236,7 @@ diff -ruN a/src/jump.S b/src/jump.S
 \ No newline at end of file
 diff -ruN a/src/main.c b/src/main.c
 --- a/src/main.c	2026-08-17 22:51:23
-+++ b/src/main.c	2026-10-23 17:09:32
++++ b/src/main.c	2026-10-24 13:41:03
 @@ -6,6 +6,7 @@
  #include "macho.h"
  #include "jump.h"
@@ -254,7 +254,7 @@ diff -ruN a/src/main.c b/src/main.c
    UINTN len = 0;
    CHAR8 *copy = NULL;
  
-@@ -51,6 +52,384 @@
+@@ -51,6 +52,419 @@
    return EFI_SUCCESS;
  }
  
@@ -264,7 +264,7 @@ diff -ruN a/src/main.c b/src/main.c
 +
 +/* Keys seen so far: V (verbose boot) and R (recovery). Reading uses keys up,
 + * so one look records both. */
-+static BOOLEAN g_key_v, g_key_r;
++static BOOLEAN g_key_v, g_key_r, g_key_d;
 +
 +/* Reads the keys already queued in ConIn. Never waits. */
 +static VOID scan_boot_keys(AppContext *ctx) {
@@ -280,6 +280,8 @@ diff -ruN a/src/main.c b/src/main.c
 +      g_key_v = TRUE;
 +    if (key.UnicodeChar == L'r' || key.UnicodeChar == L'R')
 +      g_key_r = TRUE;
++    if (key.UnicodeChar == L'd' || key.UnicodeChar == L'D')
++      g_key_d = TRUE;
 +  }
 +}
 +
@@ -332,6 +334,39 @@ diff -ruN a/src/main.c b/src/main.c
 +  }
 +  file_free(ctx, &file);
 +  return status;
++}
++
++/*
++ * ClokeOS: D held during start-up adds clokeos_diag=1 to the boot arguments.
++ * The desktop session then opens its diagnostics window (clokeos-diag) right
++ * away, also when keyboard and mouse devices exist but do not work, which is
++ * the only way to read the kernel log on a machine without working input.
++ */
++static BOOLEAN g_diag_done;
++
++static EFI_STATUS diag_boot_on_key(AppContext *ctx, const CHAR8 **cmdline, BOOLEAN *owned) {
++  const CHAR8 suffix[] = " clokeos_diag=1";
++  UINTN len = 0;
++  CHAR8 *copy = NULL;
++  if (g_diag_done)
++    return EFI_SUCCESS;
++  scan_boot_keys(ctx);
++  if (!g_key_d)
++    return EFI_SUCCESS;
++  g_diag_done = TRUE;
++  while ((*cmdline)[len] != '\0')
++    len++;
++  EFI_STATUS status = app_alloc_pool(ctx, len + sizeof(suffix), (VOID **)&copy);
++  if (EFI_ERROR(status))
++    return status;
++  CopyMem(copy, *cmdline, len);
++  CopyMem(copy + len, suffix, sizeof(suffix));
++  if (*owned)
++    app_free_pool(ctx, (VOID *)(UINTN)*cmdline);
++  *cmdline = copy;
++  *owned = TRUE;
++  log_info(L"key D: diagnostics, using \"%a\"\r\n", *cmdline);
++  return EFI_SUCCESS;
 +}
 +
 +/*
@@ -639,7 +674,7 @@ diff -ruN a/src/main.c b/src/main.c
  static EFI_STATUS load_ramdisk(AppContext *ctx) {
    EFI_FILE_PROTOCOL *root = NULL;
    FileBuffer image = {0};
-@@ -96,7 +475,7 @@
+@@ -96,7 +510,7 @@
  }
  
  #if defined(__x86_64__)
@@ -648,7 +683,7 @@ diff -ruN a/src/main.c b/src/main.c
    UINT64 *src64 = (UINT64 *)(UINTN)g_copy_src;
    UINT64 *dst64 = (UINT64 *)(UINTN)g_copy_dst;
    UINTN   words = (UINTN)((g_copy_bytes + 7) >> 3);
-@@ -246,6 +625,61 @@
+@@ -246,6 +660,63 @@
    if (EFI_ERROR(status))
      return status;
  
@@ -697,6 +732,8 @@ diff -ruN a/src/main.c b/src/main.c
 +  if (EFI_ERROR(status))
 +    log_error(L"key R: no recovery boot: %r\r\n", status);
 +  status = verbose_boot_on_key(&ctx, &cmdline, &cmdline_owned);
++  if (!EFI_ERROR(status))
++    status = diag_boot_on_key(&ctx, &cmdline, &cmdline_owned);
 +  if (EFI_ERROR(status))
 +    log_error(L"key V: no verbose boot: %r\r\n", status);
 +
@@ -710,7 +747,7 @@ diff -ruN a/src/main.c b/src/main.c
    log_info(L"XNU EFI loader start\r\n");
  
    {
-@@ -440,10 +874,48 @@
+@@ -440,10 +911,50 @@
  
    log_info(L"entry vm=0x%lx -> host=0x%lx\r\n", entry_vmaddr, (UINT64)(UINTN)host_entry);
  
@@ -725,6 +762,8 @@ diff -ruN a/src/main.c b/src/main.c
 +  if (EFI_ERROR(status))
 +    log_error(L"key R: no recovery boot: %r\r\n", status);
 +  status = verbose_boot_on_key(&ctx, &cmdline, &cmdline_owned);
++  if (!EFI_ERROR(status))
++    status = diag_boot_on_key(&ctx, &cmdline, &cmdline_owned);
 +  if (EFI_ERROR(status))
 +    log_error(L"key V: no verbose boot: %r\r\n", status);
  
@@ -762,7 +801,7 @@ diff -ruN a/src/main.c b/src/main.c
    BootArgsState boot_state = {0};
  
    ReleaseBootInfoGuard(&ctx, &bootinfo_guard_base, &bootinfo_guard_pages);
-@@ -456,42 +928,6 @@
+@@ -456,42 +967,6 @@
    if (EFI_ERROR(status)) {
      log_error(L"failed to collect memory map: %r\r\n", status);
      return status;
