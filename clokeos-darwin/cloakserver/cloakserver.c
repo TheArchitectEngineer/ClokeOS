@@ -79,9 +79,9 @@ void freeifaddrs(struct ifaddrs *);
 #define UI_FONT_FILE "/Library/Fonts/ClokeSans/ClokeSans-Regular.otf"
 #define GM_TOP_MAX 16 /* höchstens so viele Programm-Menüs in der Leiste */
 static bool recovery; /* läuft als Wiederherstellung (recovery.c, /etc/clokeos-recovery) */
-#define TITLE_H   36   /* Prototyp: 38; auf 800 Pixel Höhe etwas knapper */
+#define TITLE_H   38   /* wie die Titelleiste im Prototyp (clokeos.html: .titlebar) */
 #define BORDER    1
-#define RADIUS    10
+#define RADIUS    12   /* Prototyp: .win border-radius */
 #define DOCK_PAD_X 8   /* entlang des Docks */
 #define DOCK_PAD_Y 6   /* quer dazu */
 #define DOCK_GAP  5
@@ -1533,7 +1533,7 @@ static void paint_frame(cairo_t *cr, int w, int h, void *arg) {
     }
   }
   const char *title = c->title[0] ? c->title : (c->app >= 0 ? apps[c->app].b.name : c->cls);
-  if (w - 2 * 84 > 24) text(cr, w / 2.0, cy, title, 12.5, true, active ? T->fg : T->fg2, w - 2 * 84, 1);
+  if (w - 2 * 84 > 24) text(cr, w / 2.0, cy, title, 13, true, active ? T->fg : T->fg2, w - 2 * 84, 1);
 }
 
 static void draw_frame(Client *c) {
@@ -2352,7 +2352,11 @@ static int items_width(const MenuItem *it, int n) {
 static int menu_width(void) { return items_width(menu, nmenu); }
 
 static void open_menu(int x, int y, int owner, bool above) {
+  /* Die Einträge sind schon aufgebaut; close_menu() (ein offenes Menü wird ersetzt) setzt nmenu auf 0.
+   * Ohne das blieb das neue Menü beim Wechsel von einem offenen Menü leer, bis man erneut klickte. */
+  int keep = nmenu;
   close_menu();
+  nmenu = keep;
   int w = menu_width();
   int h = item_y(nmenu) + 6;
   if (above) y -= h;
@@ -2817,6 +2821,7 @@ static void gm_children(int parent, bool flatten) {
 
 static void build_gm_menu(int t) {
   if (t < 0 || t >= ngm_top) return;
+  nmenu = 0; /* neu aufbauen, nicht an die Einträge eines noch offenen Menüs anhängen */
   gm_children(gm_top[t], false);
   end_items();
 }
@@ -3056,6 +3061,17 @@ static int menubar_item_at(int x) {
     if (mb_w[i] && x >= mb_x[i] && x < mb_x[i] + mb_w[i]) return i;
   return -1;
 }
+
+/* Das offene Menü kam durch Überfahren eines anderen Titels (nicht durch einen Klick): der Klick auf
+ * diesen Titel soll es dann offen lassen. Sonst schloss er es, und erst ein zweiter Klick zeigte es. */
+static bool menu_by_hover;
+
+/* Wie bei macOS wird ein Programmfenster erst beim Loslassen der Maustaste angehoben und fokussiert, nicht
+ * beim Klick: So lassen sich Dateien aus einem Hintergrundfenster in ein anderes ziehen. Der Klick geht
+ * sofort an das Programm (ReplayPointer); die Leiste sieht das Loslassen nicht mehr (der Zeiger gehört dann
+ * dem Programm) und fragt deshalb den Zustand der Tasten ab (pending_focus_check in der Hauptschleife). */
+static Client *pending_focus;
+static double pending_focus_t0;
 
 static void menubar_open(int i) {
   if (i == MB_SPOT) {
@@ -4007,8 +4023,13 @@ static void on_button_press(XButtonEvent *e) {
       XAllowEvents(dpy, AsyncPointer, CurrentTime); /* der Klick schließt nur das Menü */
       return;
     }
-    raise_client(gc);
-    focus_client(gc);
+    if (gc->draw || gc == focused) { /* eigene Fenster und das aktive: gleich */
+      raise_client(gc);
+      focus_client(gc);
+    } else {
+      pending_focus = gc; /* erst beim Loslassen */
+      pending_focus_t0 = now_s();
+    }
     XAllowEvents(dpy, ReplayPointer, CurrentTime);
     if (debug) warn("Klick in Programmfenster 0x%lx weitergegeben", gc->win);
     if (gc->draw && e->button == Button1) gc->click(gc, e->x, e->y);
@@ -4019,8 +4040,12 @@ static void on_button_press(XButtonEvent *e) {
     if (subwin && e->window == subwin && e->x >= 0 && e->y >= 0 && e->x < sub_w && e->y < sub_h) return;
     if (e->window == menubar) {
       int i = menubar_item_at(e->x);
-      if (i == menu_owner || i < 0) close_menu();
-      else menubar_open(i);
+      if (i == menu_owner && menu_by_hover) menu_by_hover = false; /* der Klick bestätigt das Menü */
+      else if (i == menu_owner || i < 0) close_menu();
+      else {
+        menubar_open(i);
+        menu_by_hover = false;
+      }
       return;
     }
     close_menu();
@@ -4028,7 +4053,10 @@ static void on_button_press(XButtonEvent *e) {
   }
   if (e->window == menubar) {
     int i = menubar_item_at(e->x);
-    if (i >= 0) menubar_open(i);
+    if (i >= 0) {
+      menubar_open(i);
+      menu_by_hover = false;
+    }
     return;
   }
   if (e->window == dock) {
@@ -4137,7 +4165,10 @@ static void on_motion(XMotionEvent *e) {
       }
     } else if (e->window == menubar && menu_owner >= 0) {
       int i = menubar_item_at(e->x);
-      if (i >= 0 && i != menu_owner && i != MB_SPOT) menubar_open(i);
+      if (i >= 0 && i != menu_owner && i != MB_SPOT) {
+        menubar_open(i);
+        menu_by_hover = true;
+      }
     }
     return;
   }
@@ -4710,6 +4741,19 @@ int main(int argc, char **argv) {
       if (!XPending(dpy)) break;
     }
     tick();
+    if (pending_focus) {
+      Window rw, cw;
+      int rx, ry, wx, wy;
+      unsigned mask = 0;
+      XQueryPointer(dpy, root, &rw, &cw, &rx, &ry, &wx, &wy, &mask);
+      if (!(mask & (Button1Mask | Button2Mask | Button3Mask)) || now_s() - pending_focus_t0 > 60) {
+        if (client_alive(pending_focus) && !pending_focus->minimized) {
+          raise_client(pending_focus);
+          focus_client(pending_focus);
+        }
+        pending_focus = NULL;
+      }
+    }
     if (recovery && rp == RP_RUN) rec_redraw(); /* Restzeit und Balken laufen auch ohne Meldung des Installers weiter */
     bool anim = animate();
     /* Ein Klick in ein inaktives Programmfenster friert den Zeiger ein, bis XAllowEvents kommt
@@ -4726,6 +4770,7 @@ int main(int argc, char **argv) {
     if (rec_fd > maxfd) maxfd = rec_fd;
     struct timeval tv = {1, 0};
     if (shake_t0 >= 0 || anim) tv = (struct timeval){0, 16000}; /* Animation: so oft wie möglich */
+    if (pending_focus) tv = (struct timeval){0, 20000}; /* auf das Loslassen warten */
     if (setup_anim()) tv = (struct timeval){0, 50000};     /* "hello" im Einrichtungsassistenten */
     select(maxfd + 1, &fds, NULL, NULL, &tv);
     if (gm_fd >= 0 && FD_ISSET(gm_fd, &fds)) gm_read();

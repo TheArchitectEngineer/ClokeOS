@@ -259,7 +259,7 @@ diff -ruN a/src/jump.S b/src/jump.S
 \ No newline at end of file
 diff -ruN a/src/main.c b/src/main.c
 --- a/src/main.c	2026-08-17 22:51:23
-+++ b/src/main.c	2026-10-24 16:22:07
++++ b/src/main.c	2026-10-24 18:54:31
 @@ -6,6 +6,7 @@
  #include "macho.h"
  #include "jump.h"
@@ -277,7 +277,7 @@ diff -ruN a/src/main.c b/src/main.c
    UINTN len = 0;
    CHAR8 *copy = NULL;
  
-@@ -51,6 +52,572 @@
+@@ -51,6 +52,574 @@
    return EFI_SUCCESS;
  }
  
@@ -287,7 +287,7 @@ diff -ruN a/src/main.c b/src/main.c
 +
 +/* Keys seen so far: V (verbose boot) and R (recovery). Reading uses keys up,
 + * so one look records both. */
-+static BOOLEAN g_key_v, g_key_r, g_key_d;
++static BOOLEAN g_key_v, g_key_r, g_key_d, g_key_u;
 +
 +/* Reads the keys already queued in ConIn. Never waits. */
 +static VOID scan_boot_keys(AppContext *ctx) {
@@ -305,6 +305,8 @@ diff -ruN a/src/main.c b/src/main.c
 +      g_key_r = TRUE;
 +    if (key.UnicodeChar == L'd' || key.UnicodeChar == L'D')
 +      g_key_d = TRUE;
++    if (key.UnicodeChar == L'u' || key.UnicodeChar == L'U')
++      g_key_u = TRUE;
 +  }
 +}
 +
@@ -850,7 +852,7 @@ diff -ruN a/src/main.c b/src/main.c
  static EFI_STATUS load_ramdisk(AppContext *ctx) {
    EFI_FILE_PROTOCOL *root = NULL;
    FileBuffer image = {0};
-@@ -96,7 +663,7 @@
+@@ -96,7 +665,7 @@
  }
  
  #if defined(__x86_64__)
@@ -859,7 +861,7 @@ diff -ruN a/src/main.c b/src/main.c
    UINT64 *src64 = (UINT64 *)(UINTN)g_copy_src;
    UINT64 *dst64 = (UINT64 *)(UINTN)g_copy_dst;
    UINTN   words = (UINTN)((g_copy_bytes + 7) >> 3);
-@@ -246,6 +813,63 @@
+@@ -246,6 +815,63 @@
    if (EFI_ERROR(status))
      return status;
  
@@ -923,7 +925,25 @@ diff -ruN a/src/main.c b/src/main.c
    log_info(L"XNU EFI loader start\r\n");
  
    {
-@@ -440,10 +1064,53 @@
+@@ -257,7 +883,16 @@
+ 
+   EFI_HANDLE found_handle = NULL;
+ 
+-  status = file_read_all_from_any_volume(
++  /* ClokeOS: U held at power-on loads \EFI\BOOT\kernel-up, the single-processor kernel, when the disk has
++   * one (a stick whose default kernel starts the other cores, in case that does not work on this PC) */
++  scan_boot_keys(&ctx);
++  status = EFI_NOT_FOUND;
++  if (g_key_u) {
++    status = file_read_all_from_any_volume(&ctx, L"\\EFI\\BOOT\\kernel-up", &kernel, &found_handle);
++    log_info(L"key U: single-processor kernel: %r\r\n", status);
++  }
++  if (EFI_ERROR(status))
++    status = file_read_all_from_any_volume(
+       &ctx,
+       L"\\EFI\\BOOT\\kernel",
+       &kernel,
+@@ -440,10 +1075,53 @@
  
    log_info(L"entry vm=0x%lx -> host=0x%lx\r\n", entry_vmaddr, (UINT64)(UINTN)host_entry);
  
@@ -980,7 +1000,7 @@ diff -ruN a/src/main.c b/src/main.c
    BootArgsState boot_state = {0};
  
    ReleaseBootInfoGuard(&ctx, &bootinfo_guard_base, &bootinfo_guard_pages);
-@@ -456,42 +1123,6 @@
+@@ -456,42 +1134,6 @@
    if (EFI_ERROR(status)) {
      log_error(L"failed to collect memory map: %r\r\n", status);
      return status;

@@ -47,7 +47,7 @@ static void hill(cairo_t *cr, double W, double hz, double x0, double x1, double 
   cairo_fill(cr);
 }
 
-void wall_draw(cairo_t *cr, double W, double H, bool dark) {
+static void wall_draw_bridge(cairo_t *cr, double W, double H, bool dark) {
   cairo_surface_t *target = cairo_get_target(cr);
   seed = 7;
   double hz = H * .64, deck = hz - H * .085;
@@ -194,4 +194,35 @@ void wall_draw(cairo_t *cr, double W, double H, bool dark) {
   stop(g, 0, 0x000000, 0);
   if (dark) stop(g, 1, 0x00000a, .45); else stop(g, 1, 0x141e3c, .14);
   cairo_set_source(cr, g); fill_rect(cr, 0, 0, W, H); cairo_pattern_destroy(g);
+}
+
+/* Standardhintergrund: Papercut-Schichten in Rosa, dunkel in Pflaume (wallpapers/make.swift erzeugt beide
+ * aus der Vorlage, overlay-desktop/Library/ClokeOS/Wallpapers/{light,dark}.png). Das Bild füllt den
+ * Bildschirm ("cover", aus der Mitte beschnitten). Fehlt die Datei, bleibt der alte Hintergrund
+ * "Goldenes Tor". */
+void wall_draw(cairo_t *cr, double W, double H, bool dark) {
+  static cairo_surface_t *img[2];
+  int k = dark ? 1 : 0;
+  if (!img[k]) {
+    cairo_surface_t *s = cairo_image_surface_create_from_png(dark ? "/Library/ClokeOS/Wallpapers/dark.png"
+                                                                  : "/Library/ClokeOS/Wallpapers/light.png");
+    if (cairo_surface_status(s) != CAIRO_STATUS_SUCCESS) {
+      cairo_surface_destroy(s);
+      s = NULL;
+    }
+    img[k] = s ? s : (cairo_surface_t *)1;
+  }
+  if (img[k] == (cairo_surface_t *)1) {
+    wall_draw_bridge(cr, W, H, dark);
+    return;
+  }
+  double iw = cairo_image_surface_get_width(img[k]), ih = cairo_image_surface_get_height(img[k]);
+  double sc = fmax(W / iw, H / ih);
+  cairo_save(cr);
+  cairo_translate(cr, (W - iw * sc) / 2, (H - ih * sc) / 2);
+  cairo_scale(cr, sc, sc);
+  cairo_set_source_surface(cr, img[k], 0, 0);
+  cairo_pattern_set_filter(cairo_get_source(cr), CAIRO_FILTER_GOOD);
+  cairo_paint(cr);
+  cairo_restore(cr);
 }

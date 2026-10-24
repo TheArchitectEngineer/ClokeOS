@@ -95,14 +95,39 @@ while read -r line; do
   [ -n "$k" ] && args+=(-kext "$base/root/Extensions/$k")
 done < "$base/pd-rebuild-kc"
 for k in ${kexts[@]+"${kexts[@]}"}; do args+=(-kext "$k"); done
+# Zwei Kernel: kernel-up mit der einfachen AppleI386PlatformExpert (ein Kern, bewährt) und kernel mit
+# PureDarwins ACPI-Plattform PDACPIPlatform (uACPI-Interpreter, liest die MADT und startet die weiteren
+# Prozessorkerne; boot-arg cpus=N begrenzt sie). Beide passen auf den Knoten "ACPI"; in einer Kopie mit
+# höherem IOProbeScore gewinnt die ACPI-Plattform. Der Loader nimmt kernel-up, wenn beim Einschalten U
+# gehalten wird. CLOKEOS_SMP=0: kernel ist dann ebenfalls der mit einem Kern.
+smp="$tmp/PDACPIPlatform.kext"
+rm -rf "$smp"
+cp -R "$base/root/Extensions/PDACPIPlatform.kext" "$smp"
+python3 -I - "$smp/Contents/Info.plist" <<'PYEOF2'
+import plistlib, sys
+p = sys.argv[1]
+d = plistlib.load(open(p, 'rb'))
+d['IOKitPersonalities']['PDACPI Platform']['IOProbeScore'] = 5000
+plistlib.dump(d, open(p, 'wb'), fmt=plistlib.FMT_XML)
+PYEOF2
 for p in "$base"/root/Extensions/System.kext/PlugIns/*.kext; do args+=(-codeless "$p"); done
 runner=()
 [ "$(uname -m)" = arm64 ] && runner=(arch -x86_64)
-"${runner[@]}" "$base/kc-builder" "${args[@]}" -o "$WORK/out/kernel" > "$tmp/kc-builder.log" 2>&1 ||
-  { tail -20 "$tmp/kc-builder.log" >&2; exit 1; }
-for k in ${kexts[@]+"${kexts[@]}"}; do
-  id=$(plutil -extract CFBundleIdentifier raw "$k/Contents/Info.plist")
-  grep -q "patched kmod_info: $id" "$tmp/kc-builder.log" || { echo "kc-builder hat $id nicht eingebunden" >&2; exit 1; }
-done
-python3 -I "$HERE/kcfix.py" "$WORK/out/kernel" >/dev/null
-echo "Kernel Collection: $WORK/out/kernel (${#kexts[@]} eigene Treiber)"
+build_kc() { # <ausgabe> [weitere kc-builder-Argumente]
+  local o="$1"
+  shift
+  "${runner[@]}" "$base/kc-builder" "${args[@]}" "$@" -o "$o" > "$tmp/kc-builder.log" 2>&1 ||
+    { tail -20 "$tmp/kc-builder.log" >&2; exit 1; }
+  for k in ${kexts[@]+"${kexts[@]}"}; do
+    id=$(plutil -extract CFBundleIdentifier raw "$k/Contents/Info.plist")
+    grep -q "patched kmod_info: $id" "$tmp/kc-builder.log" || { echo "kc-builder hat $id nicht eingebunden" >&2; exit 1; }
+  done
+  python3 -I "$HERE/kcfix.py" "$o" >/dev/null
+}
+build_kc "$WORK/out/kernel-up"
+if [ "${CLOKEOS_SMP:-1}" = 1 ]; then
+  build_kc "$WORK/out/kernel" -kext "$smp"
+else
+  cp "$WORK/out/kernel-up" "$WORK/out/kernel"
+fi
+echo "Kernel Collection: $WORK/out/kernel und kernel-up (${#kexts[@]} eigene Treiber, SMP ${CLOKEOS_SMP:-1})"

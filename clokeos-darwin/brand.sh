@@ -275,6 +275,9 @@ if [ "$CLOKE_ARCH" = x86_64 ] || [ "$CLOKE_FLAVOR" = desktop ]; then
   mcopy -n -i "$esp" ::/EFI/BOOT/kernel "$tmp/kernel"
   python3 -I "$HERE/kcfix.py" "$tmp/kernel"
   [ "$CLOKE_ARCH" = x86_64 ] && [ "$CLOKE_FLAVOR" = desktop ] && cp "$WORK/out/kernel" "$tmp/kernel"
+  if [ "$CLOKE_ARCH" = x86_64 ] && [ "$CLOKE_FLAVOR" = desktop ] && [ -f "$WORK/out/kernel-up" ]; then
+    mcopy -o -i "$esp" "$WORK/out/kernel-up" ::/EFI/BOOT/kernel-up # U beim Einschalten: ein Kern
+  fi
   mcopy -o -i "$esp" "$tmp/kernel" ::/EFI/BOOT/kernel
   mtype -i "$esp" ::/EFI/BOOT/kernel | cmp -s - "$tmp/kernel" ||
     { echo "Kernel nicht in der EFI-Partition angekommen" >&2; exit 1; }
