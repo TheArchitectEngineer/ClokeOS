@@ -151,6 +151,7 @@ esize=$(( (bytes + 96 * 1048576) / 1048576 * 1048576 ))
 esp="$tmp/usb-esp.img"
 truncate -s "$esize" "$esp"
 mformat -i "$esp" -F -v CLOKEOS -T $(( esize / 512 )) -h 64 -s 32 ::
+python3 -I "$HERE/recovery/imagetool.py" fixlabel "$esp" >/dev/null
 mmd -i "$esp" ::/EFI ::/EFI/BOOT
 mcopy -i "$esp" "$tmp/boot/"* ::/EFI/BOOT/
 mtype -i "$esp" ::/EFI/BOOT/boot-args.txt | grep -q 'rd=md0' || { echo "boot-args.txt fehlt im USB-Abbild" >&2; exit 1; }

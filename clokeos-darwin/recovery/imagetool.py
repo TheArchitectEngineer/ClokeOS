@@ -9,6 +9,7 @@
   imagetool.py gpt <image> <esp> <root> <name> <guid>   startfähiges Image aus EFI-Partition und
       Wurzel; <guid> wird die Kennung der Wurzelpartition (der Loader startet mit boot-uuid=<guid>).
       <root> - : nur die EFI-Partition (USB-Medium, die Wurzel liegt dort als RAM-Disk)
+  imagetool.py fixlabel <fat32.img>   Langnamen vor dem Datenträgernamen entfernen (macOS hängt sonst nicht ein)
   imagetool.py disk <image> <esp> <system> <recovery> <sys-guid> <rec-guid>   fertige Festplatte
       wie nach der Installation (recovery/disk.sh); die Boot-Argumente in <esp> setzt disk.sh
 
@@ -256,6 +257,36 @@ def disk(image, esp, system, recovery, sys_guid, rec_guid):
                       (LINUX_TYPE, recovery, 'ClokeOS Recovery', uuid.UUID(rec_guid))])
 
 
+def fixlabel(image):
+    """mformat legt vor dem Datenträgernamen im Wurzelverzeichnis einen Langnamen-Eintrag an; macOS
+    meldet das als Fehler ("Invalid long filename entry for volume label") und hängt den Stick
+    dann nicht ein. Solche Einträge als gelöscht markieren (0xE5), sonst bleibt alles gleich."""
+    with open(image, 'r+b') as f:
+        b = f.read(512)
+        bps, spc, rsvd, nf = struct.unpack('<HBHB', b[11:17])
+        fsz, root = struct.unpack('<I', b[36:40])[0], struct.unpack('<I', b[44:48])[0]
+        at = (rsvd + nf * fsz) * bps + (root - 2) * spc * bps
+        f.seek(at)
+        d = bytearray(f.read(spc * bps))
+        lfn, fixed = [], 0
+        for i in range(0, len(d), 32):
+            if d[i] == 0:
+                break
+            attr = d[i + 11]
+            if d[i] != 0xe5 and attr == 0x0f:
+                lfn.append(i)
+                continue
+            if attr & 0x08 and attr != 0x0f:
+                for j in lfn:
+                    d[j] = 0xe5
+                    fixed += 1
+            lfn = []
+        if fixed:
+            f.seek(at)
+            f.write(d)
+    print('%s: %d Langnamen-Eintrag/Einträge vor dem Datenträgernamen entfernt' % (image, fixed))
+
+
 def owners(src, root, cmdfile):
     """Besitzer und Rechte aus <src> (ein debugfs-Lauf mit stat für alle Pfade) als sif-Befehle"""
     import subprocess
@@ -304,6 +335,8 @@ if __name__ == '__main__':
         owners(*sys.argv[2:])
     elif len(sys.argv) == 7 and sys.argv[1] == 'gpt':
         gpt(*sys.argv[2:])
+    elif len(sys.argv) == 3 and sys.argv[1] == 'fixlabel':
+        fixlabel(sys.argv[2])
     elif len(sys.argv) == 8 and sys.argv[1] == 'disk':
         disk(*sys.argv[2:])
     else:
