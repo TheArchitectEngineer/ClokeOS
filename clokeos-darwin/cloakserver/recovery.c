@@ -128,7 +128,7 @@ static void rec_load_disks(void) {
 /* Absatz mit Zeilenumbruch, gibt die Höhe zurück */
 static int para(cairo_t *cr, double x, double y, int w, const char *s, double px, RGBA col, bool center) {
   PangoLayout *l = pango_cairo_create_layout(cr);
-  PangoFontDescription *f = pango_font_description_from_string("DejaVu Sans");
+  PangoFontDescription *f = pango_font_description_from_string(UI_FONT);
   pango_font_description_set_absolute_size(f, px * PANGO_SCALE);
   pango_layout_set_font_description(l, f);
   pango_layout_set_width(l, w * PANGO_SCALE);

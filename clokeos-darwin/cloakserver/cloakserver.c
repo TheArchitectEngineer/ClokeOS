@@ -74,6 +74,9 @@ void freeifaddrs(struct ifaddrs *);
 #define MENUBAR_H 28
 /* holt die Menüs von GTK-Programmen für die Menüleiste (menubar/cloakmenu.c) */
 #define CLOAKMENU "/System/Library/CoreServices/CloakServer/cloakmenu"
+/* Schrift der Oberfläche: Cloke Sans (Inter-Umrisse, SIL OFL), fehlt sie, nimmt fontconfig Ersatz */
+#define UI_FONT "Cloke Sans"
+#define UI_FONT_FILE "/Library/Fonts/ClokeSans/ClokeSans-Regular.otf"
 #define GM_TOP_MAX 16 /* höchstens so viele Programm-Menüs in der Leiste */
 static bool recovery; /* läuft als Wiederherstellung (recovery.c, /etc/clokeos-recovery) */
 #define TITLE_H   36   /* Prototyp: 38; auf 800 Pixel Höhe etwas knapper */
@@ -317,7 +320,7 @@ void rrect(cairo_t *cr, double x, double y, double w, double h, double r) {
 /* Text mit Pango; px = Schriftgröße in Pixeln. Gibt die Breite zurück. */
 static int text(cairo_t *cr, double x, double y, const char *s, double px, bool bold, RGBA col, int maxw, int align) {
   PangoLayout *l = pango_cairo_create_layout(cr);
-  PangoFontDescription *f = pango_font_description_from_string(bold ? "DejaVu Sans Bold" : "DejaVu Sans");
+  PangoFontDescription *f = pango_font_description_from_string(bold ? UI_FONT " SemiBold" : UI_FONT);
   pango_font_description_set_absolute_size(f, px * PANGO_SCALE);
   pango_layout_set_font_description(l, f);
   pango_layout_set_text(l, s, -1);
@@ -570,7 +573,9 @@ static void xsettings_update(void) {
   /* Gtk/ShellShowsMenubar: GTK-Programme zeigen ihre Menüleiste nicht im Fenster, die Menüs
    * stehen oben in der Leiste (globale Menüleiste, siehe dort). Nur wenn cloakmenu da ist. */
   bool menus = access(CLOAKMENU, X_OK) == 0;
-  uint32_t nl = (uint32_t)strlen(name), vl = (uint32_t)strlen(val), count = menus ? 2 : 1;
+  /* Gtk/FontName: Cloke Sans (overlay-desktop/Library/Fonts/ClokeSans) auch in den GTK-Programmen */
+  bool font = access(UI_FONT_FILE, R_OK) == 0;
+  uint32_t nl = (uint32_t)strlen(name), vl = (uint32_t)strlen(val), count = 1 + menus + font;
   uint16_t nl16 = (uint16_t)nl;
   unsigned char buf[256] = {0}, *p = buf;
   p += 4;                                    /* Byte-Reihenfolge 0 = LSBFirst (x86), 3 frei */
@@ -591,6 +596,17 @@ static void xsettings_update(void) {
     memcpy(p, mname, ml), p += (ml + 3) & ~3u;
     memcpy(p, &xsettings_serial, 4), p += 4;
     memcpy(p, &on, 4), p += 4;
+  }
+  if (font) {
+    static const char *fname = "Gtk/FontName", *fval = UI_FONT " 10";
+    uint16_t fl = (uint16_t)strlen(fname);
+    uint32_t fvl = (uint32_t)strlen(fval);
+    *p = 1, p += 2;                          /* Typ String */
+    memcpy(p, &fl, 2), p += 2;
+    memcpy(p, fname, fl), p += (fl + 3) & ~3u;
+    memcpy(p, &xsettings_serial, 4), p += 4;
+    memcpy(p, &fvl, 4), p += 4;
+    memcpy(p, fval, fvl), p += (fvl + 3) & ~3u;
   }
   XChangeProperty(dpy, xsettings_win, XSETTINGS_SETTINGS, XSETTINGS_SETTINGS, 8, PropModeReplace, buf, (int)(p - buf));
   xsettings_serial++;
@@ -3465,7 +3481,7 @@ static void set_dock_size(long size) {
 /* Absatz mit Zeilenumbruch; gibt die Höhe zurück */
 static int text_block(cairo_t *cr, double x, double y, const char *s, double px, bool bold, RGBA col, int width) {
   PangoLayout *l = pango_cairo_create_layout(cr);
-  PangoFontDescription *f = pango_font_description_from_string(bold ? "DejaVu Sans Bold" : "DejaVu Sans");
+  PangoFontDescription *f = pango_font_description_from_string(bold ? UI_FONT " SemiBold" : UI_FONT);
   pango_font_description_set_absolute_size(f, px * PANGO_SCALE);
   pango_layout_set_font_description(l, f);
   pango_layout_set_width(l, width * PANGO_SCALE);
