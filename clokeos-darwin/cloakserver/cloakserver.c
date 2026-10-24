@@ -71,7 +71,7 @@ void freeifaddrs(struct ifaddrs *);
 /* ---------------------------------------------------------------------------------------- */
 /* Maße wie in clokeos.html                                                                   */
 
-#define MENUBAR_H 28
+#define MENUBAR_H 26
 /* holt die Menüs von GTK-Programmen für die Menüleiste (menubar/cloakmenu.c) */
 #define CLOAKMENU "/System/Library/CoreServices/CloakServer/cloakmenu"
 /* Schrift der Oberfläche: Cloke Sans (Inter-Umrisse, SIL OFL), fehlt sie, nimmt fontconfig Ersatz */
@@ -89,7 +89,7 @@ static bool recovery; /* läuft als Wiederherstellung (recovery.c, /etc/clokeos-
 #define DOCK_MARGIN 6  /* Abstand zum Bildschirmrand */
 static int ds = 50;    /* Dock-Symbolgröße; ds_pref aus den Systemeinstellungen (40, 50, 64), ds ist */
 static int ds_pref = 50; /* kleiner, wenn das Dock sonst nicht auf den Bildschirm passt */
-#define GLASS_O   .43  /* --glass-o bei "Liquid Glass" 50 */
+#define GLASS_O   .45  /* --glass-o bei "Liquid Glass" 50 */
 
 typedef struct { double r, g, b, a; } RGBA;
 
@@ -100,9 +100,9 @@ typedef struct {
 static const Theme LIGHT = {
   .fg = {0x1e / 255., 0x1a / 255., 0x27 / 255., 1}, .fg2 = {0x6d / 255., 0x67 / 255., 0x79 / 255., 1},
   .fg3 = {0x9a / 255., 0x94 / 255., 0xa6 / 255., 1}, .menubar_fg = {0x16 / 255., 0x13 / 255., 0x1e / 255., 1},
-  .tint = {248 / 255., 247 / 255., 252 / 255., GLASS_O}, .dock = {248 / 255., 247 / 255., 252 / 255., GLASS_O}, .win = {0xf6 / 255., 0xf5 / 255., 0xf9 / 255., 1},
+  .tint = {248 / 255., 247 / 255., 252 / 255., GLASS_O}, .dock = {248 / 255., 247 / 255., 252 / 255., GLASS_O}, .win = {251 / 255., 250 / 255., 253 / 255., 1},
   .line = {40 / 255., 25 / 255., 70 / 255., .12}, .line_strong = {40 / 255., 25 / 255., 70 / 255., .22},
-  .hover = {40 / 255., 25 / 255., 70 / 255., .12}, .rim = {1, 1, 1, .9}, .rim_low = {1, 1, 1, .35},
+  .hover = {40 / 255., 25 / 255., 70 / 255., .06}, .rim = {1, 1, 1, .9}, .rim_low = {1, 1, 1, .35},
   .edge = {30 / 255., 20 / 255., 60 / 255., .14}, .pill = {1, 1, 1, GLASS_O + .18},
   .light_off = {0xd6 / 255., 0xd2 / 255., 0xdc / 255., 1},
 };
@@ -111,8 +111,8 @@ static const Theme DARK = {
   .fg3 = {0x77 / 255., 0x71 / 255., 0x84 / 255., 1}, .menubar_fg = {0xf6 / 255., 0xf3 / 255., 0xfa / 255., 1},
   .tint = {30 / 255., 28 / 255., 40 / 255., GLASS_O},
   /* Mit der dunklen Tönung verschwand das Dock vor dem Abendhimmel; heller wie ein dunkles Glas */
-  .dock = {78 / 255., 74 / 255., 96 / 255., .46}, .win = {0x23 / 255., 0x21 / 255., 0x2b / 255., 1},
-  .line = {1, 1, 1, .1}, .line_strong = {1, 1, 1, .2}, .hover = {1, 1, 1, .13}, .rim = {1, 1, 1, .34},
+  .dock = {78 / 255., 74 / 255., 96 / 255., .46}, .win = {30 / 255., 28 / 255., 37 / 255., 1},
+  .line = {1, 1, 1, .1}, .line_strong = {1, 1, 1, .2}, .hover = {1, 1, 1, .12}, .rim = {1, 1, 1, .34},
   .rim_low = {1, 1, 1, .1}, .edge = {0, 0, 0, .5}, .pill = {1, 1, 1, GLASS_O * .2 + .07},
   .light_off = {0x4a / 255., 0x46 / 255., 0x53 / 255., 1},
 };

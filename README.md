@@ -54,7 +54,7 @@ Later, "Restart in Recovery…" in the ClokeOS menu starts the recovery on the d
 ```text
 root@clokeos / # sw_vers
 ProductName:		ClokeOS
-ProductVersion:		2.2
+ProductVersion:		2.3
 BuildVersion:		2C1
 root@clokeos / # uname -a
 Darwin clokeos 20.5.0 Darwin Kernel Version 20.5.0: Sun Aug 23 10:54:37 UTC 2026; nixbld:xnu-build/RELEASE_X86_64 x86_64
@@ -64,7 +64,7 @@ Darwin clokeos 20.5.0 Darwin Kernel Version 20.5.0: Sun Aug 23 10:54:37 UTC 2026
 
 The base is the ready-made image of [PureDarwin 20.5](https://github.com/PureDarwin/PureDarwin/releases/tag/20.5) (UEFI, its own loader, XNU, launchd, zsh, ext4 as root file system). ClokeOS changes:
 
-- `SystemVersion.plist`: ClokeOS 2.2 "Presidio", build 2C1 (launchd also sets `kern.osversion` from it)
+- `SystemVersion.plist`: ClokeOS 2.3 "Presidio", build 2C1 (launchd also sets `kern.osversion` from it)
 - `sw_vers` reads the plist as on macOS; PureDarwin's own `sw_vers` has "PureDarwin 11.3" compiled in
 - host name `clokeos` via the launchd service `com.clokeos.hostname`
 - login text with the cape (`/etc/motd`), prompt `root@clokeos / #`
@@ -84,7 +84,7 @@ Build and start:
 cd clokeos-darwin && ./brand.sh && ./run.sh
 ```
 
-`brand.sh` downloads the PureDarwin image (275 MB) and the boot loader's sources (300 KB together, all checksums are verified), builds the loader with the boot logo, writes the files from `overlay/` into the ext4 file system with `debugfs` (no Linux and no root needed), puts loader and boot arguments into the EFI partition with `mtools` and produces `~/ClokeOS-work/out/clokeos-2.2-x86_64.img`. `run.sh` opens a QEMU window with the screen and the serial console in the terminal. On a Mac with Apple silicon x86_64 is emulated; reaching the prompt takes about 70 seconds (arm64 with Apple's hypervisor: about 7, see [Architectures](#architectures)). Quit with `poweroff` in the VM.
+`brand.sh` downloads the PureDarwin image (275 MB) and the boot loader's sources (300 KB together, all checksums are verified), builds the loader with the boot logo, writes the files from `overlay/` into the ext4 file system with `debugfs` (no Linux and no root needed), puts loader and boot arguments into the EFI partition with `mtools` and produces `~/ClokeOS-work/out/clokeos-2.3-x86_64.img`. `run.sh` opens a QEMU window with the screen and the serial console in the terminal. On a Mac with Apple silicon x86_64 is emulated; reaching the prompt takes about 70 seconds (arm64 with Apple's hypervisor: about 7, see [Architectures](#architectures)). Quit with `poweroff` in the VM.
 
 For tests without a window: `./run.sh --headless`, then `./vmctl.py wait 'Welcome'`, `./vmctl.py send 'clokefetch'`, `./vmctl.py shot screen.png`, `./vmctl.py quit`. Downloads, images and VM state live in `~/ClokeOS-work`, not in the project folder. Versions and names are in `clokeos-darwin/config.sh`.
 
