@@ -1,6 +1,6 @@
 diff -ru a/src/Kernel/Extensions/PDACPIPlatform/PDACPIPlatformExpert.cpp b/src/Kernel/Extensions/PDACPIPlatform/PDACPIPlatformExpert.cpp
---- a/src/Kernel/Extensions/PDACPIPlatform/PDACPIPlatformExpert.cpp	2026-10-25 09:29:34
-+++ b/src/Kernel/Extensions/PDACPIPlatform/PDACPIPlatformExpert.cpp	2026-10-25 09:29:34
+--- a/src/Kernel/Extensions/PDACPIPlatform/PDACPIPlatformExpert.cpp	2026-10-25 09:42:16
++++ b/src/Kernel/Extensions/PDACPIPlatform/PDACPIPlatformExpert.cpp	2026-10-25 09:42:16
 @@ -39,6 +39,8 @@
  
  #include "../AppleAPIC/PICShared.h"
@@ -96,7 +96,7 @@ diff -ru a/src/Kernel/Extensions/PDACPIPlatform/PDACPIPlatformExpert.cpp b/src/K
 +	if (why == 0) {
 +		cloke_trace("TOPO: VORHERSAGE XNU-PRUEFUNG OK");
 +	} else {
-+		arg = 1;   // Standard: trotzdem versuchen (Versuchskernel); cloke_force=0 bleibt dann bei einem Kern
++		arg = 0;   // Standard: bei einem Kern bleiben, statt in die Panik zu laufen; cloke_force=1 versucht es trotzdem
 +		PE_parse_boot_argn("cloke_force", &arg, sizeof arg);
 +		bool force = arg != 0;
 +		cloke_trace("TOPO: VORHERSAGE XNU-PRUEFUNG %d FEHLT%s", why, force ? ", cloke_force=1: WEITER" : "");
@@ -141,8 +141,8 @@ diff -ru a/src/Kernel/Extensions/PDACPIPlatform/PDACPIPlatformExpert.cpp b/src/K
  			kprintf("PDACPIPlatform: starting LAPIC %u failed (0x%x)\n",
  			        fLapicIds[i], kr);
 diff -ru a/src/Kernel/Extensions/PDACPIPlatform/PDACPIPlatformExpert.h b/src/Kernel/Extensions/PDACPIPlatform/PDACPIPlatformExpert.h
---- a/src/Kernel/Extensions/PDACPIPlatform/PDACPIPlatformExpert.h	2026-10-25 09:29:34
-+++ b/src/Kernel/Extensions/PDACPIPlatform/PDACPIPlatformExpert.h	2026-10-25 09:29:34
+--- a/src/Kernel/Extensions/PDACPIPlatform/PDACPIPlatformExpert.h	2026-10-25 09:42:16
++++ b/src/Kernel/Extensions/PDACPIPlatform/PDACPIPlatformExpert.h	2026-10-25 09:42:16
 @@ -56,6 +56,7 @@
  
  	unsigned enumerateProcessorsFromMADT(void);
