@@ -1,6 +1,6 @@
 diff -ru a/src/Kernel/Extensions/PDACPIPlatform/PDACPIPlatformExpert.cpp b/src/Kernel/Extensions/PDACPIPlatform/PDACPIPlatformExpert.cpp
---- a/src/Kernel/Extensions/PDACPIPlatform/PDACPIPlatformExpert.cpp	2026-10-25 09:04:54
-+++ b/src/Kernel/Extensions/PDACPIPlatform/PDACPIPlatformExpert.cpp	2026-10-25 09:04:54
+--- a/src/Kernel/Extensions/PDACPIPlatform/PDACPIPlatformExpert.cpp	2026-10-25 09:19:50
++++ b/src/Kernel/Extensions/PDACPIPlatform/PDACPIPlatformExpert.cpp	2026-10-25 09:19:50
 @@ -39,6 +39,8 @@
  
  #include "../AppleAPIC/PICShared.h"
@@ -10,15 +10,34 @@ diff -ru a/src/Kernel/Extensions/PDACPIPlatform/PDACPIPlatformExpert.cpp b/src/K
  
  extern "C" {
  #include <uacpi/uacpi.h>
-@@ -359,6 +361,7 @@
+@@ -340,6 +342,7 @@
+ 	PE_halt_restart = handlePEHaltRestart;
+ 	registerService();
+ 
++	cloke_trace("PDACPI START: FB-SPUR LAEUFT");
+ 	publishPlatformUUIDFromDeviceTree();
+ 	cacheACPIPowerOffFromDeviceTree();
+ 
+@@ -359,7 +362,18 @@
  	// calls ml_set_max_cpus(), which is what hw.ncpu reports.
  	fCPUCount = enumerateProcessorsFromMADT();
  	if (fCPUCount == 0) fCPUCount = 1;   // boot processor only
 +	fCPUCount = clokeFitTopology(fCPUCount);
  
++	// cloke_pause=N: N Sekunden warten, damit die Zeilen oben lesbar sind, bevor XNU (womöglich mit einer
++	// Panik, die den Bildschirm löscht) die Prozessoren startet.
++	uint32_t pauseSec = 0;
++	if (PE_parse_boot_argn("cloke_pause", &pauseSec, sizeof pauseSec) && pauseSec) {
++		for (uint32_t t = pauseSec; t > 0; t--) {
++			if (t % 5 == 0) cloke_trace("WEITER IN %u S", t);
++			IOSleep(1000);
++		}
++	}
++
  	// cpus=1 is the escape hatch for a machine whose topology we get wrong;
  	// intermediate values still trip x86_validate_topology().
-@@ -379,6 +382,7 @@
+ 	uint32_t cpusArg = 0;
+@@ -379,6 +393,7 @@
  	if (!bootCPU->startCommon(fCPUCount)) return false;
  
  	if (fCPUCount > 1) registerProcessors();
@@ -26,7 +45,7 @@ diff -ru a/src/Kernel/Extensions/PDACPIPlatform/PDACPIPlatformExpert.cpp b/src/K
  
  	return true;
  }
-@@ -907,6 +911,60 @@
+@@ -907,6 +922,60 @@
  	return (ebx >> 24) & 0xff;
  }
  
@@ -87,7 +106,7 @@ diff -ru a/src/Kernel/Extensions/PDACPIPlatform/PDACPIPlatformExpert.cpp b/src/K
  // Enabled processors from the MADT, boot CPU first.
  unsigned PDACPIPlatformExpert::enumerateProcessorsFromMADT(void) {
  	if (!fUACPIStarted) return 0;
-@@ -1001,6 +1059,7 @@
+@@ -1001,6 +1070,7 @@
  	AppleI386CPU *cpus[kMaxCPUs];
  
  	// cpu_id is an IOCPU *, not an index: PE_cpu_machine_init() casts it back.
@@ -95,7 +114,7 @@ diff -ru a/src/Kernel/Extensions/PDACPIPlatform/PDACPIPlatformExpert.cpp b/src/K
  	cpus[0] = bootCPU;
  	for (unsigned i = 1; i < fCPUCount; i++) {
  		cpus[i] = new AppleI386CPU;
-@@ -1014,9 +1073,11 @@
+@@ -1014,9 +1084,11 @@
  
  	for (unsigned i = 0; i < fCPUCount; i++) {
  		procs[i] = NULL;
@@ -107,7 +126,7 @@ diff -ru a/src/Kernel/Extensions/PDACPIPlatform/PDACPIPlatformExpert.cpp b/src/K
  		if (kr != KERN_SUCCESS) {
  			kprintf("PDACPIPlatform: registering LAPIC %u failed (0x%x)\n",
  			        fLapicIds[i], kr);
-@@ -1026,9 +1087,11 @@
+@@ -1026,9 +1098,11 @@
  	}
  
  	for (unsigned i = 0; i < fCPUCount; i++) {
@@ -120,8 +139,8 @@ diff -ru a/src/Kernel/Extensions/PDACPIPlatform/PDACPIPlatformExpert.cpp b/src/K
  			kprintf("PDACPIPlatform: starting LAPIC %u failed (0x%x)\n",
  			        fLapicIds[i], kr);
 diff -ru a/src/Kernel/Extensions/PDACPIPlatform/PDACPIPlatformExpert.h b/src/Kernel/Extensions/PDACPIPlatform/PDACPIPlatformExpert.h
---- a/src/Kernel/Extensions/PDACPIPlatform/PDACPIPlatformExpert.h	2026-10-25 09:04:54
-+++ b/src/Kernel/Extensions/PDACPIPlatform/PDACPIPlatformExpert.h	2026-10-25 09:04:54
+--- a/src/Kernel/Extensions/PDACPIPlatform/PDACPIPlatformExpert.h	2026-10-25 09:19:50
++++ b/src/Kernel/Extensions/PDACPIPlatform/PDACPIPlatformExpert.h	2026-10-25 09:19:50
 @@ -56,6 +56,7 @@
  
  	unsigned enumerateProcessorsFromMADT(void);
