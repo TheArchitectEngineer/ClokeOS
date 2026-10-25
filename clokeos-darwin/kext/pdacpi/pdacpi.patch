@@ -1,6 +1,6 @@
 diff -ru a/src/Kernel/Extensions/PDACPIPlatform/PDACPIPlatformExpert.cpp b/src/Kernel/Extensions/PDACPIPlatform/PDACPIPlatformExpert.cpp
---- a/src/Kernel/Extensions/PDACPIPlatform/PDACPIPlatformExpert.cpp	2026-10-25 09:51:11
-+++ b/src/Kernel/Extensions/PDACPIPlatform/PDACPIPlatformExpert.cpp	2026-10-25 09:51:11
+--- a/src/Kernel/Extensions/PDACPIPlatform/PDACPIPlatformExpert.cpp	2026-10-25 10:06:12
++++ b/src/Kernel/Extensions/PDACPIPlatform/PDACPIPlatformExpert.cpp	2026-10-25 10:06:12
 @@ -39,6 +39,8 @@
  
  #include "../AppleAPIC/PICShared.h"
@@ -26,7 +26,7 @@ diff -ru a/src/Kernel/Extensions/PDACPIPlatform/PDACPIPlatformExpert.cpp b/src/K
  
 +	// cloke_pause=N: N Sekunden warten, damit die Zeilen oben lesbar sind, bevor XNU (womöglich mit einer
 +	// Panik, die den Bildschirm löscht) die Prozessoren startet.
-+	uint32_t pauseSec = 10;   // Standard 10 s; cloke_pause=0 schaltet ab
++	uint32_t pauseSec = 0;    // cloke_pause=N: N Sekunden warten (zum Fotografieren der Zeilen)
 +	PE_parse_boot_argn("cloke_pause", &pauseSec, sizeof pauseSec);
 +	if (pauseSec) {
 +		for (uint32_t t = pauseSec; t > 0; t--) {
@@ -46,7 +46,7 @@ diff -ru a/src/Kernel/Extensions/PDACPIPlatform/PDACPIPlatformExpert.cpp b/src/K
  
  	return true;
  }
-@@ -907,6 +923,82 @@
+@@ -907,6 +923,92 @@
  	return (ebx >> 24) & 0xff;
  }
  
@@ -84,27 +84,37 @@ diff -ru a/src/Kernel/Extensions/PDACPIPlatform/PDACPIPlatformExpert.cpp b/src/K
 +		return count;
 +	}
 +
-+	unsigned n = cloke_topo_filter(fLapicIds, count, smtShift, ci->core_count, ci->thread_count);
-+	if (n == 0) {
-+		cloke_trace("TOPO: KEINE STIMMIGE AUSWAHL, NUR DER BOOT-KERN");
-+		return 1;
-+	}
-+	if (n != count) cloke_trace("TOPO: %u VON %u CPUS ANGEMELDET (EIN THREAD JE KERN)", n, count);
-+
-+	int why = cloke_topo_check(fLapicIds, n, &tp);
++	// 1. Passen XNUs Werte schon zu allen Prozessoren der MADT? (Normale Rechner, QEMU)
++	int why = cloke_topo_check(fLapicIds, count, &tp);
 +	arg = 0;
-+	if (PE_parse_boot_argn("cloke_synth", &arg, sizeof arg) && arg) why = 99;   // Test: eigene Werte erzwingen
-+	if (why == 0) {
++	bool synth = PE_parse_boot_argn("cloke_synth", &arg, sizeof arg) && arg;   // Test: eigene Werte erzwingen
++	if (why == 0 && !synth) {
 +		cloke_trace("TOPO: XNU-WERTE PASSEN, PRUEFUNG OK");
-+		return n;
++		return count;
 +	}
-+	cloke_trace("TOPO: XNU-PRUEFUNG %d WUERDE FEHLEN, EIGENE WERTE", why);
++	cloke_trace("TOPO: XNU-PRUEFUNG %d WUERDE FEHLEN", why);
++
++	// 2. Alle Prozessoren behalten, APIC-IDs zu gleich großen Kernen gruppieren (cloke_smt=0 lässt das aus)
 +	cloke_topo_params_t mine = tp;
-+	if (cloke_topo_synth(&mine, fLapicIds, n, smtShift) != 0 ||
-+	    (why = cloke_topo_check(fLapicIds, n, &mine)) != 0) {
-+		cloke_trace("TOPO: AUCH EIGENE WERTE FEHLEN (%d), NUR DER BOOT-KERN", why);
-+		return 1;
++	unsigned n = count, d = 0;
++	arg = 1;
++	PE_parse_boot_argn("cloke_smt", &arg, sizeof arg);
++	if (arg && cloke_topo_synth_pairs(&mine, fLapicIds, count, &d) == 0 &&
++	    cloke_topo_check(fLapicIds, count, &mine) == 0) {
++		cloke_trace("TOPO: ALLE %u CPUS, GRUPPEN ZU %u IDS (%u THREADS JE KERN)", count, d, mine.nLThreadsPerCore);
++	} else {
++		// 3. Ein Thread je Kern, so viele wie XNU aus MSR 0x35 erwartet
++		n = cloke_topo_filter(fLapicIds, count, smtShift, ci->core_count, ci->thread_count);
++		mine = tp;
++		if (n == 0 || cloke_topo_synth(&mine, fLapicIds, n, smtShift) != 0 ||
++		    (why = cloke_topo_check(fLapicIds, n, &mine)) != 0) {
++			cloke_trace("TOPO: KEINE STIMMIGE AUSWAHL (%d), NUR DER BOOT-KERN", why);
++			cloke_trace_show(10);
++			return 1;
++		}
++		cloke_trace("TOPO: %u VON %u CPUS, EIN THREAD JE KERN", n, count);
 +	}
++
 +	cloke_topo_params_t *live = &topoParms;
 +	live->nCoresSharingLLC = mine.nCoresSharingLLC;
 +	live->nLCPUsSharingLLC = mine.nLCPUsSharingLLC;
@@ -129,7 +139,7 @@ diff -ru a/src/Kernel/Extensions/PDACPIPlatform/PDACPIPlatformExpert.cpp b/src/K
  // Enabled processors from the MADT, boot CPU first.
  unsigned PDACPIPlatformExpert::enumerateProcessorsFromMADT(void) {
  	if (!fUACPIStarted) return 0;
-@@ -1001,6 +1093,7 @@
+@@ -1001,6 +1103,7 @@
  	AppleI386CPU *cpus[kMaxCPUs];
  
  	// cpu_id is an IOCPU *, not an index: PE_cpu_machine_init() casts it back.
@@ -137,7 +147,7 @@ diff -ru a/src/Kernel/Extensions/PDACPIPlatform/PDACPIPlatformExpert.cpp b/src/K
  	cpus[0] = bootCPU;
  	for (unsigned i = 1; i < fCPUCount; i++) {
  		cpus[i] = new AppleI386CPU;
-@@ -1014,9 +1107,11 @@
+@@ -1014,9 +1117,11 @@
  
  	for (unsigned i = 0; i < fCPUCount; i++) {
  		procs[i] = NULL;
@@ -149,7 +159,7 @@ diff -ru a/src/Kernel/Extensions/PDACPIPlatform/PDACPIPlatformExpert.cpp b/src/K
  		if (kr != KERN_SUCCESS) {
  			kprintf("PDACPIPlatform: registering LAPIC %u failed (0x%x)\n",
  			        fLapicIds[i], kr);
-@@ -1026,9 +1121,11 @@
+@@ -1026,9 +1131,11 @@
  	}
  
  	for (unsigned i = 0; i < fCPUCount; i++) {
@@ -162,8 +172,8 @@ diff -ru a/src/Kernel/Extensions/PDACPIPlatform/PDACPIPlatformExpert.cpp b/src/K
  			kprintf("PDACPIPlatform: starting LAPIC %u failed (0x%x)\n",
  			        fLapicIds[i], kr);
 diff -ru a/src/Kernel/Extensions/PDACPIPlatform/PDACPIPlatformExpert.h b/src/Kernel/Extensions/PDACPIPlatform/PDACPIPlatformExpert.h
---- a/src/Kernel/Extensions/PDACPIPlatform/PDACPIPlatformExpert.h	2026-10-25 09:51:11
-+++ b/src/Kernel/Extensions/PDACPIPlatform/PDACPIPlatformExpert.h	2026-10-25 09:51:11
+--- a/src/Kernel/Extensions/PDACPIPlatform/PDACPIPlatformExpert.h	2026-10-25 10:06:12
++++ b/src/Kernel/Extensions/PDACPIPlatform/PDACPIPlatformExpert.h	2026-10-25 10:06:12
 @@ -56,6 +56,7 @@
  
  	unsigned enumerateProcessorsFromMADT(void);

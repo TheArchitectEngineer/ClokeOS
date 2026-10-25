@@ -36,6 +36,8 @@ int main(int argc, char **argv) {
   }
   printf("MADT: %u aktivierte Prozessoren:", n);
   for (unsigned i = 0; i < n; i++) printf(" %u", ids[i]);
+  uint32_t ids0[64];
+  memcpy(ids0, ids, sizeof ids);
   unsigned m = cloke_topo_filter(ids, n, smt, cores, threads);
   printf("\nXNU erwartet %u Kerne / %u Threads, SMT-Bits %u -> %u angemeldet:", cores, threads, smt, m);
   for (unsigned i = 0; i < m; i++) printf(" %u", ids[i]);
@@ -45,6 +47,13 @@ int main(int argc, char **argv) {
            cloke_topo_predict(ids, m, cores, threads, cp, lp, llc));
     cloke_topo_params_t s;
     int r = cloke_topo_synth(&s, ids, m, smt);
+    {
+      cloke_topo_params_t q;
+      unsigned d = 0;
+      int rr = cloke_topo_synth_pairs(&q, ids0, n, &d);
+      printf("alle %u CPUs als Gruppen: %d (d=%u), Pruefung %d, Threads/Kern %u\n", n, rr, d,
+             rr ? -1 : cloke_topo_check(ids0, n, &q), q.nLThreadsPerCore);
+    }
     printf("synthetische Parameter: %d, Pruefung: %d (Threads/Kern %u, Kerne/Die %u, Threads/Paket phys %u)\n", r,
            r ? -1 : cloke_topo_check(ids, m, &s), s.nLThreadsPerCore, s.nLCoresPerDie, s.nPThreadsPerPackage);
   }

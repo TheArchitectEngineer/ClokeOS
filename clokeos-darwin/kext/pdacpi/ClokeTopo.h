@@ -164,4 +164,39 @@ static inline int cloke_topo_synth(cloke_topo_params_t *t, const uint32_t *ids, 
   if (L < (2u << smt_shift)) L = 2u << smt_shift;
   return cloke_topo_fill(t, cores, cores * tpc, L >> smt_shift, L, L);
 }
+
+/*
+ * Alle n Prozessoren behalten: gleich große Gruppen aus APIC-IDs bilden (ID / d, d eine Zweierpotenz),
+ * jede Gruppe gilt für XNU als ein Kern mit s Threads. Alder Lake: d = 4 ergibt {0,1} {8,9} (die echten
+ * P-Kerne) und {16,18} {20,22} {24,26} {28,30} (je zwei E-Kerne, die XNU damit für SMT-Paare hält; das
+ * ist nur eine Scheduler-Annahme). Ergebnis 0 = gefunden, *d_out = d.
+ */
+static inline int cloke_topo_synth_pairs(cloke_topo_params_t *t, const uint32_t *ids, unsigned n,
+                                         unsigned *d_out) {
+  unsigned maxid = 0;
+  for (unsigned i = 0; i < n; i++)
+    if (ids[i] > maxid) maxid = ids[i];
+  for (unsigned d = 2; d <= 64; d <<= 1) {
+    unsigned s = 0, ok = 1, groups = 0;
+    for (unsigned i = 0; i < n && ok; i++) {
+      unsigned size = 0, first = 1;
+      for (unsigned j = 0; j < n; j++)
+        if (ids[j] / d == ids[i] / d) {
+          size++;
+          if (j < i) first = 0;
+        }
+      if (!first) continue;
+      groups++;
+      if (!s) s = size;
+      else if (s != size) ok = 0;
+    }
+    if (!ok || s < 2 || groups * s != n) continue;
+    unsigned L = 2;
+    while (L <= maxid) L <<= 1;
+    if (L < d) L = d;
+    *d_out = d;
+    return cloke_topo_fill(t, groups, n, L / d, L, L);
+  }
+  return -1;
+}
 #endif

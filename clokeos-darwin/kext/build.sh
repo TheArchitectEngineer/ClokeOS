@@ -95,11 +95,11 @@ while read -r line; do
   [ -n "$k" ] && args+=(-kext "$base/root/Extensions/$k")
 done < "$base/pd-rebuild-kc"
 for k in ${kexts[@]+"${kexts[@]}"}; do args+=(-kext "$k"); done
-# Zwei Kernel: kernel mit der einfachen AppleI386PlatformExpert (ein Kern, bewährt, Standard) und kernel-smp mit
-# PureDarwins ACPI-Plattform PDACPIPlatform (uACPI-Interpreter, liest die MADT und startet die weiteren
-# Prozessorkerne; boot-arg cpus=N begrenzt sie). Beide passen auf den Knoten "ACPI"; in einer Kopie mit
-# höherem IOProbeScore gewinnt die ACPI-Plattform. Der Loader nimmt kernel-smp, wenn beim Einschalten M
-# gehalten wird (auf der echten Hardware noch nicht bewährt, deshalb nicht der Standard).
+# Zwei Kernel: kernel mit PureDarwins ACPI-Plattform PDACPIPlatform (uACPI-Interpreter, liest die MADT und startet die
+# weiteren Prozessorkerne; läuft auf dem HP mit 12 Threads; Boot-Arg cpus=N löst dort XNUs Topologie-Panik aus, nicht
+# benutzen) und kernel-up mit der einfachen AppleI386PlatformExpert (ein Kern). Beide passen auf den Knoten "ACPI";
+# in einer Kopie mit höherem IOProbeScore gewinnt die ACPI-Plattform. Der Loader nimmt kernel-up, wenn beim
+# Einschalten U gehalten wird (die Taste kommt auf manchen PCs nicht an, z. B. dem HP).
 smp="$tmp/PDACPIPlatform.kext"
 rm -rf "$smp"
 # PDACPIPlatform wird aus PureDarwins Quelle neu gebaut (kext/pdacpi/pdacpi.patch): ohne Änderung stürzt XNU
@@ -165,5 +165,6 @@ build_kc() { # <ausgabe> [weitere kc-builder-Argumente]
   python3 -I "$HERE/kcfix.py" "$o" >/dev/null
 }
 build_kc "$WORK/out/kernel"
-build_kc "$WORK/out/kernel-smp" -kext "$smp"
-echo "Kernel Collection: $WORK/out/kernel und kernel-smp (${#kexts[@]} eigene Treiber)"
+mv "$WORK/out/kernel" "$WORK/out/kernel-up"
+build_kc "$WORK/out/kernel" -kext "$smp"
+echo "Kernel Collection: $WORK/out/kernel (Mehrkern) und kernel-up (ein Kern) (${#kexts[@]} eigene Treiber)"
