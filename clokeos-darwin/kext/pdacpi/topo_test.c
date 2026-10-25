@@ -40,7 +40,13 @@ int main(int argc, char **argv) {
   printf("\nXNU erwartet %u Kerne / %u Threads, SMT-Bits %u -> %u angemeldet:", cores, threads, smt, m);
   for (unsigned i = 0; i < m; i++) printf(" %u", ids[i]);
   printf("\n");
-  if (m) printf("Vorhersage x86_validate_topology (cp %u lp %u llc %u): %d\n", cp, lp, llc,
-                cloke_topo_predict(ids, m, cores, threads, cp, lp, llc));
+  if (m) {
+    printf("Vorhersage x86_validate_topology (cp %u lp %u llc %u): %d\n", cp, lp, llc,
+           cloke_topo_predict(ids, m, cores, threads, cp, lp, llc));
+    cloke_topo_params_t s;
+    int r = cloke_topo_synth(&s, ids, m, smt);
+    printf("synthetische Parameter: %d, Pruefung: %d (Threads/Kern %u, Kerne/Die %u, Threads/Paket phys %u)\n", r,
+           r ? -1 : cloke_topo_check(ids, m, &s), s.nLThreadsPerCore, s.nLCoresPerDie, s.nPThreadsPerPackage);
+  }
   return m ? 0 : 1;
 }

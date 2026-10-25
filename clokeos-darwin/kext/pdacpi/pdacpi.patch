@@ -1,6 +1,6 @@
 diff -ru a/src/Kernel/Extensions/PDACPIPlatform/PDACPIPlatformExpert.cpp b/src/Kernel/Extensions/PDACPIPlatform/PDACPIPlatformExpert.cpp
---- a/src/Kernel/Extensions/PDACPIPlatform/PDACPIPlatformExpert.cpp	2026-10-25 09:42:16
-+++ b/src/Kernel/Extensions/PDACPIPlatform/PDACPIPlatformExpert.cpp	2026-10-25 09:42:16
+--- a/src/Kernel/Extensions/PDACPIPlatform/PDACPIPlatformExpert.cpp	2026-10-25 09:51:11
++++ b/src/Kernel/Extensions/PDACPIPlatform/PDACPIPlatformExpert.cpp	2026-10-25 09:51:11
 @@ -39,6 +39,8 @@
  
  #include "../AppleAPIC/PICShared.h"
@@ -46,13 +46,17 @@ diff -ru a/src/Kernel/Extensions/PDACPIPlatform/PDACPIPlatformExpert.cpp b/src/K
  
  	return true;
  }
-@@ -907,6 +923,61 @@
+@@ -907,6 +923,82 @@
  	return (ebx >> 24) & 0xff;
  }
  
-+// ClokeOS: XNU rechnet die Threadzahl aus MSR_CORE_THREAD_COUNT (siehe ClokeTopo.h) und stürzt in
-+// x86_validate_topology() ab, wenn die angemeldete Zahl davon abweicht - auf Hybrid-Prozessoren (Alder
-+// Lake: 12 Threads auf 10 Kernen) und bei cpus=N. Hier die Liste auf das kürzen, was XNU erwartet.
++// ClokeOS: XNU prüft in x86_validate_topology() die Zahl der angemeldeten Prozessoren gegen topoParms,
++// und das stürzt auf Hybrid-Prozessoren ab (Alder Lake: 12 Threads auf 10 Kernen, CPUID meldet 32 Kerne
++// und nur 12 logische IDs je Paket, daraus wird null Threads je Kern) und bei cpus=N. Die Panik ist nach
++// initialize_screen(6) unsichtbar. Hier: Liste auf einen Thread je Kern kürzen und, wenn XNUs Werte dazu
++// nicht passen, topoParms durch eine stimmige Beschreibung dieser Prozessoren ersetzen (ClokeTopo.h).
++extern "C" cloke_topo_params_t topoParms;
++
 +unsigned PDACPIPlatformExpert::clokeFitTopology(unsigned count) {
 +	i386_cpu_info_t *ci = cpuid_info();
 +	uint32_t smtShift = 1;   // SMT-Ebene von CPUID 0xB; ohne die Leaf bleibt es bei 1 Bit
@@ -62,19 +66,17 @@ diff -ru a/src/Kernel/Extensions/PDACPIPlatform/PDACPIPlatformExpert.cpp b/src/K
 +		__asm__ volatile ("cpuid" : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx) : "a"(0xb), "c"(0));
 +		if (ebx & 0xffff) smtShift = eax & 0x1f;
 +	}
-+	cloke_trace("TOPO: MADT %u CPUS, XNU SIEHT %u KERNE %u THREADS, SMT-BITS %u", count,
-+	            ci->core_count, ci->thread_count, smtShift);
-+	// Wie x86_LLC_info(): die Zahl der IDs, die sich den tiefsten vorhandenen Cache teilen.
-+	unsigned llc = 1, llcLevel = 0;
-+	for (unsigned i = L1I; i <= L3U; i++) {
-+		unsigned level = (i == L3U) ? 3 : (i == L2U) ? 2 : 1;
-+		if (ci->cache_size[i] != 0 && level > llcLevel) {
-+			llcLevel = level;
-+			llc = ci->cache_sharing[i];
-+		}
-+	}
-+	cloke_trace("TOPO: CPUID KERNE/PKG %u, LOGISCH/PKG %u, LLC L%u TEILEN %u", ci->cpuid_cores_per_package,
-+	            ci->cpuid_logical_per_package, llcLevel, llc);
++	cloke_topo_params_t tp = topoParms;
++	cloke_trace("TOPO: MADT %u CPUS, MSR35 %u KERNE %u THREADS, SMT-BITS %u", count, ci->core_count,
++	            ci->thread_count, smtShift);
++	cloke_trace("TOPO: CPUID KERNE/PKG %u LOGISCH/PKG %u", ci->cpuid_cores_per_package,
++	            ci->cpuid_logical_per_package);
++	cloke_trace("XNU: THR/KERN L%u P%u KERN/DIE L%u P%u DIE/PKG L%u P%u", tp.nLThreadsPerCore,
++	            tp.nPThreadsPerCore, tp.nLCoresPerDie, tp.nPCoresPerDie, tp.nLDiesPerPackage,
++	            tp.nPDiesPerPackage);
++	cloke_trace("XNU: THR/DIE L%u P%u THR/PKG L%u P%u PAKETE %u LLC %u", tp.nLThreadsPerDie,
++	            tp.nPThreadsPerDie, tp.nLThreadsPerPackage, tp.nPThreadsPerPackage, tp.nPackages,
++	            tp.maxSharingLLC);
 +
 +	uint32_t arg = 0;
 +	if (PE_parse_boot_argn("cloke_nofit", &arg, sizeof arg) && arg) {
@@ -89,26 +91,45 @@ diff -ru a/src/Kernel/Extensions/PDACPIPlatform/PDACPIPlatformExpert.cpp b/src/K
 +	}
 +	if (n != count) cloke_trace("TOPO: %u VON %u CPUS ANGEMELDET (EIN THREAD JE KERN)", n, count);
 +
-+	// Würde x86_validate_topology() damit zufrieden sein? Wenn nicht, endet der Start in einer Panik, die
-+	// man nicht sieht: dann lieber ein Kern. cloke_force=1 versucht es trotzdem (zum Messen).
-+	int why = cloke_topo_predict(fLapicIds, n, ci->core_count, ci->thread_count, ci->cpuid_cores_per_package,
-+	                             ci->cpuid_logical_per_package, llc);
++	int why = cloke_topo_check(fLapicIds, n, &tp);
++	arg = 0;
++	if (PE_parse_boot_argn("cloke_synth", &arg, sizeof arg) && arg) why = 99;   // Test: eigene Werte erzwingen
 +	if (why == 0) {
-+		cloke_trace("TOPO: VORHERSAGE XNU-PRUEFUNG OK");
-+	} else {
-+		arg = 0;   // Standard: bei einem Kern bleiben, statt in die Panik zu laufen; cloke_force=1 versucht es trotzdem
-+		PE_parse_boot_argn("cloke_force", &arg, sizeof arg);
-+		bool force = arg != 0;
-+		cloke_trace("TOPO: VORHERSAGE XNU-PRUEFUNG %d FEHLT%s", why, force ? ", cloke_force=1: WEITER" : "");
-+		if (!force) return 1;
++		cloke_trace("TOPO: XNU-WERTE PASSEN, PRUEFUNG OK");
++		return n;
 +	}
++	cloke_trace("TOPO: XNU-PRUEFUNG %d WUERDE FEHLEN, EIGENE WERTE", why);
++	cloke_topo_params_t mine = tp;
++	if (cloke_topo_synth(&mine, fLapicIds, n, smtShift) != 0 ||
++	    (why = cloke_topo_check(fLapicIds, n, &mine)) != 0) {
++		cloke_trace("TOPO: AUCH EIGENE WERTE FEHLEN (%d), NUR DER BOOT-KERN", why);
++		return 1;
++	}
++	cloke_topo_params_t *live = &topoParms;
++	live->nCoresSharingLLC = mine.nCoresSharingLLC;
++	live->nLCPUsSharingLLC = mine.nLCPUsSharingLLC;
++	live->maxSharingLLC = mine.maxSharingLLC;
++	live->nLThreadsPerCore = mine.nLThreadsPerCore;
++	live->nPThreadsPerCore = mine.nPThreadsPerCore;
++	live->nLCoresPerDie = mine.nLCoresPerDie;
++	live->nPCoresPerDie = mine.nPCoresPerDie;
++	live->nLDiesPerPackage = mine.nLDiesPerPackage;
++	live->nPDiesPerPackage = mine.nPDiesPerPackage;
++	live->nLThreadsPerDie = mine.nLThreadsPerDie;
++	live->nPThreadsPerDie = mine.nPThreadsPerDie;
++	live->nLThreadsPerPackage = mine.nLThreadsPerPackage;
++	live->nPThreadsPerPackage = mine.nPThreadsPerPackage;
++	live->nLCoresPerPackage = mine.nLCoresPerPackage;
++	live->nPCoresPerPackage = mine.nPCoresPerPackage;
++	cloke_trace("TOPO: EIGENE WERTE GESETZT: THR/KERN %u KERN/DIE %u THR/PKG %u", mine.nLThreadsPerCore,
++	            mine.nLCoresPerDie, mine.nLThreadsPerPackage);
 +	return n;
 +}
 +
  // Enabled processors from the MADT, boot CPU first.
  unsigned PDACPIPlatformExpert::enumerateProcessorsFromMADT(void) {
  	if (!fUACPIStarted) return 0;
-@@ -1001,6 +1072,7 @@
+@@ -1001,6 +1093,7 @@
  	AppleI386CPU *cpus[kMaxCPUs];
  
  	// cpu_id is an IOCPU *, not an index: PE_cpu_machine_init() casts it back.
@@ -116,7 +137,7 @@ diff -ru a/src/Kernel/Extensions/PDACPIPlatform/PDACPIPlatformExpert.cpp b/src/K
  	cpus[0] = bootCPU;
  	for (unsigned i = 1; i < fCPUCount; i++) {
  		cpus[i] = new AppleI386CPU;
-@@ -1014,9 +1086,11 @@
+@@ -1014,9 +1107,11 @@
  
  	for (unsigned i = 0; i < fCPUCount; i++) {
  		procs[i] = NULL;
@@ -128,7 +149,7 @@ diff -ru a/src/Kernel/Extensions/PDACPIPlatform/PDACPIPlatformExpert.cpp b/src/K
  		if (kr != KERN_SUCCESS) {
  			kprintf("PDACPIPlatform: registering LAPIC %u failed (0x%x)\n",
  			        fLapicIds[i], kr);
-@@ -1026,9 +1100,11 @@
+@@ -1026,9 +1121,11 @@
  	}
  
  	for (unsigned i = 0; i < fCPUCount; i++) {
@@ -141,8 +162,8 @@ diff -ru a/src/Kernel/Extensions/PDACPIPlatform/PDACPIPlatformExpert.cpp b/src/K
  			kprintf("PDACPIPlatform: starting LAPIC %u failed (0x%x)\n",
  			        fLapicIds[i], kr);
 diff -ru a/src/Kernel/Extensions/PDACPIPlatform/PDACPIPlatformExpert.h b/src/Kernel/Extensions/PDACPIPlatform/PDACPIPlatformExpert.h
---- a/src/Kernel/Extensions/PDACPIPlatform/PDACPIPlatformExpert.h	2026-10-25 09:42:16
-+++ b/src/Kernel/Extensions/PDACPIPlatform/PDACPIPlatformExpert.h	2026-10-25 09:42:16
+--- a/src/Kernel/Extensions/PDACPIPlatform/PDACPIPlatformExpert.h	2026-10-25 09:51:11
++++ b/src/Kernel/Extensions/PDACPIPlatform/PDACPIPlatformExpert.h	2026-10-25 09:51:11
 @@ -56,6 +56,7 @@
  
  	unsigned enumerateProcessorsFromMADT(void);

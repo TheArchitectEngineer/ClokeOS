@@ -37,32 +37,53 @@ static inline unsigned cloke_topo_filter(uint32_t *ids, unsigned n, unsigned smt
   return out == cores * tpc ? out : 0;
 }
 
-/*
- * Rechnet x86_validate_topology() (xnu cpu_threads.c) nach: gleiche Formeln für topoParms, Zuordnung der
- * Prozessoren zu Kern, Die und Paket über die APIC-ID wie x86_lcpu_init. Ergebnis 0 = XNU wird zufrieden
- * sein; sonst Nummer der Prüfung, die dort in panic() endet (die der Bildschirm dann nicht mehr zeigt).
- * cp = cpuid_cores_per_package, lp = cpuid_logical_per_package, llc = Zahl der IDs, die sich den
- * letzten Cache teilen (cache_sharing der tiefsten Ebene).
- */
-static inline int cloke_topo_predict(const uint32_t *ids, unsigned n, unsigned cores, unsigned threads,
-                                     unsigned cp, unsigned lp, unsigned llc) {
-  if (!cores || !threads || !cp || !lp || !llc) return 1;
-  unsigned ltpc = threads / cores;
-  if (!ltpc) return 2;
-  unsigned ptpc = lp / cp;
-  if (!ptpc) return 3;
-  unsigned sharing = llc / ltpc; /* nCoresSharingLLC */
-  if (llc > cores) sharing = cores;
-  if (!sharing) return 4;
-  unsigned ldpp = cores / sharing;
-  unsigned pcpd = llc / ptpc;
-  if (!pcpd) return 5;
-  unsigned pdpp = cp / pcpd;
-  unsigned lcpd = sharing, lcpp = lcpd * ldpp, ltpd = ltpc * lcpd, ltpp = ltpc * lcpp;
-  unsigned ptpd = ptpc * pcpd, ptpp = ptpc * pcpd * pdpp;
-  if (!ptpd || !ptpp) return 6;
+/* Spiegel von x86_topology_parameters_t (xnu osfmk/i386/cpu_topology.h); topoParms liegt im Kernel */
+typedef struct {
+  uint32_t LLCDepth, nCoresSharingLLC, nLCPUsSharingLLC, maxSharingLLC, nLThreadsPerCore, nPThreadsPerCore,
+      nLCoresPerDie, nPCoresPerDie, nLDiesPerPackage, nPDiesPerPackage, nLThreadsPerDie, nPThreadsPerDie,
+      nLThreadsPerPackage, nPThreadsPerPackage, nLCoresPerPackage, nPCoresPerPackage, nPackages, stable;
+} cloke_topo_params_t;
 
-  /* Pakete, Dies und Kerne nach der APIC-ID gruppieren */
+/*
+ * Rechnet initTopoParms() (xnu cpu_threads.c) nach: aus Kernen/Threads (MSR 0x35), CPUID-Kernen und
+ * logischen IDs je Paket (cp, lp) und der Zahl der IDs, die sich den letzten Cache teilen (llc).
+ * LLCDepth, nPackages und stable bleiben unberührt. Ergebnis 0 = gerechnet, sonst Teiler null.
+ */
+static inline int cloke_topo_fill(cloke_topo_params_t *t, unsigned cores, unsigned threads, unsigned cp,
+                                  unsigned lp, unsigned llc) {
+  if (!cores || !threads || !cp || !lp || !llc) return 1;
+  unsigned ltpc = threads / cores, ptpc = lp / cp;
+  if (!ltpc || !ptpc) return 2;
+  unsigned share = llc / ltpc;
+  if (llc > cores) share = cores;
+  if (!share || !(llc / ptpc)) return 3;
+  t->maxSharingLLC = llc;
+  t->nCoresSharingLLC = share;
+  t->nLCPUsSharingLLC = llc > threads ? threads : llc;
+  t->nLThreadsPerCore = ltpc;
+  t->nPThreadsPerCore = ptpc;
+  t->nLDiesPerPackage = cores / share;
+  t->nPDiesPerPackage = cp / (llc / ptpc);
+  t->nLCoresPerDie = share;
+  t->nPCoresPerDie = llc / ptpc;
+  t->nLThreadsPerDie = ltpc * t->nLCoresPerDie;
+  t->nPThreadsPerDie = ptpc * t->nPCoresPerDie;
+  t->nLCoresPerPackage = t->nLCoresPerDie * t->nLDiesPerPackage;
+  t->nPCoresPerPackage = t->nPCoresPerDie * t->nPDiesPerPackage;
+  t->nLThreadsPerPackage = ltpc * t->nLCoresPerPackage;
+  t->nPThreadsPerPackage = ptpc * t->nPCoresPerPackage;
+  return 0;
+}
+
+/*
+ * Rechnet x86_validate_topology() nach: Prozessoren werden über die APIC-ID wie in x86_lcpu_init Kern,
+ * Die und Paket zugeordnet und gegen die Parameter t geprüft. 0 = XNU wird zufrieden sein, sonst die Nummer
+ * der Prüfung, die dort in panic() endet (die der Bildschirm dann nicht mehr zeigt).
+ */
+static inline int cloke_topo_check(const uint32_t *ids, unsigned n, const cloke_topo_params_t *t) {
+  unsigned ltpc = t->nLThreadsPerCore, ptpc = t->nPThreadsPerCore, ptpd = t->nPThreadsPerDie,
+           ptpp = t->nPThreadsPerPackage;
+  if (!ltpc || !ptpc || !ptpd || !ptpp) return 6;
   unsigned npk = 0;
   uint32_t pk[64];
   for (unsigned i = 0; i < n; i++) {
@@ -71,7 +92,7 @@ static inline int cloke_topo_predict(const uint32_t *ids, unsigned n, unsigned c
     for (unsigned j = 0; j < npk; j++) f |= pk[j] == k;
     if (!f && npk < 64) pk[npk++] = k;
   }
-  if (npk * ltpp != n) return 7; /* "%d threads but %d registered" */
+  if (npk * t->nLThreadsPerPackage != n) return 7; /* "%d threads but %d registered" */
   for (unsigned a = 0; a < npk; a++) {
     unsigned dies = 0, cores_in_pkg = 0, cpus_in_pkg = 0;
     uint32_t seen_die[64];
@@ -83,7 +104,7 @@ static inline int cloke_topo_predict(const uint32_t *ids, unsigned n, unsigned c
       for (unsigned j = 0; j < dies; j++) f |= seen_die[j] == d;
       if (!f && dies < 64) seen_die[dies++] = d;
     }
-    if (dies != ldpp) return 8; /* "Should have %d Dies" */
+    if (dies != t->nLDiesPerPackage) return 8; /* "Should have %d Dies" */
     for (unsigned j = 0; j < dies; j++) {
       unsigned nc = 0, ncpu = 0;
       uint32_t seen_core[64];
@@ -95,19 +116,52 @@ static inline int cloke_topo_predict(const uint32_t *ids, unsigned n, unsigned c
         for (unsigned m = 0; m < nc; m++) f |= seen_core[m] == c;
         if (!f && nc < 64) seen_core[nc++] = c;
       }
-      if (nc != lcpd) return 9;   /* "Should have %d Cores ... Die" */
-      if (ncpu != ltpd) return 10; /* "Should have %d Threads ... Die" */
+      if (nc != t->nLCoresPerDie) return 9;    /* "Should have %d Cores ... Die" */
+      if (ncpu != t->nLThreadsPerDie) return 10; /* "Should have %d Threads ... Die" */
       cores_in_pkg += nc;
       for (unsigned m = 0; m < nc; m++) {
-        unsigned t = 0;
+        unsigned c = 0;
         for (unsigned i = 0; i < n; i++)
-          if (ids[i] / ptpp == pk[a] && ids[i] / ptpd == seen_die[j] && ids[i] / ptpc == seen_core[m]) t++;
-        if (t != ltpc) return 11; /* "Should have %d Threads ... Core" */
+          if (ids[i] / ptpp == pk[a] && ids[i] / ptpd == seen_die[j] && ids[i] / ptpc == seen_core[m]) c++;
+        if (c != ltpc) return 11; /* "Should have %d Threads ... Core" */
       }
     }
-    if (cores_in_pkg != lcpp) return 12;
-    if (cpus_in_pkg != ltpp) return 13;
+    if (cores_in_pkg != t->nLCoresPerPackage) return 12;
+    if (cpus_in_pkg != t->nLThreadsPerPackage) return 13;
   }
   return 0;
+}
+
+/* Beides zusammen, wie XNU es aus den CPUID-Werten bildet (Host-Test) */
+static inline int cloke_topo_predict(const uint32_t *ids, unsigned n, unsigned cores, unsigned threads,
+                                     unsigned cp, unsigned lp, unsigned llc) {
+  cloke_topo_params_t t = {0};
+  int r = cloke_topo_fill(&t, cores, threads, cp, lp, llc);
+  return r ? r : cloke_topo_check(ids, n, &t);
+}
+
+/*
+ * Parameter, die zu genau diesen Prozessoren passen: ein Thread je Kern der Auswahl (oder mehr, wenn die
+ * Auswahl es hat), alle in einem Die und Paket, die APIC-ID-Bits wie bei der echten CPU (smt_shift).
+ * Das ist die Beschreibung, die XNU bei Hybrid-Chips aus CPUID nicht bekommt (Alder Lake: logische IDs je
+ * Paket kleiner als Kerne je Paket, also null Threads je Kern in der physischen Rechnung).
+ */
+static inline int cloke_topo_synth(cloke_topo_params_t *t, const uint32_t *ids, unsigned n, unsigned smt_shift) {
+  unsigned maxid = 0, cores = 0, tpc = 0;
+  for (unsigned i = 0; i < n; i++) {
+    if (ids[i] > maxid) maxid = ids[i];
+    unsigned same = 0, first = 1;
+    for (unsigned j = 0; j < n; j++)
+      if ((ids[j] >> smt_shift) == (ids[i] >> smt_shift)) {
+        same++;
+        if (j < i) first = 0;
+      }
+    if (first) cores++;
+    if (same > tpc) tpc = same;
+  }
+  unsigned L = 2;
+  while (L <= maxid) L <<= 1;
+  if (L < (2u << smt_shift)) L = 2u << smt_shift;
+  return cloke_topo_fill(t, cores, cores * tpc, L >> smt_shift, L, L);
 }
 #endif
