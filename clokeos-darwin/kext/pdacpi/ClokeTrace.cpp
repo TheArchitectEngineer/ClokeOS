@@ -16,8 +16,9 @@ static uint32_t gRowBytes, gWidth, gHeight, gCols;
 
 static void trace_init(void) {
   gInit = true;
-  uint32_t on = 0;
-  if (!PE_parse_boot_argn("cloke_trace", &on, sizeof on) || !on) return;
+  uint32_t on = 1; /* kernel-smp ist der Versuchskernel (Taste M): Spur standardmäßig an, cloke_trace=0 schaltet ab */
+  PE_parse_boot_argn("cloke_trace", &on, sizeof on);
+  if (!on) return;
   PE_Video v;
   if (PE_current_console(&v) != 0 || !v.v_baseAddr || v.v_width < 320 || v.v_height < 240) return;
   /* v_baseAddr bleibt bis zum Schluss die physische Adresse (pexpert/i386/pe_init.c); ist sie schon
@@ -70,6 +71,7 @@ extern "C" void cloke_trace(const char *fmt, ...) {
   vsnprintf(line, sizeof line, fmt, ap);
   va_end(ap);
   kprintf("ClokeTrace: %s\n", line);
+  IOLog("ClokeTrace: %s\n", line); /* landet in dmesg und damit in ClokeOS/diag.txt auf dem Stick */
   if (!gInit) trace_init();
   if (!gOK) return;
   strlcpy(gLog[gCount % kLines], line, sizeof gLog[0]);
