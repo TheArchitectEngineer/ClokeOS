@@ -1,0 +1,132 @@
+diff -ru a/src/Kernel/Extensions/PDACPIPlatform/PDACPIPlatformExpert.cpp b/src/Kernel/Extensions/PDACPIPlatform/PDACPIPlatformExpert.cpp
+--- a/src/Kernel/Extensions/PDACPIPlatform/PDACPIPlatformExpert.cpp	2026-10-25 09:04:54
++++ b/src/Kernel/Extensions/PDACPIPlatform/PDACPIPlatformExpert.cpp	2026-10-25 09:04:54
+@@ -39,6 +39,8 @@
+ 
+ #include "../AppleAPIC/PICShared.h"
+ #include "PDACPIPlatformExpert.h"
++#include "ClokeTrace.h"
++#include "ClokeTopo.h"
+ 
+ extern "C" {
+ #include <uacpi/uacpi.h>
+@@ -359,6 +361,7 @@
+ 	// calls ml_set_max_cpus(), which is what hw.ncpu reports.
+ 	fCPUCount = enumerateProcessorsFromMADT();
+ 	if (fCPUCount == 0) fCPUCount = 1;   // boot processor only
++	fCPUCount = clokeFitTopology(fCPUCount);
+ 
+ 	// cpus=1 is the escape hatch for a machine whose topology we get wrong;
+ 	// intermediate values still trip x86_validate_topology().
+@@ -379,6 +382,7 @@
+ 	if (!bootCPU->startCommon(fCPUCount)) return false;
+ 
+ 	if (fCPUCount > 1) registerProcessors();
++	cloke_trace("PDACPI START DONE, %u CPUS", fCPUCount);
+ 
+ 	return true;
+ }
+@@ -907,6 +911,60 @@
+ 	return (ebx >> 24) & 0xff;
+ }
+ 
++// ClokeOS: XNU rechnet die Threadzahl aus MSR_CORE_THREAD_COUNT (siehe ClokeTopo.h) und stürzt in
++// x86_validate_topology() ab, wenn die angemeldete Zahl davon abweicht - auf Hybrid-Prozessoren (Alder
++// Lake: 12 Threads auf 10 Kernen) und bei cpus=N. Hier die Liste auf das kürzen, was XNU erwartet.
++unsigned PDACPIPlatformExpert::clokeFitTopology(unsigned count) {
++	i386_cpu_info_t *ci = cpuid_info();
++	uint32_t smtShift = 1;   // SMT-Ebene von CPUID 0xB; ohne die Leaf bleibt es bei 1 Bit
++	uint32_t eax, ebx, ecx, edx;
++	__asm__ volatile ("cpuid" : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx) : "a"(0), "c"(0));
++	if (eax >= 0xb) {
++		__asm__ volatile ("cpuid" : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx) : "a"(0xb), "c"(0));
++		if (ebx & 0xffff) smtShift = eax & 0x1f;
++	}
++	cloke_trace("TOPO: MADT %u CPUS, XNU SIEHT %u KERNE %u THREADS, SMT-BITS %u", count,
++	            ci->core_count, ci->thread_count, smtShift);
++	// Wie x86_LLC_info(): die Zahl der IDs, die sich den tiefsten vorhandenen Cache teilen.
++	unsigned llc = 1, llcLevel = 0;
++	for (unsigned i = L1I; i <= L3U; i++) {
++		unsigned level = (i == L3U) ? 3 : (i == L2U) ? 2 : 1;
++		if (ci->cache_size[i] != 0 && level > llcLevel) {
++			llcLevel = level;
++			llc = ci->cache_sharing[i];
++		}
++	}
++	cloke_trace("TOPO: CPUID KERNE/PKG %u, LOGISCH/PKG %u, LLC L%u TEILEN %u", ci->cpuid_cores_per_package,
++	            ci->cpuid_logical_per_package, llcLevel, llc);
++
++	uint32_t arg = 0;
++	if (PE_parse_boot_argn("cloke_nofit", &arg, sizeof arg) && arg) {
++		cloke_trace("TOPO: cloke_nofit=1, MADT UNVERAENDERT");
++		return count;
++	}
++
++	unsigned n = cloke_topo_filter(fLapicIds, count, smtShift, ci->core_count, ci->thread_count);
++	if (n == 0) {
++		cloke_trace("TOPO: KEINE STIMMIGE AUSWAHL, NUR DER BOOT-KERN");
++		return 1;
++	}
++	if (n != count) cloke_trace("TOPO: %u VON %u CPUS ANGEMELDET (EIN THREAD JE KERN)", n, count);
++
++	// Würde x86_validate_topology() damit zufrieden sein? Wenn nicht, endet der Start in einer Panik, die
++	// man nicht sieht: dann lieber ein Kern. cloke_force=1 versucht es trotzdem (zum Messen).
++	int why = cloke_topo_predict(fLapicIds, n, ci->core_count, ci->thread_count, ci->cpuid_cores_per_package,
++	                             ci->cpuid_logical_per_package, llc);
++	if (why == 0) {
++		cloke_trace("TOPO: VORHERSAGE XNU-PRUEFUNG OK");
++	} else {
++		arg = 0;
++		bool force = PE_parse_boot_argn("cloke_force", &arg, sizeof arg) && arg;
++		cloke_trace("TOPO: VORHERSAGE XNU-PRUEFUNG %d FEHLT%s", why, force ? ", cloke_force=1: WEITER" : "");
++		if (!force) return 1;
++	}
++	return n;
++}
++
+ // Enabled processors from the MADT, boot CPU first.
+ unsigned PDACPIPlatformExpert::enumerateProcessorsFromMADT(void) {
+ 	if (!fUACPIStarted) return 0;
+@@ -1001,6 +1059,7 @@
+ 	AppleI386CPU *cpus[kMaxCPUs];
+ 
+ 	// cpu_id is an IOCPU *, not an index: PE_cpu_machine_init() casts it back.
++	cloke_trace("REGISTER %u PROCESSORS (BOOT LAPIC %u)", fCPUCount, fLapicIds[0]);
+ 	cpus[0] = bootCPU;
+ 	for (unsigned i = 1; i < fCPUCount; i++) {
+ 		cpus[i] = new AppleI386CPU;
+@@ -1014,9 +1073,11 @@
+ 
+ 	for (unsigned i = 0; i < fCPUCount; i++) {
+ 		procs[i] = NULL;
++		cloke_trace("REG %u LAPIC %u ...", i, fLapicIds[i]);
+ 		kern_return_t kr = ml_processor_register((cpu_id_t)cpus[i],
+ 		                                         fLapicIds[i], &procs[i],
+ 		                                         i == 0, FALSE);
++		cloke_trace("REG %u LAPIC %u KR 0x%x", i, fLapicIds[i], kr);
+ 		if (kr != KERN_SUCCESS) {
+ 			kprintf("PDACPIPlatform: registering LAPIC %u failed (0x%x)\n",
+ 			        fLapicIds[i], kr);
+@@ -1026,9 +1087,11 @@
+ 	}
+ 
+ 	for (unsigned i = 0; i < fCPUCount; i++) {
++		cloke_trace("START %u LAPIC %u ...", i, fLapicIds[i]);
+ 		kern_return_t kr = ml_processor_register((cpu_id_t)cpus[i],
+ 		                                         fLapicIds[i], &procs[i],
+ 		                                         i == 0, TRUE);
++		cloke_trace("START %u LAPIC %u KR 0x%x", i, fLapicIds[i], kr);
+ 		if (kr != KERN_SUCCESS) {
+ 			kprintf("PDACPIPlatform: starting LAPIC %u failed (0x%x)\n",
+ 			        fLapicIds[i], kr);
+diff -ru a/src/Kernel/Extensions/PDACPIPlatform/PDACPIPlatformExpert.h b/src/Kernel/Extensions/PDACPIPlatform/PDACPIPlatformExpert.h
+--- a/src/Kernel/Extensions/PDACPIPlatform/PDACPIPlatformExpert.h	2026-10-25 09:04:54
++++ b/src/Kernel/Extensions/PDACPIPlatform/PDACPIPlatformExpert.h	2026-10-25 09:04:54
+@@ -56,6 +56,7 @@
+ 
+ 	unsigned enumerateProcessorsFromMADT(void);
+ 	void     registerProcessors(void);
++	unsigned clokeFitTopology(unsigned count);
+ 
+ 	static int handlePEHaltRestart(unsigned int type);
+ 

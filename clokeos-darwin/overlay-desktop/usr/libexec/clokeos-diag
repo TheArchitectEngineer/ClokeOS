@@ -31,8 +31,10 @@ print "Drivers: ${drv:-none}  devices: $(print -n /dev/usb_hid_*(N) /dev/clokeos
 net=""
 for i in en0 en1 en2 en3; do a=$(ipconfig getifaddr $i 2>/dev/null); [[ -n $a ]] && net+="$i $a  "; done
 print "Network: ${net:-no address}"
+print "CPUs: hw.ncpu=$(sysctl -n hw.ncpu 2>/dev/null) physical=$(sysctl -n hw.physicalcpu 2>/dev/null)"
+dmesg 2>/dev/null | grep -E 'ClokeTrace|Started cpu' | tail -24 | cut -c1-148
 print "Kernel (ClokePS2, ClokeI2CHID, PS/2, HID):"
-dmesg 2>/dev/null | grep -E 'Cloke|PS2|IOUSBHID' | tail -16 | cut -c1-148
+dmesg 2>/dev/null | grep -E 'Cloke|PS2|IOUSBHID' | grep -v ClokeTrace | tail -16 | cut -c1-148
 print "Disk and USB errors:"
 dmesg 2>/dev/null | grep -i -E 'nvme|I/O error|timed out|timeout|abort|xhci.*(error|fail|stall)|usb.*(error|fail|stall|reset)' | grep -v -E 'armed|checkpoint' | tail -8 | cut -c1-148
 print "Installer log:"

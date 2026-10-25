@@ -102,7 +102,47 @@ for k in ${kexts[@]+"${kexts[@]}"}; do args+=(-kext "$k"); done
 # gehalten wird (auf der echten Hardware noch nicht bewährt, deshalb nicht der Standard).
 smp="$tmp/PDACPIPlatform.kext"
 rm -rf "$smp"
-cp -R "$base/root/Extensions/PDACPIPlatform.kext" "$smp"
+# PDACPIPlatform wird aus PureDarwins Quelle neu gebaut (kext/pdacpi/pdacpi.patch): ohne Änderung stürzt XNU
+# auf Hybrid-Prozessoren (Alder Lake) in x86_validate_topology() ab, und nach initialize_screen(6) sieht
+# man die Panik nicht. Zusätzlich malt ClokeTrace mit Boot-Arg cloke_trace=1 den Fortschritt auf den Schirm.
+fetch_file "$PDSRC_URL" "$PDSRC_SHA256" "$PDSRC_TGZ" >/dev/null
+pd="$WORK/tmp/pdacpi-src"
+rm -rf "$pd"
+mkdir -p "$pd"
+tar -xzf "$PDSRC_TGZ" -C "$pd" --strip-components=1 '*/src/Kernel/Extensions/PDACPIPlatform' \
+  '*/src/Kernel/Extensions/IOACPIFamily/include' '*/src/Kernel/Extensions/AppleAPIC/PICShared.h'
+patch -s -p1 -d "$pd" < "$src/pdacpi/pdacpi.patch"
+ext="$pd/src/Kernel/Extensions"
+pdir="$ext/PDACPIPlatform"
+res=$(clang -print-resource-dir)/include
+pflags=("${cflags[@]}" -isystem "$res" -I"$src/pdacpi/include" -I"$src/pdacpi" -I"$pdir/uacpi/include"
+        -I"$ext/IOACPIFamily/include" -include "$src/pdacpi/ipi_handler_t.h" -DUACPI_BAREBONES_MODE -Wno-everything)
+pobjs=()
+for c in "$pdir"/*.cpp "$src/pdacpi/ClokeTrace.cpp"; do
+  o="$tmp/pdacpi-$(basename "$c" .cpp).o"
+  clang++ "${pflags[@]}" -fapple-kext -std=gnu++17 -fno-exceptions -fno-rtti -nostdinc++ -c "$c" -o "$o"
+  pobjs+=("$o")
+done
+for c in "$pdir"/uacpi/source/*.c; do
+  o="$tmp/pdacpi-uacpi-$(basename "$c" .c).o"
+  clang "${pflags[@]}" -std=c11 -ffreestanding -c "$c" -o "$o"
+  pobjs+=("$o")
+done
+cat > "$tmp/pdacpi-info.c" <<'EOF'
+#include <mach/mach_types.h>
+extern kern_return_t _start(kmod_info_t *ki, void *data);
+extern kern_return_t _stop(kmod_info_t *ki, void *data);
+__attribute__((visibility("default"))) KMOD_EXPLICIT_DECL(org.puredarwin.driver.PDACPIPlatform, "1.0.0", _start, _stop)
+__private_extern__ kmod_start_func_t *_realmain = 0;
+__private_extern__ kmod_stop_func_t *_antimain = 0;
+__private_extern__ int _kext_apple_cc = __APPLE_CC__;
+EOF
+clang "${cflags[@]}" -c "$tmp/pdacpi-info.c" -o "$tmp/pdacpi-info.o"
+mkdir -p "$smp/Contents/MacOS"
+cp "$pdir/Info.plist" "$smp/Contents/Info.plist"
+clang++ -target x86_64-apple-macos11 -bundle -undefined dynamic_lookup -nostdlib -Wl,-no_fixup_chains \
+  -L"$sdk/usr/lib" "${pobjs[@]}" "$tmp/pdacpi-info.o" -lkmodc++ -lkmod "$base/libSystem.B.dylib" \
+  -o "$smp/Contents/MacOS/PDACPIPlatform" 2> >(grep -v 'built for newer' >&2)
 python3 -I - "$smp/Contents/Info.plist" <<'PYEOF2'
 import plistlib, sys
 p = sys.argv[1]
