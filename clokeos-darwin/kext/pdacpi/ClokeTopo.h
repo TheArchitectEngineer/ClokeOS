@@ -169,7 +169,8 @@ static inline int cloke_topo_synth(cloke_topo_params_t *t, const uint32_t *ids, 
  * Alle n Prozessoren behalten: gleich große Gruppen aus APIC-IDs bilden (ID / d, d eine Zweierpotenz),
  * jede Gruppe gilt für XNU als ein Kern mit s Threads. Alder Lake: d = 4 ergibt {0,1} {8,9} (die echten
  * P-Kerne) und {16,18} {20,22} {24,26} {28,30} (je zwei E-Kerne, die XNU damit für SMT-Paare hält; das
- * ist nur eine Scheduler-Annahme). Ergebnis 0 = gefunden, *d_out = d.
+ * ist nur eine Scheduler-Annahme). Ohne regelmäßige Gruppen wird jeder Prozessor ein eigener Kern (d = 1).
+ * Ergebnis 0 = gefunden, *d_out = d.
  */
 static inline int cloke_topo_synth_pairs(cloke_topo_params_t *t, const uint32_t *ids, unsigned n,
                                          unsigned *d_out) {
@@ -190,13 +191,19 @@ static inline int cloke_topo_synth_pairs(cloke_topo_params_t *t, const uint32_t 
       if (!s) s = size;
       else if (s != size) ok = 0;
     }
-    if (!ok || s < 2 || groups * s != n) continue;
+    if (!ok || s < 2 || s > 4 || groups * s != n) continue; /* höchstens 4 Threads je Kern (SMT2, selten SMT4) */
     unsigned L = 2;
     while (L <= maxid) L <<= 1;
     if (L < d) L = d;
     *d_out = d;
     return cloke_topo_fill(t, groups, n, L / d, L, L);
   }
-  return -1;
+  /* keine regelmäßige SMT-Gruppierung (z. B. unregelmäßige IDs): jeder Prozessor ein Kern mit einem Thread.
+   * Das besteht XNUs Prüfung immer und lässt alle Prozessoren laufen; nur die Nähe von Geschwister-Threads
+   * kennt der Scheduler dann nicht. */
+  unsigned L = 2;
+  while (L <= maxid) L <<= 1;
+  *d_out = 1;
+  return cloke_topo_fill(t, n, n, L, L, L);
 }
 #endif
