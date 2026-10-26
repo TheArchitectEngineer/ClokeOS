@@ -44,6 +44,7 @@ static void dump_efuse(volatile uint8_t *base) {
   auto wr32 = [&](unsigned o, uint32_t v) { *(volatile uint32_t *)(base + o) = v; };
   static uint8_t phy[PHY_EFUSE_SIZE];
   uint8_t *logm = g_logm;
+  base[0xCF] = 0x69; /* EFUSE_ACCESS_ON (rtw_chip_efuse_grant_on) */
   /* Bank WLAN (Bits 8,9 = 0), 2,5-V-LDO aus */
   wr32(REG_LDO_EFUSE_CTRL, rd32(REG_LDO_EFUSE_CTRL) & ~(3u << 8));
   base[REG_LDO_EFUSE_CTRL + 3] &= (uint8_t)~0x80;
@@ -63,6 +64,7 @@ static void dump_efuse(volatile uint8_t *base) {
     }
     phy[a] = (uint8_t)ctl;
   }
+  base[0xCF] = 0;
   memset(logm, 0xff, sizeof logm);
   unsigned p = 0, blocks = 0;
   bool bad = false;
