@@ -718,6 +718,31 @@ static void rf_wm(volatile uint8_t *b, unsigned addr, uint32_t mask, uint32_t va
   rf_write(b, addr, (rf_read(b, addr) & ~mask) | ((val << __builtin_ctz(mask)) & mask));
 }
 
+/* Antenne und Bluetooth-Koexistenz: Nach dem Einschalten zeigt der Antennenschalter auf Bluetooth (rtw_coex_power_on_setting).
+ * Für Empfang muss er auf WLAN: rtw8821c_coex_cfg_init + cfg_ant_switch (Steuerung per Basisband, rfe 2/4: WLG am BTG-Anschluss)
+ * und die Koexistenztabelle, die dem WLAN alles erlaubt. */
+static void coex_wlan_only(volatile uint8_t *b, unsigned rfe) {
+  w8(b, 0x550, r8(b, 0x550) | 0x08);
+  wm(b, 0x790, 0x3f, 5);
+  w8(b, 0x778, 1);
+  w32(b, 0x40, r32(b, 0x40) | (1u << 5) | (1u << 9));
+  w8(b, 0x4c6, (uint8_t)((r8(b, 0x4c6) | 0x10) & ~0x20));
+  w16(b, 0x762, r16(b, 0x762) | (1u << 12));
+  wm(b, 0x6cc, 1u << 27, 1);
+  /* Antennenschalter: per Basisband (RFE-Pins 8/9), Position WLG+BT */
+  w32(b, 0x4c, (r32(b, 0x4c) & ~(1u << 23)) | (1u << 24));
+  wm(b, 0xcb4, 0xff, 0x77);
+  unsigned inv = rfe == 3 || rfe == 4 || rfe == 11 || rfe == 12; /* ant_switch_polarity */
+  unsigned regval = (rfe == 2 || rfe == 4) ? (inv ? 1 : 2) : 3;
+  wm(b, 0xcb4, 0xf0000000u, regval);
+  w8(b, 0x67, r8(b, 0x67) | 0x30);
+  w32(b, 0x6c0, 0x55555555);
+  w32(b, 0x6c4, 0x55555555);
+  w32(b, 0x6c8, 0xf0ffffff);
+  LOG("coex: antenna to WLAN (rfe %u, switch value %u), LED_CFG 0x%08x, 0xcb4 0x%08x, table 0x%08x", rfe, regval, r32(b, 0x4c), r32(b, 0xcb4),
+      r32(b, 0x6c0));
+}
+
 static void set_channel(volatile uint8_t *b, unsigned ch, bool btg) {
   /* BB */
   wm(b, 0x808, 1u << 28, 1);
@@ -798,6 +823,7 @@ static void rx_scan(volatile uint8_t *b, bool btg) {
   w32(b, PCI_CTRL, r32(b, PCI_CTRL) | (1u << 20) | (1u << 15));
   /* alle Adressen annehmen (Beacons haben Broadcast-Ziel) und CRC-fehlerhafte nicht */
   w32(b, 0x608, r32(b, 0x608) | 0xf | (1u << 8)); /* auch Rahmen mit falscher Prüfsumme melden: Test, ob überhaupt etwas ankommt */
+  coex_wlan_only(b, g_logm[0xca] & 0x1f);
   LOG("rx: ring of %d buffers at 0x%08x, RCR 0x%08x, CR 0x%02x", RX_N, ring.pa, r32(b, 0x608), r8(b, 0x100));
 
   static Seen seen[32];
