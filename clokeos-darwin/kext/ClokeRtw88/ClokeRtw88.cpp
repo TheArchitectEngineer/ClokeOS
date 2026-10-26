@@ -169,25 +169,70 @@ struct Dma {
   IOBufferMemoryDescriptor *md = nullptr;
   uint8_t *va = nullptr;
   uint32_t pa = 0;
+  size_t contig = 0; /* über IOMallocContiguous geholt: Größe zum Freigeben */
 };
 
-static bool dma_alloc(Dma *d, size_t size) {
-  d->md = IOBufferMemoryDescriptor::inTaskWithPhysicalMask(kernel_task, kIODirectionInOut | kIOMemoryPhysicallyContiguous,
-                                                           size, 0x00000000fffff000ull);
-  if (!d->md || d->md->prepare() != kIOReturnSuccess) return false;
-  d->va = (uint8_t *)d->md->getBytesNoCopy();
+/* PureDarwins IOKit hat nicht jeden Weg zu physisch zusammenhängendem Speicher; der erste HP-Test scheiterte
+ * hier. Deshalb drei Wege nacheinander, jeder mit Meldung, woran er scheitert. */
+static bool dma_try_md(Dma *d, IOBufferMemoryDescriptor *md, size_t size, const char *how) {
+  if (!md) {
+    LOG("dma %s: no buffer", how);
+    return false;
+  }
+  IOReturn r = md->prepare();
+  if (r != kIOReturnSuccess) {
+    LOG("dma %s: prepare 0x%x", how, r);
+    md->release();
+    return false;
+  }
   IOByteCount len = 0;
-  addr64_t pa = d->md->getPhysicalSegment(0, &len, kIOMemoryMapperNone);
-  if (!d->va || !pa || (pa >> 32)) return false;
+  addr64_t pa = md->getPhysicalSegment(0, &len, kIOMemoryMapperNone);
+  if (!pa) pa = md->getPhysicalSegment(0, &len, 0);
+  uint8_t *va = (uint8_t *)md->getBytesNoCopy();
+  if (!va || !pa || (pa >> 32) || len < size) {
+    LOG("dma %s: va %p pa 0x%llx len %llu", how, va, (unsigned long long)pa, (unsigned long long)len);
+    md->complete();
+    md->release();
+    return false;
+  }
+  d->md = md;
+  d->va = va;
   d->pa = (uint32_t)pa;
-  memset(d->va, 0, size);
+  memset(va, 0, size);
+  LOG("dma %s: %zu bytes at 0x%08x", how, size, d->pa);
   return true;
+}
+
+#pragma clang diagnostic ignored "-Wdeprecated-declarations" /* IOMallocContiguous: der dritte Weg */
+static bool dma_alloc(Dma *d, size_t size) {
+  *d = Dma();
+  if (dma_try_md(d, IOBufferMemoryDescriptor::inTaskWithPhysicalMask(kernel_task, kIODirectionInOut | kIOMemoryPhysicallyContiguous,
+                                                                    size, 0x00000000fffff000ull), size, "physmask"))
+    return true;
+  if (dma_try_md(d, IOBufferMemoryDescriptor::withOptions(kIODirectionInOut | kIOMemoryPhysicallyContiguous, size, 4096), size,
+                 "contiguous"))
+    return true;
+  IOPhysicalAddress pa = 0;
+  void *va = IOMallocContiguous(size, 4096, &pa);
+  if (va && pa && !((uint64_t)pa >> 32)) {
+    d->va = (uint8_t *)va;
+    d->pa = (uint32_t)pa;
+    d->contig = size;
+    memset(va, 0, size);
+    LOG("dma IOMallocContiguous: %zu bytes at 0x%08x", size, d->pa);
+    return true;
+  }
+  LOG("dma IOMallocContiguous: va %p pa 0x%llx", va, (unsigned long long)pa);
+  if (va) IOFreeContiguous(va, size);
+  return false;
 }
 
 static void dma_free(Dma *d) {
   if (d->md) {
     d->md->complete();
     d->md->release();
+  } else if (d->contig && d->va) {
+    IOFreeContiguous(d->va, d->contig);
   }
   *d = Dma();
 }
