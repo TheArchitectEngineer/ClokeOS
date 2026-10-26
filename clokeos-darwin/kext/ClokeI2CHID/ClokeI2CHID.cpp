@@ -175,6 +175,7 @@ enum { INTR_TX_ABRT = 0x40, INTR_STOP_DET = 0x200 };
  * wo im Fenster der Firmware sehr wahrscheinlich nichts liegt. Ob dort wirklich der Controller
  * antwortet, zeigt dessen Kennung (IC_COMP_TYPE); sonst wird BAR0 zurückgesetzt. */
 static uint64_t gLowHigh = ~0ull, gLowLow = ~0ull; /* niedrigste belegte Adresse: ab 4 GB, unter 4 GB */
+static uint64_t gTopPch;                            /* höchste Adresse ab 4 GB eines Geräts, das keine Grafik ist */
 static unsigned gAssigned;
 /* Mit mehreren Kernen starten die beiden Controller (51e8, 51e9) zugleich, wählten dieselbe Adresse und
  * antworteten beide auf dieselben Lesezugriffe: Der Rechner blieb stehen oder lieferte nichts. Suche und
@@ -183,6 +184,7 @@ static IOLock *gAssignLock = IOLockAlloc();
 
 static void scanBars() {
   gLowHigh = gLowLow = ~0ull;
+  gTopPch = 0;
   OSDictionary *m = IOService::serviceMatching("IOPCIDevice");
   OSIterator *it = m ? IOService::getMatchingServices(m) : nullptr;
   OSSafeReleaseNULL(m);
@@ -203,6 +205,7 @@ static void scanBars() {
       if ((v & 6) == 4 && i + 1 < nbar) base |= (uint64_t)d->extendedConfigRead32(0x14 + 4 * i) << 32, i++;
       if (!base) continue;
       n += snprintf(line + n, sizeof line - (size_t)n, " 0x%llx", (unsigned long long)base);
+      if ((base >> 32) && d->extendedConfigRead8(0x0b) != 0x03 && base > gTopPch) gTopPch = base;
       if (base >> 32) { if (base < gLowHigh) gLowHigh = base; }
       else if (base < gLowLow) gLowLow = base;
     }
@@ -210,8 +213,8 @@ static void scanBars() {
     cloke_trace("PCI %s", line);
   }
   it->release();
-  LOG("lowest memory BAR: above 4 GB 0x%llx, below 4 GB 0x%llx", (unsigned long long)gLowHigh,
-      (unsigned long long)gLowLow);
+  LOG("lowest memory BAR: above 4 GB 0x%llx, below 4 GB 0x%llx, highest non-display above 4 GB 0x%llx",
+      (unsigned long long)gLowHigh, (unsigned long long)gLowLow, (unsigned long long)gTopPch);
 }
 
 /* Felder eines Berichts im Report-Deskriptor (Bit-Lage) */
@@ -526,16 +529,14 @@ bool ClokeI2CHID::start(IOService *provider) {
       base = nullptr;
     }
     /* keine (brauchbare) Adresse: selbst eine suchen und BAR0 dorthin legen */
-    if (attempt == 4) break;
+    if (attempt == 3) break;
     if (!attempt) scanBars();
-    /* Zuerst unter dem niedrigsten Bereich unter 4 GB (dort liegt das Fenster der Firmware sicher: das WLAN
-     * sitzt bei 0x50500000), erst danach unter dem niedrigsten oberhalb von 4 GB. Auf dem HP liegt mit dem
-     * Mehrkern-Kernel etwas bei 0x4000000000, aber das Fenster darunter wird nicht an den Controller
-     * weitergeleitet (Lesen ergibt 0xffffffff). */
-    uint64_t low = (attempt >= 2 && is64 && gLowHigh != ~0ull) ? gLowHigh : gLowLow;
-    if (low == ~0ull) low = gLowHigh;
-    if (low == ~0ull || low < 0x30000000ull) break;
-    uint64_t cand = (low - 0x200000 - (uint64_t)(gAssigned + (unsigned)attempt) * 0x1000 - (uint64_t)attempt * 0x1000000) & ~0xfffull;
+    /* Die Firmware hat die Geräte des Chipsatzes (HDA, SMBus, SPI, ...) dicht an dicht ab 0x6001000000 gelegt
+     * (HP: bis 0x600113d000), die Grafik weit davor. Die Controller bekommen Platz knapp hinter dem
+     * höchsten dieser Bereiche, im selben Fenster. Unter 4 GB (0x50300000 unter dem WLAN) bleibt der HP beim
+     * ersten Lesen stehen, oberhalb der Grafik (0x3fffe00000) antwortet nichts. */
+    if (!gTopPch) break;
+    uint64_t cand = (gTopPch + 0x10000 + (uint64_t)(gAssigned + (unsigned)attempt) * 0x4000) & ~0xfffull;
     if (!is64 && (cand >> 32)) break;
     cloke_trace("I2C %04x: VERSUCH %d BAR0 = 0x%llx, SCHREIBE ...", device, attempt + 1, (unsigned long long)cand);
     pci->extendedConfigWrite16(4, (uint16_t)(pci->extendedConfigRead16(4) & ~0x0002u)); /* Speicher aus */
