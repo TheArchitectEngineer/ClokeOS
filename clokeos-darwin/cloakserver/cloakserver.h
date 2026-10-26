@@ -76,7 +76,11 @@ void l10n_init(void);
 const char *L(const char *en);
 const char *l10n_lang(void);            /* "en" oder "de" */
 bool l10n_set_lang(const char *code);   /* schreibt LANGUAGE_FILE (root) */
-const char *l10n_locale(void);          /* LANG für die Programme der Sitzung */
+const char *l10n_locale(void);
+int l10n_count(void);
+const char *l10n_code(int i);
+const char *l10n_name(int i);
+bool l10n_24h(void);          /* LANG für die Programme der Sitzung */
 const char *l10n_month(int m);
 const char *l10n_month_short(int m);
 void l10n_date_long(char *out, size_t n, const struct tm *t);

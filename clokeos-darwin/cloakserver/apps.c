@@ -352,7 +352,8 @@ static bool strings_get(const unsigned char *d, size_t len, const char *key, cha
 
 static void localized_name(Bundle *b, const char *path) {
   const char *lang = l10n_lang();
-  const char *dirs[3] = {lang, !strcmp(lang, "de") ? "German" : "English", NULL};
+  const char *legacy = !strcmp(lang, "de") ? "German" : !strcmp(lang, "fr") ? "French" : !strcmp(lang, "es") ? "Spanish" : !strcmp(lang, "it") ? "Italian" : "English";
+  const char *dirs[4] = {lang, legacy, "English", NULL};
   for (int i = 0; dirs[i]; i++) {
     char f[1200];
     snprintf(f, sizeof f, "%s/Contents/Resources/%s.lproj/InfoPlist.strings", path, dirs[i]);
@@ -367,6 +368,9 @@ static void localized_name(Bundle *b, const char *path) {
       return;
     }
   }
+  /* Programme von ClokeOS selbst tragen den englischen Namen im Info.plist; hier übersetzt L() ihn */
+  const char *t = L(b->name);
+  if (t != b->name) snprintf(b->name, sizeof b->name, "%s", t);
 }
 
 static void check_thin(Bundle *b, const unsigned char *m, size_t len) {

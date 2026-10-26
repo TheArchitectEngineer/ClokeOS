@@ -719,8 +719,6 @@ static void set_theme_mode(long mode) {
 /* ---------------------------------------------------------------------------------------- */
 /* Icons, Programme starten                                                                   */
 
-static const char *MONTHS_EN[] = {"JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"};
-static const char *MONTHS_DE[] = {"JAN", "FEB", "MÄRZ", "APR", "MAI", "JUNI", "JULI", "AUG", "SEPT", "OKT", "NOV", "DEZ"};
 
 static const char *const *cal_subst(void) {
   static char day[8];
@@ -729,7 +727,11 @@ static const char *const *cal_subst(void) {
   struct tm tm;
   localtime_r(&t, &tm);
   snprintf(day, sizeof day, "%d", tm.tm_mday);
-  cal[0] = "@MON@", cal[1] = (strcmp(l10n_lang(), "de") ? MONTHS_EN : MONTHS_DE)[tm.tm_mon], cal[2] = "@DAY@", cal[3] = day, cal[4] = NULL;
+  static char mon[24];
+  char *up = g_utf8_strup(l10n_month_short(tm.tm_mon), -1);
+  snprintf(mon, sizeof mon, "%s", up);
+  g_free(up);
+  cal[0] = "@MON@", cal[1] = mon, cal[2] = "@DAY@", cal[3] = day, cal[4] = NULL;
   cal_day = tm.tm_mday;
   return cal;
 }
@@ -3038,7 +3040,7 @@ static void build_menu(int which) {
     localtime_r(&t, &tm);
     char day[96];
     l10n_date_long(day, sizeof day, &tm);
-    snprintf(buf, sizeof buf, !strcmp(l10n_lang(), "de") ? "%s %d" : "%s, %d", day, tm.tm_year + 1900);
+    snprintf(buf, sizeof buf, l10n_24h() ? "%s %d" : "%s, %d", day, tm.tm_year + 1900);
     add_head(buf);
     add_sep();
     add_item(L("Open Calendar"), launch_app, app_by_ident("com.clokeos.kalender"), app_by_ident("com.clokeos.kalender") < 0);
@@ -3579,8 +3581,62 @@ static void set_remote_login(bool on) {
 
 /* Sprache umstellen (Systemeinstellungen, Einrichtungsassistent): CloakServer wechselt sofort,
  * die Namen der Programme kommen neu aus ihren Paketen, neue Programme starten mit dem neuen LANG */
+/* Tastaturbelegung: wie macOS für das ganze System. xkbcomp setzt sie über XKB für alle Programme. Ohne
+ * Auswahl folgt sie der Sprache (KEYBOARD_FILE fehlt). */
+#define KEYBOARD_FILE "/etc/clokeos-keyboard"
+static const struct { const char *code, *title; } KBD[] = {
+    {"us", "U.S."}, {"gb", "British"}, {"de", "Deutsch"}, {"fr", "Français"}, {"es", "Español"}, {"it", "Italiano"},
+    {"pt", "Português"}, {"nl", "Nederlands"}, {"ch", "Schweiz"}, {"at", "Österreich"}, {"pl", "Polski"},
+    {"se", "Svenska"}, {"tr", "Türkçe"}, {"ru", "Русский"}};
+#define NKBD (int)(sizeof KBD / sizeof KBD[0])
+static char kbd_cur[8] = "us";
+
+static void apply_keyboard(void) {
+  FILE *f = fopen("/tmp/clokeos-xkb.src", "w");
+  if (!f) return;
+  fprintf(f,
+          "xkb_keymap {\n xkb_keycodes { include \"xfree86+aliases(qwerty)\" };\n xkb_types { include \"complete\" };\n"
+          " xkb_compat { include \"complete\" };\n xkb_symbols { include \"pc+%s%s+inet(pc105)\" };\n};\n",
+          kbd_cur, !strcmp(kbd_cur, "ru") ? "+us:2+group(alt_shift_toggle)" : "");
+  fclose(f);
+  char cmd[200];
+  snprintf(cmd, sizeof cmd, "/usr/bin/xkbcomp -w0 /tmp/clokeos-xkb.src %s >/dev/null 2>&1", getenv("DISPLAY") ? getenv("DISPLAY") : ":0");
+  if (run_wait(cmd)) warn("xkbcomp für Belegung %s schlug fehl", kbd_cur);
+}
+
+static void kbd_default_for_language(void) {
+  const char *lg = l10n_lang();
+  snprintf(kbd_cur, sizeof kbd_cur, "%s", !strcmp(lg, "de") ? "de" : !strcmp(lg, "fr") ? "fr" : !strcmp(lg, "es") ? "es" : !strcmp(lg, "it") ? "it" : "us");
+}
+
+static void load_keyboard(void) {
+  char *s = read_file(KEYBOARD_FILE);
+  if (s && s[0]) {
+    s[strcspn(s, " \t\r\n")] = 0;
+    snprintf(kbd_cur, sizeof kbd_cur, "%s", s);
+  } else {
+    kbd_default_for_language();
+  }
+  free(s);
+  apply_keyboard();
+}
+
+static void set_keyboard(int i) {
+  snprintf(kbd_cur, sizeof kbd_cur, "%s", KBD[i].code);
+  FILE *f = fopen(KEYBOARD_FILE, "w");
+  if (f) {
+    fprintf(f, "%s\n", kbd_cur);
+    fclose(f);
+  }
+  apply_keyboard();
+}
+
 static void set_language(const char *code) {
   if (!l10n_set_lang(code)) warn("kann %s nicht schreiben", LANGUAGE_FILE);
+  if (access(KEYBOARD_FILE, F_OK)) {
+    kbd_default_for_language();
+    apply_keyboard();
+  }
   setenv("LANG", l10n_locale(), 1);
   for (int i = 0; i < napps; i++) apps[i].b.mtime = -1; /* Namen neu lesen */
   scan_apps();
@@ -3853,11 +3909,13 @@ static void lp_key(XKeyEvent *e) {
 /* Erscheinungsbild (Hell, Dunkel, Automatisch), Schreibtisch & Dock (Lage, Größe), Programme   */
 /* (wie man installiert). Alles Übrige bleibt in den Xfce-Einstellungen.                        */
 
-enum { ST_SECTION, ST_THEME, ST_DOCKPOS, ST_DOCKSIZE, ST_XFCE, ST_OPENAPPS, ST_LANG, ST_SSH, ST_WALL };
+enum { ST_SECTION, ST_THEME, ST_DOCKPOS, ST_DOCKSIZE, ST_OPENAPPS, ST_LANG, ST_SSH, ST_WALL, ST_KBD };
 static struct { int x, y, w, h, act; long arg; } st_hit[48];
 static int nst_hit;
-static const char *const ST_NAMES[] = {"Appearance", "Desktop & Dock", "Applications", "Language & Region", "Sharing", "Wallpaper"};
-#define ST_N 6
+enum { SC_GENERAL, SC_APPEAR, SC_WALL, SC_DOCK, SC_KEYB, SC_LANG, SC_APPS, SC_SHARE };
+static const char *const ST_NAMES[] = {"General", "Appearance", "Wallpaper", "Desktop & Dock", "Keyboard", "Language & Region", "Applications", "Sharing"};
+#define ST_N 8
+static const int ST_ORDER[ST_N] = {SC_GENERAL, SC_APPEAR, SC_WALL, SC_DOCK, SC_KEYB, SC_LANG, SC_APPS, SC_SHARE};
 static const int DOCK_SIZES[3] = {40, 50, 64};
 
 static void st_add(double x, double y, double w, double h, int act, long arg) {
@@ -3925,6 +3983,115 @@ static void option(cairo_t *cr, double x, double y, const char *label, bool on, 
   st_add(x - 4, y - 4, 128, 108, act, arg);
 }
 
+/* Symbole der Seitenleiste: weiße Linien auf farbigem Quadrat (bei der gewählten Zeile umgekehrt) */
+static const char *const ST_GLYPH[ST_N] = {
+    /* Allgemein */ "<circle cx='8' cy='8' r='6.2'/><path d='M8 7.2v4.3'/><circle cx='8' cy='4.8' r='.6' fill='%s'/>",
+    /* Erscheinungsbild */ "<circle cx='8' cy='8' r='6'/><path d='M8 2a6 6 0 0 1 0 12z' fill='%s'/>",
+    /* Hintergrundbild */ "<rect x='1.5' y='2.5' width='13' height='11' rx='1.5'/><path d='M1.5 11l4-4 3.5 3.5 2-2 3.5 3.5'/>",
+    /* Schreibtisch & Dock */ "<rect x='1.5' y='2.5' width='13' height='9' rx='1.5'/><path d='M5 14h6'/>",
+    /* Tastatur */ "<rect x='1.5' y='4' width='13' height='8' rx='1.5'/><path d='M4.5 7h.01M7 7h.01M9.5 7h.01M12 7h.01M5 10h6' stroke-linecap='round'/>",
+    /* Sprache & Region */ "<circle cx='8' cy='8' r='6.2'/><path d='M8 1.8c2.2 1.8 2.2 10.6 0 12.4M8 1.8c-2.2 1.8-2.2 10.6 0 12.4M2 8h12'/>",
+    /* Programme */ "<rect x='2.5' y='2.5' width='4' height='4' rx='1' fill='%s'/><rect x='9.5' y='2.5' width='4' height='4' rx='1' fill='%s'/><rect x='2.5' y='9.5' width='4' height='4' rx='1' fill='%s'/><rect x='9.5' y='9.5' width='4' height='4' rx='1' fill='%s'/>",
+    /* Freigaben */ "<path d='M8 10V2.5M5 5l3-3 3 3M3 8.5v5h10v-5' stroke-linecap='round' stroke-linejoin='round'/>"};
+
+static cairo_surface_t *st_icon_surf(int sc, bool inv, RGBA col) {
+  static cairo_surface_t *cache[ST_N][2];
+  if (cache[sc][inv]) return cache[sc][inv];
+  char fg[16], body[900], svg[1200];
+  if (inv) snprintf(fg, sizeof fg, "#%02x%02x%02x", (int)(col.r * 255), (int)(col.g * 255), (int)(col.b * 255));
+  else snprintf(fg, sizeof fg, "#ffffff");
+  snprintf(body, sizeof body, ST_GLYPH[sc], fg, fg, fg, fg);
+  snprintf(svg, sizeof svg,
+           "<svg xmlns='http://www.w3.org/2000/svg' width='20' height='20' viewBox='0 0 16 16' fill='none' stroke='%s' stroke-width='1.3' "
+           "stroke-linejoin='round'>%s</svg>", fg, body);
+  RsvgHandle *hd = rsvg_handle_new_from_data((const guint8 *)svg, strlen(svg), NULL);
+  if (!hd) return NULL;
+  cairo_surface_t *s = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, 20, 20);
+  cairo_t *c2 = cairo_create(s);
+  rsvg_handle_render_cairo(hd, c2);
+  cairo_destroy(c2);
+  g_object_unref(hd);
+  return cache[sc][inv] = s;
+}
+
+static void st_icon(cairo_t *cr, double x, double y, int sc, RGBA col, bool selected) {
+  rrect(cr, x, y, 20, 20, 5);
+  if (selected) set(cr, (RGBA){1, 1, 1, .95});
+  else set(cr, col);
+  cairo_fill(cr);
+  cairo_surface_t *g = st_icon_surf(sc, selected, col);
+  if (g) {
+    cairo_set_source_surface(cr, g, x, y);
+    cairo_paint(cr);
+  }
+}
+
+/* Allgemein: Logo, Version und die Eckdaten des Rechners wie bei macOS „Allgemein > Info“ */
+static void st_row(cairo_t *cr, double x, double *y, double w, const char *k, const char *v, bool first) {
+  if (!first) {
+    cairo_rectangle(cr, x + 12, *y, w - 24, 1);
+    set(cr, T->line);
+    cairo_fill(cr);
+  }
+  text(cr, x + 14, *y + 19, k, 13, false, T->fg, 0, 0);
+  text(cr, x + w - 14, *y + 19, v, 13, false, T->fg2, w - 120, 2);
+  *y += 38;
+}
+
+static void st_general(cairo_t *cr, double x0, int w, int h) {
+  if (!logo_big) logo_big = svg_render("logo-gradient.svg", 96, 96, NULL);
+  double cx = x0 + (w - x0 - 20) / 2.0;
+  if (logo_big) {
+    cairo_save(cr);
+    cairo_translate(cr, cx - 36, 50);
+    cairo_scale(cr, .75, .75);
+    cairo_set_source_surface(cr, logo_big, 0, 0);
+    cairo_paint(cr);
+    cairo_restore(cr);
+  }
+  text(cr, cx, 138, "ClokeOS", 22, true, T->fg, 0, 1);
+  char buf[160], host[64] = "", mach[64] = "";
+  snprintf(buf, sizeof buf, L("“%s” · Version %s"), os_codename, os_version);
+  text(cr, cx, 160, buf, 12, false, T->fg2, 0, 1);
+  gethostname(host, sizeof host);
+  struct utsname u;
+  uname(&u);
+  snprintf(mach, sizeof mach, "%s", u.machine);
+  double gx = x0, gw = w - x0 - 20, y = 182;
+  rrect(cr, gx, y, gw, 5 * 38 + 4, 10);
+  seta(cr, T->fg, .05);
+  cairo_fill(cr);
+  y += 2;
+  st_row(cr, gx, &y, gw, L("Computer Name"), host, true);
+  snprintf(buf, sizeof buf, "Darwin %s (XNU)", u.release);
+  st_row(cr, gx, &y, gw, "Kernel", buf, false);
+  st_row(cr, gx, &y, gw, L("Architecture"), mach, false);
+  int ncpu = 0;
+  size_t sz = sizeof ncpu;
+  sysctlbyname("hw.ncpu", &ncpu, &sz, NULL, 0);
+  uint64_t mem = 0;
+  sz = sizeof mem;
+  sysctlbyname("hw.memsize", &mem, &sz, NULL, 0);
+  snprintf(buf, sizeof buf, "%d", ncpu);
+  st_row(cr, gx, &y, gw, L("Cores"), buf, false);
+  snprintf(buf, sizeof buf, "%.1f GB · %d × %d", mem / 1073741824.0, SW, SH);
+  st_row(cr, gx, &y, gw, L("Memory"), buf, false);
+}
+
+/* Tastatur: Belegung für das ganze System, auch für die Anmeldung */
+static void st_keyboard(cairo_t *cr, double x0, int w, int h) {
+  text(cr, x0, 66, L("Keyboard layout"), 12.5, true, T->fg, 0, 0);
+  for (int i = 0; i < NKBD; i++) {
+    double bx = x0 + (i % 3) * 112, by = 82 + (i / 3) * 34;
+    button(cr, bx, by, 104, KBD[i].title, !strcmp(kbd_cur, KBD[i].code));
+    st_add(bx, by, 104, 28, ST_KBD, i);
+  }
+  text_block(cr, x0, 82 + ((NKBD + 2) / 3) * 34 + 10,
+             L("The keyboard layout applies right away in all apps and at the login window. It follows the language until "
+               "you choose one here."),
+             11.5, false, T->fg2, w - x0 - 24);
+}
+
 static void paint_settings(Client *c, cairo_t *cr) {
   int w = c->w, h = c->h, sec = (int)c->data;
   nst_hit = 0;
@@ -3935,26 +4102,47 @@ static void paint_settings(Client *c, cairo_t *cr) {
   cairo_rectangle(cr, 196, 0, 1, h);
   set(cr, T->line);
   cairo_fill(cr);
-  static const RGBA ICO[ST_N] = {{.49, .36, 1, 1}, {.2, .55, .95, 1}, {.2, .72, .45, 1}, {.95, .55, .2, 1}, {.45, .47, .55, 1}, {.9, .35, .6, 1}};
+  static const RGBA ICO[ST_N] = {{.45, .47, .55, 1}, {.49, .36, 1, 1}, {.9, .35, .6, 1}, {.2, .55, .95, 1},
+                                 {.5, .5, .58, 1}, {.95, .55, .2, 1}, {.2, .72, .45, 1}, {.25, .68, .9, 1}};
+  /* Benutzerkarte wie im Prototyp (st-user): Avatar mit Anfangsbuchstabe, Name, „Lokaler Benutzer“ */
+  {
+    const char *nm = session && session->full[0] ? session->full : session && session->name[0] ? session->name : L("Guest");
+    char ini[8] = {0};
+    g_utf8_strncpy(ini, nm, 1);
+    char *up = g_utf8_strup(ini, -1);
+    cairo_arc(cr, 32, 36, 17, 0, 2 * M_PI);
+    cairo_pattern_t *ap = cairo_pattern_create_linear(15, 19, 49, 53);
+    cairo_pattern_add_color_stop_rgb(ap, 0, .49, .36, 1);
+    cairo_pattern_add_color_stop_rgb(ap, 1, .27, .2, .56);
+    cairo_set_source(cr, ap);
+    cairo_fill(cr);
+    cairo_pattern_destroy(ap);
+    text(cr, 32, 37, up, 15, true, (RGBA){1, 1, 1, 1}, 0, 1);
+    g_free(up);
+    text(cr, 58, 30, nm, 13, true, T->fg, 120, 0);
+    text(cr, 58, 46, L("Local user"), 11, false, T->fg2, 120, 0);
+    cairo_rectangle(cr, 12, 62, 172, 1);
+    set(cr, T->line);
+    cairo_fill(cr);
+  }
   for (int i = 0; i < ST_N; i++) {
-    double y = 16 + i * 32;
+    double y = 68 + i * 31;
     if (i == sec) {
       rrect(cr, 10, y, 176, 28, 7);
       set(cr, ACCENT);
       cairo_fill(cr);
     }
-    rrect(cr, 18, y + 5, 18, 18, 5);
-    set(cr, i == sec ? (RGBA){1, 1, 1, .9} : ICO[i]);
-    cairo_fill(cr);
-    text(cr, 44, y + 14, L(ST_NAMES[i]), 12.5, false, i == sec ? (RGBA){1, 1, 1, 1} : T->fg, 140, 0);
+    st_icon(cr, 18, y + 4, ST_ORDER[i], ICO[i], i == sec);
+    text(cr, 46, y + 14, L(ST_NAMES[i]), 12.5, false, i == sec ? (RGBA){1, 1, 1, 1} : T->fg, 136, 0);
     st_add(10, y, 176, 28, ST_SECTION, i);
   }
-  text(cr, 18, h - 26, L("Xfce Settings…"), 12, false, ACCENT, 170, 0);
-  st_add(10, h - 40, 176, 28, ST_XFCE, 0);
 
   double x0 = 216;
   text(cr, x0, 34, L(ST_NAMES[sec]), 19, true, T->fg, w - x0 - 20, 0);
-  if (sec == 0) {
+  int sc = ST_ORDER[sec];
+  if (sc == SC_GENERAL) {
+    st_general(cr, x0, w, h);
+  } else if (sc == SC_APPEAR) {
     static const char *const names[3] = {"Light", "Dark", "Auto"};
     static const int mode[3] = {1, 2, 0};
     for (int i = 0; i < 3; i++)
@@ -3962,7 +4150,7 @@ static void paint_settings(Client *c, cairo_t *cr) {
     text_block(cr, x0, 192, L("Auto: light during the day, dark from 7 PM to 7 AM. Windows, the Dock and menus switch "
                               "right away, and so do Fundus, Terminal and the other GTK apps."),
                11.5, false, T->fg2, w - x0 - 24);
-  } else if (sec == 1) {
+  } else if (sc == SC_DOCK) {
     text(cr, x0, 66, L("Position on screen"), 12.5, true, T->fg, 0, 0);
     static const char *const names[3] = {"Left", "Bottom", "Right"};
     static const int pos[3] = {POS_LEFT, POS_BOTTOM, POS_RIGHT};
@@ -3978,7 +4166,7 @@ static void paint_settings(Client *c, cairo_t *cr) {
     text_block(cr, x0, 286, L("Right-click an icon: “Keep in Dock” or “Remove from Dock”. ClokeOS remembers the Dock "
                               "for each user in ~/Library/Preferences."),
                11.5, false, T->fg2, w - x0 - 24);
-  } else if (sec == 2) {
+  } else if (sc == SC_APPS) {
     int nmac = 0, nall = 0;
     for (int i = 0; i < napps; i++)
       if (!apps[i].gone && !apps[i].b.internal[0]) nall++, nmac += apps[i].b.mac;
@@ -3995,19 +4183,18 @@ static void paint_settings(Client *c, cairo_t *cr) {
     text_block(cr, x0, 58, buf, 11.5, false, T->fg2, w - x0 - 24);
     button(cr, x0, h - 52, 200, L("Open Applications Folder"), false);
     st_add(x0, h - 52, 200, 28, ST_OPENAPPS, 0);
-  } else if (sec == 3) {
+  } else if (sc == SC_LANG) {
     text(cr, x0, 66, L("Preferred language"), 12.5, true, T->fg, 0, 0);
-    static const char *const langs[2][2] = {{"en", "English"}, {"de", "Deutsch"}};
-    for (int i = 0; i < 2; i++) {
-      double bx = x0 + i * 130, by = 82;
-      button(cr, bx, by, 120, langs[i][1], !strcmp(l10n_lang(), langs[i][0]));
-      st_add(bx, by, 120, 28, ST_LANG, i);
+    for (int i = 0; i < l10n_count(); i++) {
+      double bx = x0 + (i % 3) * 112, by = 82 + (i / 3) * 34;
+      button(cr, bx, by, 104, l10n_name(i), !strcmp(l10n_lang(), l10n_code(i)));
+      st_add(bx, by, 104, 28, ST_LANG, i);
     }
-    text_block(cr, x0, 128,
+    text_block(cr, x0, 160,
                L("ClokeOS, the login window and the menu bar switch right away. Apps that are already open "
                  "switch the next time they open."),
                11.5, false, T->fg2, w - x0 - 24);
-    text(cr, x0, 196, L("Date and time"), 12.5, true, T->fg, 0, 0);
+    text(cr, x0, 226, L("Date and time"), 12.5, true, T->fg, 0, 0);
     time_t t = time(NULL);
     struct tm tm;
     localtime_r(&t, &tm);
@@ -4015,13 +4202,15 @@ static void paint_settings(Client *c, cairo_t *cr) {
     l10n_date_long(d1, sizeof d1, &tm);
     l10n_menubar_clock(d2, sizeof d2, &tm);
     snprintf(buf, sizeof buf, "%s\n%s", d1, d2);
-    text_block(cr, x0, 214, buf, 12, false, T->fg2, w - x0 - 24);
-    text_block(cr, x0, 268, L("The region follows the language: English uses the US format with AM and PM, Deutsch the "
-                              "German format with a 24-hour clock."),
+    text_block(cr, x0, 244, buf, 12, false, T->fg2, w - x0 - 24);
+    text_block(cr, x0, 298, L("The region follows the language: English uses the US format with AM and PM, the other "
+                              "languages their usual format with a 24-hour clock."),
                11.5, false, T->fg3, w - x0 - 24);
-  } else if (sec == 5) {
+  } else if (sc == SC_KEYB) {
+    st_keyboard(cr, x0, w, h);
+  } else if (sc == SC_WALL) {
     int cols = 5;
-    double tw = 80, th = 50, gx = 88, gy = 76;
+    double tw = 92, th = 58, gx = 100, gy = 86;
     for (int i = 0; i < wall_count(); i++) {
       double bx = x0 + (i % cols) * gx, by = 62 + (i / cols) * gy;
       cairo_save(cr);
@@ -4039,7 +4228,7 @@ static void paint_settings(Client *c, cairo_t *cr) {
       st_add(bx - 3, by - 3, tw + 6, th + 20, ST_WALL, i);
     }
     text(cr, x0, h - 22, L("Wallpapers by Pixel Makes Art (instagram.com/pixelmakesart), used with permission."), 10, false, T->fg3, w - x0 - 20, 0);
-  } else if (sec == 4) {
+  } else if (sc == SC_SHARE) {
     bool on = remote_login_on();
     text(cr, x0, 66, L("Remote Login"), 12.5, true, T->fg, 0, 0);
     button(cr, x0, 82, 90, L("On"), on);
@@ -4088,9 +4277,9 @@ static void click_settings(Client *c, int x, int y) {
     case ST_WALL: set_wallpaper(arg); break;
     case ST_DOCKPOS: set_dock_pos(arg); break;
     case ST_DOCKSIZE: set_dock_size(arg); break;
-    case ST_XFCE: launch_ident("org.xfce.settings.manager"); break;
     case ST_OPENAPPS: spawn("exec thunar /Applications"); break;
-    case ST_LANG: set_language(arg ? "de" : "en"); break;
+    case ST_LANG: set_language(l10n_code((int)arg)); break;
+    case ST_KBD: set_keyboard((int)arg); break;
     case ST_SSH: set_remote_login(arg != 0); break;
     }
     draw_own(c);
@@ -4101,7 +4290,7 @@ static void click_settings(Client *c, int x, int y) {
 static void show_settings(long section) {
   static long last;
   if (section >= 0) last = section;
-  Client *c = own_window(680, 400, "System Settings", paint_settings, click_settings, last);
+  Client *c = own_window(740, 500, "System Settings", paint_settings, click_settings, last);
   if (c) c->app = app_by_ident("com.clokeos.systemeinstellungen");
   draw_menubar();
   draw_dock();
@@ -4781,6 +4970,7 @@ int main(int argc, char **argv) {
   dark = want_dark();
   xsettings_init();
   apply_theme();
+  load_keyboard();
   if (use_comp && !comp_init(dpy, scr, root, SW, SH)) warn("ohne Compositor: keine Schatten, Glas zeigt nur das Hintergrundbild");
   setup_ewmh();
   menubar = ui_window(0, 0, SW, MENUBAR_H, ExposureMask | ButtonPressMask | PointerMotionMask, false,

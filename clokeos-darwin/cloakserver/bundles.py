@@ -57,8 +57,6 @@ APPS = [
      'exec /System/Library/CoreServices/ClokeApps/clokeapps activity', '', ''),
     ('System/Applications', 'System Settings', 'Systemeinstellungen', 'com.clokeos.systemeinstellungen', 'einstellungen',
      None, '', 'settings'),
-    ('System/Applications/Utilities', 'Xfce Settings', 'Xfce-Einstellungen', 'org.xfce.settings.manager', None,
-     'exec xfce4-settings-manager', 'Xfce4-settings* Xfce4-*-settings Xfwm4-settings', ''),
     # nachinstalliert wie ein Programm aus dem Netz: liegt in /Applications
     ('Applications', 'Dillo', 'Dillo', 'org.dillo.dillo', None, 'exec dillo "$@"', 'Dillo', ''),
 ]

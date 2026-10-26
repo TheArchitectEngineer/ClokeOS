@@ -86,7 +86,7 @@ static void fmt_size(char *out, size_t n, unsigned long long b) {
   const char *unit = "GB";
   if (v < 1) v = b / 1e6, unit = "MB";
   snprintf(out, n, v < 10 ? "%.1f %s" : "%.0f %s", v, unit);
-  if (!strcmp(l10n_lang(), "de"))
+  if (l10n_24h())
     for (char *p = out; *p; p++)
       if (*p == '.') *p = ',';
 }

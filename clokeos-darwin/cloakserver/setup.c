@@ -31,6 +31,9 @@ static const struct { const char *name, *tz; } REGIONS[] = {
   {"Germany", "CET-1CEST,M3.5.0,M10.5.0/3"},
   {"Austria", "CET-1CEST,M3.5.0,M10.5.0/3"},
   {"Switzerland", "CET-1CEST,M3.5.0,M10.5.0/3"},
+  {"France", "CET-1CEST,M3.5.0,M10.5.0/3"},
+  {"Spain", "CET-1CEST,M3.5.0,M10.5.0/3"},
+  {"Italy", "CET-1CEST,M3.5.0,M10.5.0/3"},
 };
 #define NREGIONS (int)(sizeof REGIONS / sizeof REGIONS[0])
 
@@ -136,7 +139,7 @@ static void sp_background(cairo_t *cr) {
 }
 
 /* Liste wählbarer Zeilen (Sprache, Region): gibt die Höhe einer Zeile zurück */
-#define SP_ROW 36
+#define SP_ROW 30
 static void sp_list(cairo_t *cr, double x, double y, double w, const char *const *items, int n, int sel) {
   rrect(cr, x, y, w, n * SP_ROW + 8, 10);
   seta(cr, T->fg, .05);
@@ -282,8 +285,13 @@ static void paint_setup(cairo_t *cr, int w, int h, void *arg) {
   const char *next = L("Continue");
   switch (sp) {
   case SP_LANG: {
-    static const char *const langs[2] = {"English", "Deutsch"};
-    sp_list(cr, lx, ly, lw, langs, 2, strcmp(l10n_lang(), "de") ? 0 : 1);
+    const char *names[16];
+    int n = l10n_count(), sel = 0;
+    for (int i = 0; i < n && i < 16; i++) {
+      names[i] = l10n_name(i);
+      if (!strcmp(l10n_code(i), l10n_lang())) sel = i;
+    }
+    sp_list(cr, lx, ly, lw, names, n, sel);
     break;
   }
   case SP_REGION: {
@@ -632,7 +640,10 @@ static void sp_next(void) {
     break;
   case SP_LOOK: setup_finish(); return;
   }
-  if (sp == SP_REGION && sp_region < 0) sp_region = strcmp(l10n_lang(), "de") ? 0 : 3;
+  if (sp == SP_REGION && sp_region < 0) {
+    const char *lg = l10n_lang();
+    sp_region = !strcmp(lg, "de") ? 3 : !strcmp(lg, "fr") ? 6 : !strcmp(lg, "es") ? 7 : !strcmp(lg, "it") ? 8 : 0;
+  }
   draw_setup();
 }
 
@@ -658,8 +669,8 @@ static void setup_click(int x, int y) {
   double lx = cx + 200, lw = SC_W - 400, ly = cy + 200;
   if (sp == SP_LANG && x >= lx && x <= lx + lw) {
     int i = (int)((y - ly - 4) / SP_ROW);
-    if (i >= 0 && i < 2) {
-      set_language(i ? "de" : "en");
+    if (i >= 0 && i < l10n_count()) {
+      set_language(l10n_code(i));
       if (setupwin) XRaiseWindow(dpy, setupwin);
     }
   } else if (sp == SP_REGION && x >= lx && x <= lx + lw) {
@@ -723,7 +734,10 @@ static void setup_key(XKeyEvent *e) {
     return;
   }
   if (sp == SP_LANG && (ks == XK_Up || ks == XK_Down)) {
-    set_language(ks == XK_Down ? "de" : "en");
+    int cur = 0, n = l10n_count();
+    for (int i = 0; i < n; i++)
+      if (!strcmp(l10n_code(i), l10n_lang())) cur = i;
+    set_language(l10n_code((cur + (ks == XK_Down ? 1 : n - 1)) % n));
     if (setupwin) XRaiseWindow(dpy, setupwin);
   } else if (sp == SP_REGION && (ks == XK_Up || ks == XK_Down)) {
     sp_region = (sp_region + (ks == XK_Down ? 1 : NREGIONS - 1)) % NREGIONS;
