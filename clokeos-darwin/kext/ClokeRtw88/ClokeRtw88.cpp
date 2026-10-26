@@ -15,6 +15,7 @@
 #include "rtw8821c_pwr.h"
 #include "rtw8821c_fw.h"
 #include "rtw88_regs.h"
+#include "rtw8821c_table.h"
 
 #define LOG(fmt, ...) IOLog("ClokeRtw88: " fmt "\n", ##__VA_ARGS__)
 
@@ -36,10 +37,13 @@ enum { REG_SYS_ISO_CTRL = 0x00, REG_SYS_CFG1 = 0xF0, REG_SYS_CFG2 = 0xFC };
  * REG_EFUSE_CTRL; der Chip lief schon (die Firmware des Notebooks hat ihn eingeschaltet). */
 enum { REG_EFUSE_CTRL = 0x30, REG_LDO_EFUSE_CTRL = 0x34, PHY_EFUSE_SIZE = 512, PROTECT_SIZE = 96 };
 
+static uint8_t g_logm[512]; /* logische eFuse-Karte, von dump_efuse gefüllt */
+
 static void dump_efuse(volatile uint8_t *base) {
   auto rd32 = [&](unsigned o) { return *(volatile uint32_t *)(base + o); };
   auto wr32 = [&](unsigned o, uint32_t v) { *(volatile uint32_t *)(base + o) = v; };
-  static uint8_t phy[PHY_EFUSE_SIZE], logm[PHY_EFUSE_SIZE];
+  static uint8_t phy[PHY_EFUSE_SIZE];
+  uint8_t *logm = g_logm;
   /* Bank WLAN (Bits 8,9 = 0), 2,5-V-LDO aus */
   wr32(REG_LDO_EFUSE_CTRL, rd32(REG_LDO_EFUSE_CTRL) & ~(3u << 8));
   base[REG_LDO_EFUSE_CTRL + 3] &= (uint8_t)~0x80;
@@ -603,6 +607,109 @@ static void h2c_probe(volatile uint8_t *b) {
            r32(b, REG_FW_DBG7));
 }
 
+/* ---- Stufe 5: PHY einrichten (rtw8821c_phy_set_param): Basisband, AGC und Funkteil aus den rtw88-Tabellen ---- */
+enum { REG_RF_CTRL = 0x1F, REG_WLRF1 = 0xEC, REG_AFE_XTAL_CTRL = 0x24, REG_AFE_PLL_CTRL = 0x28,
+       REG_CCK0_FAREPORT = 0xA2C, REG_RXPSEL = 0x808, RF_A_BASE = 0x2800, RF_A_SIPI = 0xC90, RFREG_MASK = 0xFFFFF };
+
+static void rf_write(volatile uint8_t *b, unsigned addr, uint32_t data) {
+  addr &= 0xff;
+  if (addr == 0) {
+    w32(b, RF_A_SIPI, ((addr << 20) | (data & RFREG_MASK)) & 0x0fffffff);
+    IODelay(13);
+  } else {
+    unsigned a = RF_A_BASE + (addr << 2);
+    w32(b, a, (r32(b, a) & ~(uint32_t)RFREG_MASK) | (data & RFREG_MASK));
+    IODelay(1);
+  }
+}
+
+static uint32_t rf_read(volatile uint8_t *b, unsigned addr) { return r32(b, RF_A_BASE + ((addr & 0xff) << 2)) & RFREG_MASK; }
+
+/* Tabellen mit Bedingungen (if/elif/else/endif) wie rtw_parse_tbl_phy_cond; kind 0 mac (8 Bit), 1 bb/agc (32 Bit), 2 rf */
+struct PhyCond { unsigned rfe, intf, pkg, cut; };
+
+static bool cond_positive(uint32_t c, const PhyCond &d) {
+  unsigned rfe = c & 0xff, intf = (c >> 8) & 0xf, pkg = (c >> 12) & 0xf, cut = (c >> 24) & 0xf;
+  if (cut && cut != d.cut) return false;
+  if (pkg && pkg != d.pkg) return false;
+  if (intf && intf != d.intf) return false;
+  return rfe == d.rfe;
+}
+
+static unsigned load_table(volatile uint8_t *b, const uint32_t *t, unsigned n, int kind, const PhyCond &d) {
+  uint32_t pos = 0;
+  bool matched = true, skipped = false;
+  unsigned written = 0;
+  for (unsigned i = 0; i + 1 < n; i += 2) {
+    uint32_t a = t[i], v = t[i + 1];
+    if (a & 0x80000000u) {
+      switch ((a >> 28) & 3) {
+        case 3: matched = true; skipped = false; break;
+        case 2: matched = skipped ? false : true; break;
+        default: pos = a; break;
+      }
+    } else if (a & 0x40000000u) {
+      if (!skipped) {
+        if (cond_positive(pos, d)) { matched = true; skipped = true; }
+        else { matched = false; skipped = false; }
+      } else matched = false;
+    } else if (matched) {
+      written++;
+      if (kind == 0) w8(b, a, (uint8_t)v);
+      else if (kind == 1) {
+        if (a == 0xfe) IOSleep(50);
+        else if (a == 0xfd) IOSleep(5);
+        else if (a == 0xfc) IOSleep(1);
+        else if (a == 0xfb || a == 0xfa || a == 0xf9) IODelay(a == 0xfb ? 50 : a == 0xfa ? 5 : 1);
+        else w32(b, a, v);
+      } else {
+        if (a == 0xffe) IOSleep(50);
+        else if (a == 0xfe) IODelay(100);
+        else rf_write(b, a, v);
+      }
+    }
+  }
+  return written;
+}
+
+static bool phy_init(volatile uint8_t *b, unsigned cut) {
+  const uint8_t *m = g_logm;
+  unsigned rfe = m[0xCA] & 0x1f, xtal = m[0xB9] & 0x3f;
+  unsigned pkg_type = (m[0xCA] & 0x20) ? 1 : 0;
+  PhyCond d = {rfe, 1u /* PCIe */, pkg_type ? pkg_type : 15u, cut ? cut : 15u};
+  bool btg = rfe == 2 || rfe == 4 || rfe == 7 || rfe == 10 || rfe == 12 || rfe == 15;
+  LOG("phy: rfe option %u, xtal cap %u, pkg %u, cut %u, btg %d", rfe, xtal, pkg_type, cut, (int)btg);
+
+  uint8_t v = r8(b, REG_SYS_FUNC_EN) | (1 << 6); /* BIT_FEN_PCIEA */
+  w8(b, REG_SYS_FUNC_EN, v);
+  v |= 3; /* BB_RSTB | BB_GLB_RST */
+  w8(b, REG_SYS_FUNC_EN, v);
+  v &= (uint8_t)~3;
+  w8(b, REG_SYS_FUNC_EN, v);
+  v |= 3;
+  w8(b, REG_SYS_FUNC_EN, v);
+  w8(b, REG_RF_CTRL, 7); /* RF_EN | RF_RSTB | RF_SDM_RSTB */
+  IODelay(10);
+  w8(b, REG_WLRF1 + 3, 7);
+  IODelay(10);
+  w32(b, REG_RXPSEL, r32(b, REG_RXPSEL) & ~(3u << 28));
+
+  unsigned nm = load_table(b, rtw8821c_mac, rtw8821c_mac_n, 0, d);
+  unsigned nb = load_table(b, rtw8821c_bb, rtw8821c_bb_n, 1, d);
+  unsigned na = load_table(b, rtw8821c_agc, rtw8821c_agc_n, 1, d);
+  unsigned ng = btg ? load_table(b, rtw8821c_agc_btg_type2, rtw8821c_agc_btg_type2_n, 1, d) : 0;
+  unsigned nr = load_table(b, rtw8821c_rf_a, rtw8821c_rf_a_n, 2, d);
+  LOG("phy: tables written: mac %u, bb %u, agc %u, agc-btg %u, rf %u", nm, nb, na, ng, nr);
+
+  w32(b, REG_AFE_XTAL_CTRL, (r32(b, REG_AFE_XTAL_CTRL) & ~0x7e000000u) | (xtal << 25));
+  w32(b, REG_AFE_PLL_CTRL, (r32(b, REG_AFE_PLL_CTRL) & ~0x7eu) | (xtal << 1));
+  w32(b, REG_CCK0_FAREPORT, r32(b, REG_CCK0_FAREPORT) & ~((1u << 18) | (1u << 22)));
+  w32(b, REG_RXPSEL, r32(b, REG_RXPSEL) | (3u << 28));
+  LOG("phy: RF A reg 0x00 = 0x%05x, reg 0x18 = 0x%05x, reg 0x08 = 0x%05x; BB 0x808 = 0x%08x", rf_read(b, 0), rf_read(b, 0x18),
+      rf_read(b, 8), r32(b, 0x808));
+  return rf_read(b, 0) != RFREG_MASK && rf_read(b, 0) != 0;
+}
+
 class ClokeRtw88 : public IOService {
   OSDeclareDefaultStructors(ClokeRtw88)
   IOMemoryMap *map = nullptr;
@@ -668,8 +775,10 @@ bool ClokeRtw88::start(IOService *provider) {
     return true;
   }
   dump_efuse(base);
-  if (on >= 2 && power_cycle(base, (cfg1 >> 12) & 0xf) && on >= 3 && download_fw(base) && on >= 4 && mac_init(base))
+  if (on >= 2 && power_cycle(base, (cfg1 >> 12) & 0xf) && on >= 3 && download_fw(base) && on >= 4 && mac_init(base)) {
     h2c_probe(base);
+    if (on >= 5) phy_init(base, (cfg1 >> 12) & 0xf);
+  }
   return true;
 }
 
