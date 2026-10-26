@@ -613,16 +613,11 @@ static void h2c_probe(volatile uint8_t *b) {
 enum { REG_RF_CTRL = 0x1F, REG_WLRF1 = 0xEC, REG_AFE_XTAL_CTRL = 0x24, REG_AFE_PLL_CTRL = 0x28,
        REG_CCK0_FAREPORT = 0xA2C, REG_RXPSEL = 0x808, RF_A_BASE = 0x2800, RF_A_SIPI = 0xC90, RFREG_MASK = 0xFFFFF };
 
+/* Beim 8821C geht jeder Funk-Schreibzugriff über SIPI (ops->write_rf = rtw_phy_write_rf_reg_sipi), nicht direkt */
 static void rf_write(volatile uint8_t *b, unsigned addr, uint32_t data) {
   addr &= 0xff;
-  if (addr == 0) {
-    w32(b, RF_A_SIPI, ((addr << 20) | (data & RFREG_MASK)) & 0x0fffffff);
-    IODelay(13);
-  } else {
-    unsigned a = RF_A_BASE + (addr << 2);
-    w32(b, a, (r32(b, a) & ~(uint32_t)RFREG_MASK) | (data & RFREG_MASK));
-    IODelay(1);
-  }
+  w32(b, RF_A_SIPI, ((addr << 20) | (data & RFREG_MASK)) & 0x0fffffff);
+  IODelay(13);
 }
 
 static uint32_t rf_read(volatile uint8_t *b, unsigned addr) { return r32(b, RF_A_BASE + ((addr & 0xff) << 2)) & RFREG_MASK; }
