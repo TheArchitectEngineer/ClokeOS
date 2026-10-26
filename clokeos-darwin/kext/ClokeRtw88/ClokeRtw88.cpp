@@ -65,7 +65,7 @@ static void dump_efuse(volatile uint8_t *base) {
     phy[a] = (uint8_t)ctl;
   }
   base[0xCF] = 0;
-  memset(logm, 0xff, sizeof logm);
+  memset(logm, 0xff, sizeof g_logm);
   unsigned p = 0, blocks = 0;
   bool bad = false;
   while (p < PHY_EFUSE_SIZE - PROTECT_SIZE) {
@@ -84,7 +84,7 @@ static void dump_efuse(volatile uint8_t *base) {
     for (int i = 0; i < 4; i++) {
       if (wen & (1u << i)) continue;
       unsigned li = (blk << 3) + ((unsigned)i << 1);
-      if (p + 1 > PHY_EFUSE_SIZE - PROTECT_SIZE || li + 1 >= sizeof logm) {
+      if (p + 1 > PHY_EFUSE_SIZE - PROTECT_SIZE || li + 1 >= sizeof g_logm) {
         bad = true;
         break;
       }
