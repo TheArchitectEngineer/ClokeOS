@@ -9,6 +9,12 @@
 
 /* wall.c: Hintergrundbild "Goldenes Tor" aus clokeos.html */
 void wall_draw(cairo_t *cr, double W, double H, bool dark);
+extern int wall_sel;
+int wall_count(void);
+const char *wall_title(int i);
+const char *wall_key(int i);
+int wall_find(const char *key);
+void wall_thumb(cairo_t *cr, int idx, double x, double y, double w, double h, bool dark);
 
 /* cloakserver.c */
 void rrect(cairo_t *cr, double x, double y, double w, double h, double r);

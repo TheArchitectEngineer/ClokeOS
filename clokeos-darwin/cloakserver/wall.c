@@ -6,6 +6,8 @@
 #include "cloakserver.h"
 
 #include <math.h>
+#include <stdio.h>
+#include <string.h>
 
 static long long seed;
 static double rnd(void) { seed = (seed * 16807) % 2147483647; return (double)seed / 2147483647; }
@@ -200,7 +202,7 @@ static void wall_draw_bridge(cairo_t *cr, double W, double H, bool dark) {
  * aus der Vorlage, overlay-desktop/Library/ClokeOS/Wallpapers/{light,dark}.png). Das Bild füllt den
  * Bildschirm ("cover", aus der Mitte beschnitten). Fehlt die Datei, bleibt der alte Hintergrund
  * "Goldenes Tor". */
-void wall_draw(cairo_t *cr, double W, double H, bool dark) {
+static void wall_draw_default(cairo_t *cr, double W, double H, bool dark) {
   static cairo_surface_t *img[2];
   int k = dark ? 1 : 0;
   if (!img[k]) {
@@ -223,6 +225,154 @@ void wall_draw(cairo_t *cr, double W, double H, bool dark) {
   cairo_scale(cr, sc, sc);
   cairo_set_source_surface(cr, img[k], 0, 0);
   cairo_pattern_set_filter(cairo_get_source(cr), CAIRO_FILTER_GOOD);
+  cairo_paint(cr);
+  cairo_restore(cr);
+}
+
+/* ---------------------------------------------------------------------------------------- */
+/* Auswahl: das Standardbild, vier gezeichnete Motive aus dem Prototyp (drawWall in clokeos.html)  */
+/* und die Bilder von Pixel Makes Art (instagram.com/pixelmakesart, mit Erlaubnis).               */
+
+static const struct {
+  const char *key;
+  unsigned light_bg[2], light_f[7], dark_bg[2], dark_f[7];
+} PROC[4] = {
+  {"velvet", {0xcdbcff, 0xf4d8ea}, {0x9a78ff, 0xb993ff, 0xe79fd2, 0x7553e6, 0xf2b7da, 0x8c63f2, 0xd98ccd},
+   {0x120c25, 0x2b1236}, {0x3c2190, 0x5a2aa0, 0x7e2b76, 0x26155f, 0x9a3d80, 0x4a238f, 0x6c2470}},
+  {"dusk", {0xffd6b5, 0xffb2a6}, {0xff9468, 0xf0667e, 0xffb874, 0xd9557e, 0xffc9a0, 0xe8746a, 0xf59a8c},
+   {0x1a0f1d, 0x3b1521}, {0x7a2539, 0xa8343f, 0x5c1b3b, 0xc45a3b, 0x41162f, 0x8e2c3d, 0x6a1f37}},
+  {"tide", {0xc2e7f3, 0xd9dcff}, {0x64b6db, 0x7d8df0, 0x52d2c6, 0x6b80e1, 0xa6d9f4, 0x5aa0e0, 0x88b8f0},
+   {0x06141f, 0x0f1739}, {0x0f4b6c, 0x26348b, 0x0d5d5b, 0x1b2b6f, 0x1f6f8f, 0x143d7a, 0x0e5470}},
+  {"graphite", {0xe4e2e8, 0xc9c6d0}, {0xb4b0bd, 0x9d98a8, 0xcfccd6, 0x8a8597, 0xbdb9c6, 0xa6a2b0, 0x94909f},
+   {0x121115, 0x24222a}, {0x2e2c35, 0x3a3742, 0x26242c, 0x45424e, 0x302e37, 0x3d3a45, 0x2a2830}},
+};
+static const char *const PROC_TITLES[4] = {"Velvet", "Dusk", "Tide", "Graphite"};
+#define N_ART 13
+#define WALL_N (1 + 4 + N_ART)
+
+static const char *const ART_TITLES[N_ART] = {"Rainbow Chalk", "Smile Collage", "Halftone Bloom", "Hatch Waves", "Stamp Circles",
+                                              "Violet Dust", "Bokeh", "Neon Streaks", "Neon Glow", "Light Streaks",
+                                              "Smile Flower", "Green Folds", "Violet Arches"};
+
+int wall_sel; /* Index; 0 = Standard */
+int wall_count(void) { return WALL_N; }
+
+const char *wall_title(int i) {
+  if (i == 0) return "ClokeOS";
+  if (i <= 4) return PROC_TITLES[i - 1];
+  return ART_TITLES[i - 5];
+}
+
+const char *wall_key(int i) {
+  static char k[N_ART][8];
+  if (i == 0) return "default";
+  if (i <= 4) return PROC[i - 1].key;
+  snprintf(k[i - 5], sizeof k[0], "art%02d", i - 4);
+  return k[i - 5];
+}
+
+int wall_find(const char *key) {
+  for (int i = 0; i < WALL_N; i++)
+    if (!strcmp(key, wall_key(i))) return i;
+  return 0;
+}
+
+static void wall_draw_proc(cairo_t *cr, double W, double H, bool dark, int k) {
+  const unsigned *bg = dark ? PROC[k].dark_bg : PROC[k].light_bg, *f = dark ? PROC[k].dark_f : PROC[k].light_f;
+  cairo_pattern_t *g = cairo_pattern_create_linear(0, 0, W * .6, H);
+  stop(g, 0, bg[0], 1);
+  stop(g, 1, bg[1], 1);
+  cairo_set_source(cr, g);
+  fill_rect(cr, 0, 0, W, H);
+  cairo_pattern_destroy(g);
+  double step = fmax(2, W / 120);
+  for (int i = 0; i < 7; i++) {
+    double y0 = H * (.16 + i * .115), amp = H * (.07 + .025 * sin(i * 1.7)), fr = 1.05 + i * .21, ph = i * 1.37;
+#define YAT(x) (y0 + sin((x) / W * M_PI * fr + ph) * amp + sin((x) / W * M_PI * 3.3 + ph * 2) * amp * .3)
+    cairo_new_path(cr);
+    cairo_move_to(cr, 0, H);
+    for (double x = 0; x <= W + step; x += step) cairo_line_to(cr, x, YAT(x));
+    cairo_line_to(cr, W, H);
+    cairo_close_path(cr);
+    cairo_push_group(cr);
+    cairo_pattern_t *lg = cairo_pattern_create_linear(0, y0 - amp, 0, y0 + H * .5);
+    stop(lg, 0, f[i % 7], 1);
+    stop(lg, 1, bg[1], 1);
+    cairo_set_source(cr, lg);
+    cairo_fill_preserve(cr);
+    cairo_pattern_destroy(lg);
+    cairo_new_path(cr);
+    cairo_pop_group_to_source(cr);
+    cairo_paint_with_alpha(cr, .55 + i * .05);
+    cairo_new_path(cr);
+    bool first = true;
+    for (double x = 0; x <= W + step; x += step) {
+      double y = YAT(x) + 1;
+      if (first) cairo_move_to(cr, x, y), first = false;
+      else cairo_line_to(cr, x, y);
+    }
+    cairo_set_source_rgba(cr, 1, 1, 1, dark ? .16 : .38);
+    cairo_set_line_width(cr, fmax(1, W / 1100));
+    cairo_stroke(cr);
+  }
+  g = cairo_pattern_create_radial(W / 2, H * .42, fmin(W, H) * .2, W / 2, H / 2, fmax(W, H) * .78);
+  stop(g, 0, 0x000000, 0);
+  if (dark) stop(g, 1, 0x000000, .45);
+  else stop(g, 1, 0x28143c, .12);
+  cairo_set_source(cr, g);
+  fill_rect(cr, 0, 0, W, H);
+  cairo_pattern_destroy(g);
+}
+
+/* Bilddatei, aus der Mitte beschnitten ("cover") */
+static bool wall_draw_file(cairo_t *cr, double W, double H, const char *path) {
+  cairo_surface_t *s = cairo_image_surface_create_from_png(path);
+  if (cairo_surface_status(s) != CAIRO_STATUS_SUCCESS) {
+    cairo_surface_destroy(s);
+    return false;
+  }
+  double iw = cairo_image_surface_get_width(s), ih = cairo_image_surface_get_height(s);
+  double sc = fmax(W / iw, H / ih);
+  cairo_save(cr);
+  cairo_translate(cr, (W - iw * sc) / 2, (H - ih * sc) / 2);
+  cairo_scale(cr, sc, sc);
+  cairo_set_source_surface(cr, s, 0, 0);
+  cairo_pattern_set_filter(cairo_get_source(cr), CAIRO_FILTER_GOOD);
+  cairo_paint(cr);
+  cairo_restore(cr);
+  cairo_surface_destroy(s);
+  return true;
+}
+
+static void wall_draw_idx(cairo_t *cr, double W, double H, bool dark, int idx, bool thumb) {
+  char p[96];
+  if (idx >= 1 && idx <= 4) return wall_draw_proc(cr, W, H, dark, idx - 1);
+  if (idx >= 5) {
+    snprintf(p, sizeof p, "/Library/ClokeOS/Wallpapers/%s%s.png", wall_key(idx), thumb ? "-t" : "");
+    if (wall_draw_file(cr, W, H, p)) return;
+  } else if (thumb) {
+    snprintf(p, sizeof p, "/Library/ClokeOS/Wallpapers/%s-t.png", dark ? "dark" : "light");
+    if (wall_draw_file(cr, W, H, p)) return;
+  }
+  wall_draw_default(cr, W, H, dark);
+}
+
+void wall_draw(cairo_t *cr, double W, double H, bool dark) { wall_draw_idx(cr, W, H, dark, wall_sel, false); }
+
+/* Vorschau für die Systemeinstellungen, einmal gezeichnet und gemerkt */
+void wall_thumb(cairo_t *cr, int idx, double x, double y, double w, double h, bool dark) {
+  static cairo_surface_t *cache[WALL_N][2];
+  int k = dark ? 1 : 0;
+  if (!cache[idx][k]) {
+    cache[idx][k] = cairo_image_surface_create(CAIRO_FORMAT_RGB24, 160, 100);
+    cairo_t *c = cairo_create(cache[idx][k]);
+    wall_draw_idx(c, 160, 100, dark, idx, true);
+    cairo_destroy(c);
+  }
+  cairo_save(cr);
+  cairo_translate(cr, x, y);
+  cairo_scale(cr, w / 160, h / 100);
+  cairo_set_source_surface(cr, cache[idx][k], 0, 0);
   cairo_paint(cr);
   cairo_restore(cr);
 }

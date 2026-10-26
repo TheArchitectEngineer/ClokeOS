@@ -48,7 +48,7 @@ for p in srcs:
             if re.search(r'[A-Za-z]{2}', t) and '%s/' not in t:
                 used.add(t)
     # Felder, deren Einträge erst bei der Ausgabe L() durchlaufen (siehe Kommentare im Code)
-    for name in ('head', 'sub', 'POWER_LABEL', 'ST_NAMES', 'names', 'sizes', 'labels', 'ROPT', 'REGIONS'):
+    for name in ('head', 'sub', 'POWER_LABEL', 'ST_NAMES', 'names', 'sizes', 'labels', 'ROPT', 'REGIONS', 'ART_TITLES', 'PROC_TITLES'):
         for m in re.finditer(r'\b' + name + r'\b[^=;{]*=\s*\{(.*?)\};', code, flags=re.S):
             for lit in re.findall(r'"((?:[^"\\]|\\.)*)"', m.group(1)):
                 s = c_strings('"' + lit + '"')
@@ -67,7 +67,7 @@ for line in open(os.path.join(here, 'strings-de.h'), encoding='utf-8'):
 # Texte, die zur Laufzeit durch L() gehen (Partitions- und Kontonamen)
 used |= {'EFI System Partition', 'Guest'}
 same = {'hello', 'hallo', 'bonjour', 'hola', 'ciao', 'olá', 'hej', '@FILL@', 'Terminal', 'OK', 'Kernel', 'Build', 'Search', 'Fundus', 'ClokeOS', 'Dillo', 'English', 'Deutsch', 'Partition',
-        'Launchpad', 'System Administrator'}
+        'Launchpad', 'System Administrator', 'Velvet', 'Bokeh'}
 missing = sorted(s for s in used if s not in table and s not in same and not re.fullmatch(r'[\W\d_]*', s))
 unused = sorted(s for s in table if s not in used)
 for s in missing:

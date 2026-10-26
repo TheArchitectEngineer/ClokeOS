@@ -699,6 +699,15 @@ static void apply_theme(void) {
   comp_dirty_all();
 }
 
+static void save_prefs(void);
+static void redraw_all(void);
+static void set_wallpaper(long idx) {
+  wall_sel = (int)idx;
+  apply_theme();
+  save_prefs();
+  redraw_all();
+}
+
 static void set_theme_mode(long mode) {
   theme_mode = (int)mode;
   bool was = dark;
@@ -2010,7 +2019,7 @@ static void start_session(const Account *a) {
   scan_apps();
   load_prefs();
   render_icons();
-  if (want_dark() != dark) apply_theme();
+  if (want_dark() != dark || wall_sel) apply_theme();
   update_workarea();
   gm_start(); /* als der Benutzer, auf dessen Sitzungsbus */
 }
@@ -3507,6 +3516,8 @@ static void load_prefs(void) {
   pref_path(p, sizeof p, ".GlobalPreferences.plist");
   d = read_bytes(p, &n);
   theme_mode = 0; /* wie im Prototyp: automatisch */
+  wall_sel = 0;
+  if (d && plist_get(d, n, "ClokeWallpaper", v, sizeof v)) wall_sel = wall_find(v);
   if (d) {
     if (plist_get(d, n, "AppleInterfaceStyle", v, sizeof v) && !strcmp(v, "Dark")) theme_mode = 2;
     else if (!plist_get(d, n, "AppleInterfaceStyleSwitchesAutomatically", v, sizeof v) || !strcmp(v, "0")) theme_mode = 1;
@@ -3530,8 +3541,9 @@ static void save_prefs(void) {
   pref_path(p, sizeof p, "com.clokeos.dock.plist");
   if (plist_write(p, dk, 3)) own_by_session(p);
   else warn("kann %s nicht schreiben", p);
-  PlistItem g[2];
+  PlistItem g[3];
   int ng = 0;
+  g[ng++] = (PlistItem){.key = "ClokeWallpaper", .s = wall_key(wall_sel)};
   if (theme_mode == 2) g[ng++] = (PlistItem){.key = "AppleInterfaceStyle", .s = "Dark"};
   g[ng++] = (PlistItem){.key = "AppleInterfaceStyleSwitchesAutomatically", .i = theme_mode == 0};
   pref_path(p, sizeof p, ".GlobalPreferences.plist");
@@ -3841,15 +3853,15 @@ static void lp_key(XKeyEvent *e) {
 /* Erscheinungsbild (Hell, Dunkel, Automatisch), Schreibtisch & Dock (Lage, Größe), Programme   */
 /* (wie man installiert). Alles Übrige bleibt in den Xfce-Einstellungen.                        */
 
-enum { ST_SECTION, ST_THEME, ST_DOCKPOS, ST_DOCKSIZE, ST_XFCE, ST_OPENAPPS, ST_LANG, ST_SSH };
-static struct { int x, y, w, h, act; long arg; } st_hit[24];
+enum { ST_SECTION, ST_THEME, ST_DOCKPOS, ST_DOCKSIZE, ST_XFCE, ST_OPENAPPS, ST_LANG, ST_SSH, ST_WALL };
+static struct { int x, y, w, h, act; long arg; } st_hit[48];
 static int nst_hit;
-static const char *const ST_NAMES[] = {"Appearance", "Desktop & Dock", "Applications", "Language & Region", "Sharing"};
-#define ST_N 5
+static const char *const ST_NAMES[] = {"Appearance", "Desktop & Dock", "Applications", "Language & Region", "Sharing", "Wallpaper"};
+#define ST_N 6
 static const int DOCK_SIZES[3] = {40, 50, 64};
 
 static void st_add(double x, double y, double w, double h, int act, long arg) {
-  if (nst_hit < 24) st_hit[nst_hit++] = (typeof(st_hit[0])){(int)x, (int)y, (int)w, (int)h, act, arg};
+  if (nst_hit < 48) st_hit[nst_hit++] = (typeof(st_hit[0])){(int)x, (int)y, (int)w, (int)h, act, arg};
 }
 
 /* kleines Bild eines Bildschirms: Hintergrund, Menüleiste, Fenster, Dock an der Stelle pos */
@@ -3923,7 +3935,7 @@ static void paint_settings(Client *c, cairo_t *cr) {
   cairo_rectangle(cr, 196, 0, 1, h);
   set(cr, T->line);
   cairo_fill(cr);
-  static const RGBA ICO[ST_N] = {{.49, .36, 1, 1}, {.2, .55, .95, 1}, {.2, .72, .45, 1}, {.95, .55, .2, 1}, {.45, .47, .55, 1}};
+  static const RGBA ICO[ST_N] = {{.49, .36, 1, 1}, {.2, .55, .95, 1}, {.2, .72, .45, 1}, {.95, .55, .2, 1}, {.45, .47, .55, 1}, {.9, .35, .6, 1}};
   for (int i = 0; i < ST_N; i++) {
     double y = 16 + i * 32;
     if (i == sec) {
@@ -4007,6 +4019,26 @@ static void paint_settings(Client *c, cairo_t *cr) {
     text_block(cr, x0, 268, L("The region follows the language: English uses the US format with AM and PM, Deutsch the "
                               "German format with a 24-hour clock."),
                11.5, false, T->fg3, w - x0 - 24);
+  } else if (sec == 5) {
+    int cols = 5;
+    double tw = 80, th = 50, gx = 88, gy = 76;
+    for (int i = 0; i < wall_count(); i++) {
+      double bx = x0 + (i % cols) * gx, by = 62 + (i / cols) * gy;
+      cairo_save(cr);
+      rrect(cr, bx, by, tw, th, 6);
+      cairo_clip(cr);
+      wall_thumb(cr, i, bx, by, tw, th, dark);
+      cairo_restore(cr);
+      if (i == wall_sel) {
+        rrect(cr, bx - 2, by - 2, tw + 4, th + 4, 8);
+        set(cr, ACCENT);
+        cairo_set_line_width(cr, 3);
+        cairo_stroke(cr);
+      }
+      text(cr, bx + tw / 2, by + th + 12, L(wall_title(i)), 10, i == wall_sel, T->fg, 84, 1);
+      st_add(bx - 3, by - 3, tw + 6, th + 20, ST_WALL, i);
+    }
+    text(cr, x0, h - 22, L("Wallpapers by Pixel Makes Art (instagram.com/pixelmakesart), used with permission."), 10, false, T->fg3, w - x0 - 20, 0);
   } else if (sec == 4) {
     bool on = remote_login_on();
     text(cr, x0, 66, L("Remote Login"), 12.5, true, T->fg, 0, 0);
@@ -4053,6 +4085,7 @@ static void click_settings(Client *c, int x, int y) {
     switch (st_hit[k].act) {
     case ST_SECTION: c->data = arg; break;
     case ST_THEME: set_theme_mode(arg); break;
+    case ST_WALL: set_wallpaper(arg); break;
     case ST_DOCKPOS: set_dock_pos(arg); break;
     case ST_DOCKSIZE: set_dock_size(arg); break;
     case ST_XFCE: launch_ident("org.xfce.settings.manager"); break;
@@ -4756,7 +4789,7 @@ int main(int argc, char **argv) {
   scan_apps();
   load_prefs();
   render_icons();
-  if (want_dark() != dark) apply_theme();
+  if (want_dark() != dark || wall_sel) apply_theme();
   layout_dock();
   update_workarea();
   int dwx, dwy, dww, dwh;

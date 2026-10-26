@@ -167,6 +167,12 @@ Later, "Restart in Recovery…" in the ClokeOS menu starts the recovery on the d
 - Downloads continue where they broke off
 - GTK theme ClokeOS in the desktop's colors
 - Slimmer recovery (under 600 MB instead of 1.4 GB)
+- All CPU cores on PCs, including hybrid CPUs such as the Intel i5-1235U (12 threads on an HP 15s-fq5655ng); hold U at power-on for the single-core kernel
+- I²C touchpads (Intel LPSS), tested on the HP 15s-fq5655ng
+- Updater: System updates arrive through the EFI partition (\`clokeos-update\`, Recovery option "Update"), no reinstall needed
+- Apps look like their Mac counterparts: Fundus like Finder, Search like Safari with the address bar in the window bar and back/forward buttons next to the traffic lights; new icon theme ClokeOS
+- 18 wallpapers (System Settings > Wallpaper): the ClokeOS default, four drawn ones from the prototype and 13 artworks by [Pixel Makes Art](https://www.instagram.com/pixelmakesart), used with permission
+- Wi-Fi driver for Realtek RTL8821CE in development (ClokeRtw88, off by default; boot argument \`cloke_wifi\`): firmware loads and runs, the radio receives, networks are not listed yet
 
 ## What is inside
 
@@ -175,7 +181,7 @@ Later, "Restart in Recovery…" in the ClokeOS menu starts the recovery on the d
 - Recovery with installer, online help, Disk Utility and Terminal
 - $macnote
 
-Limits: one CPU core, software graphics through the firmware, few drivers (see above). Tested in QEMU (x86_64 emulated, also with USB stick, NVMe and SATA SSD and PS/2 input; arm64 with Apple's hypervisor) and on an HP 15s-fq5655ng (boot from USB, recovery).
+Limits: no Wi-Fi yet, software graphics through the firmware, few drivers (see above). Tested in QEMU (x86_64 emulated, also with USB stick, NVMe and SATA SSD and PS/2 input; arm64 with Apple's hypervisor) and on an HP 15s-fq5655ng (boot from USB, recovery).
 
 ## Files
 

@@ -118,7 +118,7 @@ cd clokeos-darwin && CLOKEOS_FLAVOR=desktop ./brand.sh && CLOKEOS_FLAVOR=desktop
 
 CloakServer (`clokeos-darwin/cloakserver/`) is ClokeOS' window server, for now an X11 window manager with its own UI, written in C with Xlib, cairo, pango and librsvg:
 
-- Wallpaper: pink papercut layers (`wallpapers/make.swift` builds the light and the plum dark variant from the artwork into `overlay-desktop/Library/ClokeOS/Wallpapers/`, `wall.c` draws it covering the screen); the old "Golden Gate" bridge stays as a fallback if the files are missing. The HTML prototype still has the bridge
+- Wallpaper: pink papercut layers (`wallpapers/make.swift` builds the light and the plum dark variant from the artwork into `overlay-desktop/Library/ClokeOS/Wallpapers/`, `wall.c` draws it covering the screen); the old "Golden Gate" bridge stays as a fallback if the files are missing. System Settings > Wallpaper offers 18 wallpapers: this default, four drawn ones from the prototype (Velvet, Dusk, Tide, Graphite, each light and dark) and 13 artworks by Pixel Makes Art (see Credits); the choice is saved as `ClokeWallpaper` in `~/Library/Preferences/.GlobalPreferences.plist`. The HTML prototype still has the bridge
 - Menu bar: ClokeOS menu (About ClokeOS, System Settings, Activity Monitor, Applications, Sleep, Restart…, Shut Down…, Restart in Recovery…, Log Out), the active app's name and menus, network with IP address, search (opens Launchpad), appearance (auto, light, dark), clock with date
 - Global menu bar as on macOS: the active app's menus sit at the top next to the cape, not in the window, with submenus, check marks and shortcuts written as on macOS (⌃⌥⇧⌘). GTK apps like Fundus (Thunar) and Terminal export their menu bar via the GTK module `appmenu-gtk-module` over D-Bus (from vala-panel-appmenu 25.04, LGPL-3, with a small patch, `menubar/appmenu-clokeos.patch`); the helper `cloakmenu` reads it as the logged-in user and passes it to CloakServer. Mac apps put their menu into the window property `_CLOKE_MENU`; Darling's AppKit does that (`macapps/appkit/clokemenu.m`)
 - Language as on macOS: English by default, German in System Settings > Language & Region and in the setup assistant. CloakServer, login, menu bar and app names switch immediately; date and clock follow the language. Strings are English in the code, `L()` translates them (`cloakserver/l10n.c`, translations in `strings-de.h`, also for the installer; `cloakserver/l10n-check.py` reports missing ones). App bundles have English names (Notes.app, Calculator.app …), their German names are in `Contents/Resources/de.lproj/InfoPlist.strings` as on macOS
@@ -311,3 +311,8 @@ The kernel is the smaller problem, since XNU is open source (Apple Public Source
 Custom images (for example for the Raspberry Pi or with a custom kernel) need PureDarwin's Nix build on Linux (about 60 GB) and Apple's `MacOSX11.3.sdk`, which you have to get yourself because it may not be redistributed.
 
 Important: Apple's trademarks, icons and fonts must not be used. ClokeOS uses its own names, icons and logo.
+
+## Credits
+
+- Wallpapers: 13 artworks by [Pixel Makes Art](https://www.instagram.com/pixelmakesart) (Instagram), used with permission. Thank you!
+- PureDarwin, Darwin and XNU (Apple Public Source License 2.0); Darling for the Mac frameworks; the Linux `rtw88` driver (Realtek, GPL-2.0 or BSD-3-Clause) as the reference for the Wi-Fi driver, firmware from `linux-firmware` under Realtek's redistribution licence.
