@@ -512,9 +512,14 @@ bool ClokeI2CHID::start(IOService *provider) {
       base = nullptr;
     }
     /* keine (brauchbare) Adresse: selbst eine suchen und BAR0 dorthin legen */
-    if (attempt == 3) break;
+    if (attempt == 4) break;
     if (!attempt) scanBars();
-    uint64_t low = (is64 && gLowHigh != ~0ull) ? gLowHigh : gLowLow;
+    /* Zuerst unter dem niedrigsten Bereich unter 4 GB (dort liegt das Fenster der Firmware sicher: das WLAN
+     * sitzt bei 0x50500000), erst danach unter dem niedrigsten oberhalb von 4 GB. Auf dem HP liegt mit dem
+     * Mehrkern-Kernel etwas bei 0x4000000000, aber das Fenster darunter wird nicht an den Controller
+     * weitergeleitet (Lesen ergibt 0xffffffff). */
+    uint64_t low = (attempt >= 2 && is64 && gLowHigh != ~0ull) ? gLowHigh : gLowLow;
+    if (low == ~0ull) low = gLowHigh;
     if (low == ~0ull || low < 0x30000000ull) break;
     uint64_t cand = (low - 0x200000 - (uint64_t)(gAssigned + (unsigned)attempt) * 0x1000 - (uint64_t)attempt * 0x1000000) & ~0xfffull;
     if (!is64 && (cand >> 32)) break;
