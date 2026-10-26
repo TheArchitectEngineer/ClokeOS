@@ -96,6 +96,10 @@ while read -r p; do
   if [ -d "$tmp/root$p" ] && [ ! -L "$tmp/root$p" ]; then rmdir "$tmp/root$p" 2>/dev/null || rm -rf "$tmp/root$p"
   else rm -f "$tmp/root$p"; fi
 done < "$tmp/prune.list"
+# Die Wiederherstellung braucht nur das Standard-Hintergrundbild und keine Schrift für CJK: sonst passt die RAM-Disk
+# des Offline-Sticks nicht unter die Grenze des Loaders (880 MB)
+rm -f "$tmp/root/Library/ClokeOS/Wallpapers/"art*.png "$tmp/root/Library/ClokeOS/Wallpapers/"*-t.png
+rm -rf "$tmp/root/Library/Fonts/NotoSansCJK"
 rm -f "$tmp/root/var/db/.RunClokeOSSetup" # der Einrichtungsassistent gehört zum installierten System
 
 # Eigene Dateien der Wiederherstellung
