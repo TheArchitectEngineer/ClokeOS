@@ -5,12 +5,13 @@
  * bildet BAR2 (die Register, wie rtw88 in Linux: pci.c, bar_id = 2) ab und schreibt Kennung, Versionsregister
  * und den PCIe-Verbindungsstatus ins Kernel-Log (dmesg, "ClokeRtw88:"), damit es das Diagnosefenster
  * (clokeos-diag) zeigt. Geschrieben wird nur das PCI-Befehlsregister und der Energiezustand, an den Chip-
- * Registern nichts. Nur mit Boot-Arg cloke_wifi=1 aktiv. Weiter (Stufe 2: Einschalten, Firmware, Ringe) steht in NOTES.md.
+ * Registern nichts. Nur mit Boot-Arg cloke_wifi=1 aktiv (2: zusätzlich aus- und einschalten, Stufe 2b). Weiter (Stufe 2: Einschalten, Firmware, Ringe) steht in NOTES.md.
  */
 #include <IOKit/IOLib.h>
 #include <IOKit/IOMemoryDescriptor.h>
 #include <IOKit/IOService.h>
 #include <pexpert/pexpert.h>
+#include "rtw8821c_pwr.h"
 
 #define LOG(fmt, ...) IOLog("ClokeRtw88: " fmt "\n", ##__VA_ARGS__)
 
@@ -92,6 +93,70 @@ static void dump_efuse(volatile uint8_t *base) {
   LOG("eFuse MAC %02x:%02x:%02x:xx:xx:xx", logm[0xd0], logm[0xd1], logm[0xd2]);
 }
 
+/* ---- Stufe 2b: aus- und wieder einschalten (rtw88 mac.c: rtw_mac_power_switch, rtw_pwr_seq_parser) -------
+ * Nur mit cloke_wifi=2. Der Chip ist beim Start schon an (REG_CR != 0xea); wie Linux schaltet der Treiber ihn
+ * dann mit der Ausschaltfolge aus und mit der Einschaltfolge wieder ein. Gelingt das (alle Abfragen kommen
+ * rechtzeitig), ist der Weg zu Firmware und DMA frei. */
+enum { REG_SYS_PW_CTRL = 0x04, BIT_PFM_WOWL = 1u << 3, REG_MCUFW_CTRL = 0x80, REG_CR = 0x100 };
+
+static bool pwr_poll(volatile uint8_t *base, unsigned off, uint8_t mask, uint8_t target) {
+  target &= mask;
+  for (unsigned i = 0; i < 20000; i++) {
+    if ((base[off] & mask) == target) return true;
+    IODelay(50);
+  }
+  return false;
+}
+
+static bool pwr_seq(volatile uint8_t *base, const struct rtw_pwr_seq_cmd *const *seq, uint8_t cut_mask, const char *what) {
+  unsigned n = 0;
+  for (; *seq; seq++)
+    for (const struct rtw_pwr_seq_cmd *c = *seq; c->cmd != RTW_PWR_CMD_END; c++) {
+      if (!(c->intf_mask & RTW_PWR_INTF_PCI_MSK) || !(c->cut_mask & cut_mask)) continue;
+      if (c->offset >= 0x1000) {
+        LOG("%s: offset 0x%x outside the mapped registers, stop", what, c->offset);
+        return false;
+      }
+      switch (c->cmd) {
+        case RTW_PWR_CMD_WRITE: base[c->offset] = (uint8_t)((base[c->offset] & ~c->mask) | (c->value & c->mask)); break;
+        case RTW_PWR_CMD_POLLING:
+          if (!pwr_poll(base, c->offset, c->mask, c->value)) {
+            /* wie rtw88 bei PCIe: BIT_PFM_WOWL einmal umschalten und noch einmal warten */
+            uint8_t v = base[REG_SYS_PW_CTRL];
+            base[REG_SYS_PW_CTRL] = v | BIT_PFM_WOWL;
+            base[REG_SYS_PW_CTRL] = v & (uint8_t)~BIT_PFM_WOWL;
+            if (!pwr_poll(base, c->offset, c->mask, c->value)) {
+              LOG("%s: poll 0x%x mask 0x%02x value 0x%02x failed (reads 0x%02x)", what, c->offset, c->mask, c->value,
+                  base[c->offset]);
+              return false;
+            }
+          }
+          break;
+        case RTW_PWR_CMD_DELAY:
+          if (c->value == RTW_PWR_DELAY_US) IODelay(c->offset);
+          else IOSleep(c->offset);
+          break;
+        default: break;
+      }
+      n++;
+    }
+  LOG("%s: %u steps done", what, n);
+  return true;
+}
+
+static void power_cycle(volatile uint8_t *base, unsigned cut) {
+  uint8_t cut_mask = (uint8_t)(1u << (cut + 1));
+  LOG("power: REG_CR 0x%02x MCUFW_CTRL 0x%04x SYS_PW_CTRL 0x%08x", base[REG_CR], *(volatile uint16_t *)(base + REG_MCUFW_CTRL),
+      *(volatile uint32_t *)(base + REG_SYS_PW_CTRL));
+  if (base[REG_CR] != 0xea) {
+    if (!pwr_seq(base, card_disable_flow_8821c, cut_mask, "power off")) return;
+    LOG("power: after off REG_CR 0x%02x SYS_PW_CTRL 0x%08x", base[REG_CR], *(volatile uint32_t *)(base + REG_SYS_PW_CTRL));
+  }
+  if (!pwr_seq(base, card_enable_flow_8821c, cut_mask, "power on")) return;
+  LOG("power: after on REG_CR 0x%02x SYS_FUNC_EN 0x%04x SYS_PW_CTRL 0x%08x", base[REG_CR],
+      *(volatile uint16_t *)(base + 2), *(volatile uint32_t *)(base + REG_SYS_PW_CTRL));
+}
+
 class ClokeRtw88 : public IOService {
   OSDeclareDefaultStructors(ClokeRtw88)
   IOMemoryMap *map = nullptr;
@@ -157,6 +222,7 @@ bool ClokeRtw88::start(IOService *provider) {
     return true;
   }
   dump_efuse(base);
+  if (on >= 2) power_cycle(base, (cfg1 >> 12) & 0xf);
   return true;
 }
 
