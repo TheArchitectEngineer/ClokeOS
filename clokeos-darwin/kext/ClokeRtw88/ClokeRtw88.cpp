@@ -775,7 +775,7 @@ bool ClokeRtw88::start(IOService *provider) {
     return true;
   }
   dump_efuse(base);
-  if (on >= 2 && power_cycle(base, (cfg1 >> 12) & 0xf) && on >= 3 && download_fw(base) && on >= 4 && mac_init(base)) {
+  if (on >= 2 && power_cycle(base, (cfg1 >> 12) & 0xf) && (dump_efuse(base), true) && on >= 3 && download_fw(base) && on >= 4 && mac_init(base)) {
     h2c_probe(base);
     if (on >= 5) phy_init(base, (cfg1 >> 12) & 0xf);
   }
