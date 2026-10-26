@@ -826,6 +826,19 @@ static void rx_scan(volatile uint8_t *b, bool btg) {
   coex_wlan_only(b, g_logm[0xca] & 0x1f);
   LOG("rx: ring of %d buffers at 0x%08x, RCR 0x%08x, CR 0x%02x", RX_N, ring.pa, r32(b, 0x608), r8(b, 0x100));
 
+  /* Diagnose: Kanal 6 hören, ohne etwas abzuholen. Der Ring läuft voll; dann zeigen die Puffer, wohin der Chip schreibt. */
+  set_channel(b, 6, btg);
+  IOSleep(700);
+  LOG("diag: ch 6 untouched ring: IDX 0x%08x", r32(b, RXBD_IDX));
+  for (int i = 0; i < RX_N; i++) {
+    unsigned nz = 0;
+    for (unsigned k = 0; k < RX_BUF; k++) if (buf[i].va[k]) nz++;
+    const uint8_t *rd = ring.va + i * 8;
+    LOG("diag: slot %d desc %02x%02x%02x%02x %02x%02x%02x%02x nonzero %u first %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x", i, rd[0], rd[1],
+        rd[2], rd[3], rd[4], rd[5], rd[6], rd[7], nz, buf[i].va[0], buf[i].va[1], buf[i].va[2], buf[i].va[3], buf[i].va[4], buf[i].va[5], buf[i].va[6],
+        buf[i].va[7], buf[i].va[8], buf[i].va[9], buf[i].va[10], buf[i].va[11], buf[i].va[12], buf[i].va[13], buf[i].va[14], buf[i].va[15]);
+  }
+  if (r8(b, 0x100) != 0) return; /* nur Diagnose: hier endet Stufe 6 vorerst */
   static Seen seen[32];
   unsigned nseen = 0, rp = 0, total = 0, mgmt = 0;
   for (int pass = 0; pass < 2 && !nseen; pass++) {
