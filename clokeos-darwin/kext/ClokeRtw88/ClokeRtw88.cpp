@@ -25,6 +25,73 @@ public:
 
 enum { REG_SYS_ISO_CTRL = 0x00, REG_SYS_FUNC_EN = 0x02, REG_SYS_CLK_CTRL = 0x08, REG_SYS_CFG1 = 0xF0, REG_SYS_CFG2 = 0xFC };
 
+/* ---- Stufe 2a: eFuse lesen (rtw88 efuse.c, rtw8821c: kein efuse_grant) ---------------------------------
+ * Das eFuse enthält die Kennungen und die MAC-Adresse. Die Zahlen müssen zu denen der PCI-Konfiguration
+ * passen (10ec:c821, Subsystem 103c:884d); das beweist, dass Schreiben und Warten auf Register klappt, bevor
+ * es an Einschalten und Firmware geht. Geschrieben werden nur REG_LDO_EFUSE_CTRL (Bank, 2,5-V-LDO) und
+ * REG_EFUSE_CTRL; der Chip lief schon (die Firmware des Notebooks hat ihn eingeschaltet). */
+enum { REG_EFUSE_CTRL = 0x30, REG_LDO_EFUSE_CTRL = 0x34, PHY_EFUSE_SIZE = 512, PROTECT_SIZE = 96 };
+
+static void dump_efuse(volatile uint8_t *base) {
+  auto rd32 = [&](unsigned o) { return *(volatile uint32_t *)(base + o); };
+  auto wr32 = [&](unsigned o, uint32_t v) { *(volatile uint32_t *)(base + o) = v; };
+  static uint8_t phy[PHY_EFUSE_SIZE], logm[PHY_EFUSE_SIZE];
+  /* Bank WLAN (Bits 8,9 = 0), 2,5-V-LDO aus */
+  wr32(REG_LDO_EFUSE_CTRL, rd32(REG_LDO_EFUSE_CTRL) & ~(3u << 8));
+  base[REG_LDO_EFUSE_CTRL + 3] &= (uint8_t)~0x80;
+  uint32_t ctl = rd32(REG_EFUSE_CTRL);
+  for (unsigned a = 0; a < PHY_EFUSE_SIZE; a++) {
+    ctl &= ~(0xffu | (0x3ffu << 8));
+    ctl |= (a & 0x3ffu) << 8;
+    wr32(REG_EFUSE_CTRL, ctl & ~(1u << 31));
+    unsigned cnt = 20000;
+    do {
+      IODelay(5);
+      ctl = rd32(REG_EFUSE_CTRL);
+    } while (!(ctl & (1u << 31)) && --cnt);
+    if (!cnt) {
+      LOG("eFuse read timed out at byte %u (CTRL 0x%08x)", a, ctl);
+      return;
+    }
+    phy[a] = (uint8_t)ctl;
+  }
+  memset(logm, 0xff, sizeof logm);
+  unsigned p = 0, blocks = 0;
+  bool bad = false;
+  while (p < PHY_EFUSE_SIZE - PROTECT_SIZE) {
+    uint8_t h1 = phy[p], h2 = phy[p + 1];
+    if (h1 == 0xff || ((h1 & 0x1f) == 0xf && h2 == 0xff)) break;
+    unsigned blk, wen;
+    if ((h1 & 0x1f) == 0xf) {
+      blk = ((h2 & 0xf0u) >> 1) | ((h1 >> 5) & 7u);
+      wen = h2 & 0xfu;
+      p += 2;
+    } else {
+      blk = (h1 & 0xf0u) >> 4;
+      wen = h1 & 0xfu;
+      p += 1;
+    }
+    for (int i = 0; i < 4; i++) {
+      if (wen & (1u << i)) continue;
+      unsigned li = (blk << 3) + ((unsigned)i << 1);
+      if (p + 1 > PHY_EFUSE_SIZE - PROTECT_SIZE || li + 1 >= sizeof logm) {
+        bad = true;
+        break;
+      }
+      logm[li] = phy[p];
+      logm[li + 1] = phy[p + 1];
+      p += 2;
+    }
+    if (bad) break;
+    blocks++;
+  }
+  LOG("eFuse: %u blocks decoded%s, physical bytes used %u", blocks, bad ? " (BAD)" : "", p);
+  /* rtw8821ce_efuse ab 0xd0: mac_addr[6], vender_id[2], device_id[2], sub_vender_id[2], sub_device_id[2] */
+  LOG("eFuse ids %02x%02x:%02x%02x subsystem %02x%02x:%02x%02x (little endian bytes, expect 10ec:c821, 103c:884d)",
+      logm[0xd7], logm[0xd6], logm[0xd9], logm[0xd8], logm[0xdb], logm[0xda], logm[0xdd], logm[0xdc]);
+  LOG("eFuse MAC %02x:%02x:%02x:xx:xx:xx", logm[0xd0], logm[0xd1], logm[0xd2]);
+}
+
 class ClokeRtw88 : public IOService {
   OSDeclareDefaultStructors(ClokeRtw88)
   IOMemoryMap *map = nullptr;
@@ -85,7 +152,11 @@ bool ClokeRtw88::start(IOService *provider) {
   LOG("SYS_ISO_CTRL 0x%04x SYS_FUNC_EN 0x%04x SYS_CLK_CTRL 0x%08x", rd32(REG_SYS_ISO_CTRL) & 0xffff, (rd32(REG_SYS_ISO_CTRL) >> 16) & 0xffff,
       rd32(REG_SYS_CLK_CTRL));
   LOG("SYS_CFG1 0x%08x (cut %u, chip id bits 0x%02x) SYS_CFG2 0x%08x", cfg1, (cfg1 >> 12) & 0xf, (cfg1 >> 24) & 0xff, cfg2);
-  if (cfg1 == 0xffffffffu) LOG("registers read as all ones: chip powered off or link down");
+  if (cfg1 == 0xffffffffu) {
+    LOG("registers read as all ones: chip powered off or link down");
+    return true;
+  }
+  dump_efuse(base);
   return true;
 }
 
