@@ -1482,6 +1482,42 @@ static int light_at(Client *c, int x, int y) {
   return 0;
 }
 
+/* Zurück und Vor neben den Ampelknöpfen (wie in clokeos.html: .tb-nav). Fundus und Search tragen sie;
+ * ein Klick schickt dem Programm Alt+Links beziehungsweise Alt+Rechts, das Thunar und NetSurf als
+ * Zurück und Vor kennen. */
+static bool has_nav(Client *c) {
+  return c && c->th && c->app >= 0 &&
+         (!strcmp(apps[c->app].b.ident, "com.clokeos.fundus") || !strcmp(apps[c->app].b.ident, "com.clokeos.search"));
+}
+
+static void nav_rect(Client *c, double *x, double *y, double *w, double *h) {
+  double cx[3], cy;
+  light_centers(c, cx, &cy);
+  *x = cx[2] + 22;
+  *y = cy - 12;
+  *w = 62;
+  *h = 24;
+}
+
+static int nav_at(Client *c, int x, int y) {
+  if (!has_nav(c)) return 0;
+  double nx, ny, nw, nh;
+  nav_rect(c, &nx, &ny, &nw, &nh);
+  if (x < nx || x > nx + nw || y < ny || y > ny + nh) return 0;
+  return x < nx + nw / 2 ? 1 : 2;
+}
+
+static void send_nav_key(Client *c, int which) {
+  KeySym ks = which == 1 ? XK_Left : XK_Right;
+  XKeyEvent ev = {.type = KeyPress, .display = dpy, .window = c->win, .root = root, .subwindow = None,
+                  .time = CurrentTime, .same_screen = True, .keycode = XKeysymToKeycode(dpy, ks), .state = Mod1Mask};
+  if (!ev.keycode) return;
+  XSendEvent(dpy, c->win, True, KeyPressMask, (XEvent *)&ev);
+  ev.type = KeyRelease;
+  XSendEvent(dpy, c->win, True, KeyReleaseMask, (XEvent *)&ev);
+  XFlush(dpy);
+}
+
 static void paint_frame(cairo_t *cr, int w, int h, void *arg) {
   Client *c = arg;
   bool active = c == focused;
@@ -1532,8 +1568,30 @@ static void paint_frame(cairo_t *cr, int w, int h, void *arg) {
       cairo_stroke(cr);
     }
   }
+  int side = 84;
+  if (has_nav(c)) {
+    double nx, ny, nw, nh;
+    nav_rect(c, &nx, &ny, &nw, &nh);
+    rrect(cr, nx, ny, nw, nh, nh / 2);
+    set(cr, T->pill.a > .3 ? (RGBA){1, 1, 1, .7} : (RGBA){1, 1, 1, .1});
+    cairo_fill_preserve(cr);
+    set(cr, T->line);
+    cairo_set_line_width(cr, 1);
+    cairo_stroke(cr);
+    set(cr, active ? T->fg2 : T->fg3);
+    cairo_set_line_width(cr, 1.6);
+    cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND);
+    cairo_set_line_join(cr, CAIRO_LINE_JOIN_ROUND);
+    double mx = nx + nw / 4, my = ny + nh / 2;
+    cairo_move_to(cr, mx + 2.5, my - 5); cairo_line_to(cr, mx - 2.5, my); cairo_line_to(cr, mx + 2.5, my + 5);
+    cairo_stroke(cr);
+    mx = nx + nw * 3 / 4;
+    cairo_move_to(cr, mx - 2.5, my - 5); cairo_line_to(cr, mx + 2.5, my); cairo_line_to(cr, mx - 2.5, my + 5);
+    cairo_stroke(cr);
+    side = 150;
+  }
   const char *title = c->title[0] ? c->title : (c->app >= 0 ? apps[c->app].b.name : c->cls);
-  if (w - 2 * 84 > 24) text(cr, w / 2.0, cy, title, 13, true, active ? T->fg : T->fg2, w - 2 * 84, 1);
+  if (w - 2 * side > 24) text(cr, w / 2.0, cy, title, 13, true, active ? T->fg : T->fg2, w - 2 * side, 1);
 }
 
 static void draw_frame(Client *c) {
@@ -4085,6 +4143,11 @@ static void on_button_press(XButtonEvent *e) {
     int l = light_at(c, e->x, e->y);
     if (l) {
       c->pressed = l;
+      return;
+    }
+    int nv = nav_at(c, e->x, e->y);
+    if (nv) {
+      send_nav_key(c, nv);
       return;
     }
     if (e->y > c->th + c->bw) return;

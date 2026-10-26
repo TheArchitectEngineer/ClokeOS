@@ -492,6 +492,16 @@ static bool sp_create_account(Account *out) {
   }
   snprintf(p, sizeof p, "%s/.Trash", home);
   sp_mkdir_owned(p, uid, 0700);
+  {
+    /* Seitenleiste von Fundus (Thunar): Favoriten wie im Finder */
+    static const char *const fav[] = {"Documents", "Downloads", "Pictures", "Music", "Movies"};
+    char bm[1024];
+    size_t bl = 0;
+    for (size_t i = 0; i < sizeof fav / sizeof fav[0] && bl < sizeof bm; i++)
+      bl += (size_t)snprintf(bm + bl, sizeof bm - bl, "file://%s/%s %s\n", home, fav[i], fav[i]);
+    snprintf(p, sizeof p, "%s/.config/gtk-3.0/bookmarks", home);
+    sp_write_owned(p, bm, uid, 0644);
+  }
   char *css = read_file("/var/root/.config/gtk-3.0/gtk.css");
   if (css) {
     snprintf(p, sizeof p, "%s/.config/gtk-3.0/gtk.css", home);

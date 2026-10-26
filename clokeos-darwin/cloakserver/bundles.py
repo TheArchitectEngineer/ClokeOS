@@ -29,13 +29,21 @@ def term(ident, title_en, title_de, size, cmd):
             f"--dynamic-title-mode=none --geometry={size} -x {cmd}")
 
 
+# Search ist NetSurf mit der Startseite aus /share/clokeos (nur beim ersten Start, danach gilt, was NetSurf in
+# Choices speichert; die mitgelieferte Willkommensseite von NetSurf wird ersetzt)
+SEARCH_START = (
+    "start=/share/clokeos/search.html; [ \"$(cat /etc/clokeos-language 2>/dev/null)\" = de ] && start=/share/clokeos/search-de.html\n"
+    "c=\"$HOME/.netsurf/Choices\"; mkdir -p \"$HOME/.netsurf\"\n"
+    "{ grep -v -e '^homepage_url:' -e '^http_proxy' \"$c\" 2>/dev/null; echo \"homepage_url:file://$start\"; } > \"$c.new\" && mv \"$c.new\" \"$c\"\n"
+    "exec netsurf-gtk3 \"$@\"")
+
 # Ordner, Name (englisch, deutsch), Kennung, Icon aus clokeos.html (oder None), Startzeile,
 # Fensterklassen, intern. Wie bei macOS heißt das Paket englisch; den deutschen Namen findet
 # CloakServer in Contents/Resources/de.lproj/InfoPlist.strings.
 APPS = [
     ('System/Library/CoreServices', 'Fundus', 'Fundus', 'com.clokeos.fundus', 'dateien', 'exec thunar "$@"', 'Thunar', ''),
     ('System/Applications', 'Launchpad', 'Programme', 'com.clokeos.launchpad', 'programme', None, '', 'launchpad'),
-    ('System/Applications', 'Search', 'Search', 'com.clokeos.search', 'search', 'exec netsurf-gtk3 "$@"',
+    ('System/Applications', 'Search', 'Search', 'com.clokeos.search', 'search', SEARCH_START,
      'Netsurf-gtk3 Netsurf* NetSurf*', ''),
     ('System/Applications/Utilities', 'Terminal', 'Terminal', 'com.clokeos.terminal', 'terminal',
      'exec xfce4-terminal "$@"', 'Xfce4-terminal XTerm UXTerm', ''),
