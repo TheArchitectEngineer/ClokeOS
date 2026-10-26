@@ -174,6 +174,10 @@ enum { INTR_TX_ABRT = 0x40, INTR_STOP_DET = 0x200 };
  * antwortet, zeigt dessen Kennung (IC_COMP_TYPE); sonst wird BAR0 zurückgesetzt. */
 static uint64_t gLowHigh = ~0ull, gLowLow = ~0ull; /* niedrigste belegte Adresse: ab 4 GB, unter 4 GB */
 static unsigned gAssigned;
+/* Mit mehreren Kernen starten die beiden Controller (51e8, 51e9) zugleich, wählten dieselbe Adresse und
+ * antworteten beide auf dieselben Lesezugriffe: Der Rechner blieb stehen oder lieferte nichts. Suche und
+ * Prüfung der Adresse laufen deshalb nacheinander. */
+static IOLock *gAssignLock = IOLockAlloc();
 
 static void scanBars() {
   gLowHigh = gLowLow = ~0ull;
@@ -494,7 +498,8 @@ bool ClokeI2CHID::start(IOService *provider) {
   if (is64) phys |= (uint64_t)pci->extendedConfigRead32(0x14) << 32;
   LOG("%04x:%04x: BAR0 config 0x%08x -> physical 0x%llx", vendor, device, bar0, (unsigned long long)phys);
   bool assigned = false;
-  for (int attempt = 0; attempt < 4; attempt++) {
+  IOLockLock(gAssignLock);
+  for (int attempt = 0; attempt < 5; attempt++) {
     if (phys && phys != 0xfffffff0ull) {
       IOMemoryDescriptor *md = IOMemoryDescriptor::withPhysicalAddress(phys, 0x1000, kIODirectionNone);
       map = md ? md->map(kIOMapInhibitCache) : nullptr;
@@ -531,6 +536,8 @@ bool ClokeI2CHID::start(IOService *provider) {
     assigned = true;
     LOG("%04x:%04x: assigning BAR0 = 0x%llx (attempt %d)", vendor, device, (unsigned long long)cand, attempt + 1);
   }
+  if (assigned && map) gAssigned++;
+  IOLockUnlock(gAssignLock);
   if (!map) {
     if (assigned) { /* zurücksetzen: Speicher aus, BAR wieder leer */
       pci->extendedConfigWrite16(4, (uint16_t)(pci->extendedConfigRead16(4) & ~0x0002u));
@@ -540,7 +547,6 @@ bool ClokeI2CHID::start(IOService *provider) {
     LOG("%04x:%04x: no usable address for BAR0", vendor, device);
     return false;
   }
-  if (assigned) gAssigned++;
   wr(LPSS_RESETS, 0x7); /* LPSS: Funktion und DMA aus dem Reset */
   IODelay(100);
   uint32_t type = rd(IC_COMP_TYPE);
