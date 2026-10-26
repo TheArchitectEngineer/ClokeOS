@@ -151,6 +151,14 @@ compile_all() {
     case "$s" in *.c) flags+=(-x objective-c) ;; esac
     "${flags[@]}" -c "$src" -o "$o" 2> "$o.log" || { echo "FEHLER: $s" >&2; grep -m 8 -E "error" "$o.log" >&2; exit 255; }
   ' < "$list"
+  # Objekte von Quellen, die nicht (mehr) in der Liste stehen, wegräumen: gelinkt wird alles in objdir, und ein
+  # übrig gebliebenes Objekt einer früheren Fassung (z. B. carreader.c.o mit offenem inflate) bricht das Linken
+  local keep f
+  keep="$(sed -E 's#.*/##; s#$#.o#' "$list")"
+  for f in "$objdir"/*.o; do
+    [ -e "$f" ] || continue
+    grep -qxF "$(basename "$f")" <<< "$keep" || rm -f "$f" "$f.log"
+  done
 }
 
 # sources <Framework> <CMake-Liste> [ausgelassen…]: Quelldateien aus Darlings CMakeLists.txt
