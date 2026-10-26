@@ -25,6 +25,7 @@
 #include <IOKit/IOService.h>
 #include <IOKit/IOTimerEventSource.h>
 #include <IOKit/IOWorkLoop.h>
+#include <pexpert/pexpert.h>
 
 extern "C" {
 #include <miscfs/devfs/devfs.h>
@@ -469,6 +470,10 @@ void ClokeI2CHID::poll(IOTimerEventSource *) {
 }
 
 bool ClokeI2CHID::start(IOService *provider) {
+  /* Zeitweise nur mit Boot-Arg cloke_i2c=1: Mit dem Mehrkern-Kernel bleibt der HP beim Adresszuweisen
+   * stehen (kein Ladebalken), bis klar ist, wo; ohne den Treiber bootet er. */
+  uint32_t on = 0;
+  if (!PE_parse_boot_argn("cloke_i2c", &on, sizeof on) || !on) return false;
   LOG("start on %s", provider->getName());
   if (!IOService::start(provider)) return false;
   pci = (IOPCIDevice *)provider;
