@@ -108,9 +108,9 @@ CLOKE_BOOT_ARGS=""
 
 # ClokeOS-Version, passend zur Oberfläche in clokeos.html (OS-Objekt).
 CLOKE_NAME="ClokeOS"
-CLOKE_VERSION="2.4"
+CLOKE_VERSION="2.5"
 CLOKE_CODENAME="Presidio"
-CLOKE_BUILD="2D1"
+CLOKE_BUILD="2E1"
 CLOKE_HOST="clokeos"
 # Zeitzone als POSIX-TZ-Regel: PureDarwin hat keine Zeitzonen-Datenbank, die Uhr der VM läuft in UTC.
 # Gilt für Shell und Desktop (Uhr in der Menüleiste). Mitteleuropa mit Sommerzeit:
@@ -206,3 +206,9 @@ PY
 }
 GUID_ESP="C12A7328-F81F-11D2-BA4B-00A0C93EC93B"
 GUID_LINUX_FS="0FC63DAF-8483-4772-8E79-3D69D8477DE4"
+
+# Schrift für Chinesisch, Japanisch, Koreanisch: Noto Sans CJK (SIL Open Font License 1.1), alle Regionen in einer Sammlung
+CJK_FONT_URL="https://github.com/notofonts/noto-cjk/raw/main/Sans/OTC/NotoSansCJK-Regular.ttc"
+CJK_FONT_SHA256="b76b0433203017ca80401b2ee0dd69350349871c4b19d504c34dbdd80541690a"
+CJK_FONT="$WORK/download/fonts/NotoSansCJK-Regular.ttc"
+CJK_LICENCE_URL="https://raw.githubusercontent.com/notofonts/noto-cjk/main/Sans/LICENSE"

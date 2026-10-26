@@ -316,3 +316,4 @@ Important: Apple's trademarks, icons and fonts must not be used. ClokeOS uses it
 
 - Wallpapers: 13 artworks by [Pixel Makes Art](https://www.instagram.com/pixelmakesart) (Instagram), used with permission. Thank you!
 - PureDarwin, Darwin and XNU (Apple Public Source License 2.0); Darling for the Mac frameworks; the Linux `rtw88` driver (Realtek, GPL-2.0 or BSD-3-Clause) as the reference for the Wi-Fi driver, firmware from `linux-firmware` under Realtek's redistribution licence.
+- Chinese, Japanese and Korean glyphs: [Noto Sans CJK](https://github.com/notofonts/noto-cjk) (SIL Open Font License 1.1), fetched at build time.

@@ -40,6 +40,11 @@ dd if="$tmp/image.img" of="$root" bs=512 skip="$root_start" count="$root_count" 
 cp -R "$HERE/overlay/." "$tmp/stage/"
 if [ "$CLOKE_FLAVOR" = desktop ]; then
   cp -R "$HERE/overlay-desktop/." "$tmp/stage/"
+  # Noto Sans CJK für Schriftzeichen, die Cloke Sans nicht hat (fontconfig weicht automatisch darauf aus)
+  fetch_file "$CJK_FONT_URL" "$CJK_FONT_SHA256" "$CJK_FONT"
+  mkdir -p "$tmp/stage/Library/Fonts/NotoSansCJK"
+  cp "$CJK_FONT" "$tmp/stage/Library/Fonts/NotoSansCJK/"
+  cp "$HERE/overlay-desktop/Library/Fonts/NotoSansCJK-OFL.txt" "$tmp/stage/Library/Fonts/NotoSansCJK/OFL.txt"
   "$HERE/cloakserver/build.sh" "$tmp/stage"
   "$HERE/menubar/build.sh" "$tmp/stage"
   "$HERE/apps/build.sh" "$tmp/stage"

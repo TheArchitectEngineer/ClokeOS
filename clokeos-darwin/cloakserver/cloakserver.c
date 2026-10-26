@@ -250,6 +250,7 @@ static void draw_menubar(void);
 static void draw_dock(void);
 static void draw_frame(Client *c);
 static bool has_nav(Client *c);
+static bool has_uni(Client *c);
 static void focus_client(Client *c);
 static void raise_client(Client *c);
 static void close_menu(void);
@@ -1262,7 +1263,7 @@ static Client *manage(Window w, bool already_mapped, bool own) {
     if (ch.res_class) XFree(ch.res_class);
   }
   c->app = app_for_window(w, c->cls);
-  c->uni = has_nav(c);
+  c->uni = has_uni(c);
   if (c->uni && c->h > c->th + 60) c->h -= c->th; /* c->h zählt ab Unterkante der Titelleiste */
   update_title(c);
 
@@ -1524,10 +1525,16 @@ static int light_at(Client *c, int x, int y) {
 /* Zurück und Vor neben den Ampelknöpfen (wie in clokeos.html: .tb-nav). Fundus und Search tragen sie;
  * ein Klick schickt dem Programm Alt+Links beziehungsweise Alt+Rechts, das Thunar und NetSurf als
  * Zurück und Vor kennen. */
+static bool app_is(Client *c, const char *id) { return c && c->th && c->app >= 0 && !strcmp(apps[c->app].b.ident, id); }
+
+/* Zurück und Vor: Fundus, Search, Kalender (Monat) und Notizen (vorige/nächste Notiz) */
 static bool has_nav(Client *c) {
-  return c && c->th && c->app >= 0 &&
-         (!strcmp(apps[c->app].b.ident, "com.clokeos.fundus") || !strcmp(apps[c->app].b.ident, "com.clokeos.search"));
+  return app_is(c, "com.clokeos.fundus") || app_is(c, "com.clokeos.search") || app_is(c, "com.clokeos.kalender") ||
+         app_is(c, "com.clokeos.notizen");
 }
+
+/* Titelleiste und Werkzeugleiste des Programms bilden eine Fläche (macOS): auch Aktivitätsanzeige */
+static bool has_uni(Client *c) { return has_nav(c) || app_is(c, "com.clokeos.aktivitaet"); }
 
 static void nav_rect(Client *c, double *x, double *y, double *w, double *h) {
   double cx[3], cy;
@@ -1547,6 +1554,12 @@ static int nav_at(Client *c, int x, int y) {
 }
 
 static void send_nav_key(Client *c, int which) {
+  if (app_is(c, "com.clokeos.kalender") || app_is(c, "com.clokeos.notizen")) { /* eigene Programme: Eigenschaft statt Taste */
+    long v = which;
+    XChangeProperty(dpy, c->win, XInternAtom(dpy, "_CLOKEOS_NAV", False), XA_CARDINAL, 32, PropModeReplace, (unsigned char *)&v, 1);
+    XFlush(dpy);
+    return;
+  }
   KeySym ks = which == 1 ? XK_Left : XK_Right;
   XKeyEvent ev = {.type = KeyPress, .display = dpy, .window = c->win, .root = root, .subwindow = None,
                   .time = CurrentTime, .same_screen = True, .keycode = XKeysymToKeycode(dpy, ks), .state = Mod1Mask};
@@ -1568,7 +1581,7 @@ static void paint_frame(cairo_t *cr, int w, int h, void *arg) {
   cairo_fill(cr);
   /* Linie unter der Titelleiste; bei Fundus und Search fehlt sie: Titelleiste und Werkzeugleiste des
    * Programms bilden eine Fläche wie beim Finder und bei Safari */
-  if (!has_nav(c)) {
+  if (!has_uni(c)) {
     set(cr, T->line);
     cairo_rectangle(cr, c->bw, c->bw + c->th - 1, w - 2 * c->bw, 1);
     cairo_fill(cr);

@@ -39,7 +39,9 @@ static const char *CSS =
     ".cl-day { font-size: 15px; padding: 8px 0; }"
     ".cl-day.out { opacity: 0.3; }"
     ".cl-day.today { background: #ff3b30; color: white; border-radius: 999px; font-weight: 700; }"
-    ".cl-stat { font-size: 12px; opacity: 0.75; }";
+    ".cl-stat { font-size: 12px; opacity: 0.75; }"
+    ".cl-tb { min-height: 38px; padding: 0 10px 0 0; border: none; box-shadow: none; }"
+    ".cl-tbtitle { font-size: 13px; font-weight: 700; }";
 
 static void load_css(void) {
   GtkCssProvider *p = gtk_css_provider_new();
@@ -56,6 +58,46 @@ static GtkWidget *new_window(const char *role, const char *title, int w, int h, 
   if (fixed) gtk_window_set_resizable(GTK_WINDOW(win), FALSE);
   g_signal_connect(win, "destroy", G_CALLBACK(gtk_main_quit), NULL);
   return win;
+}
+
+/* Zurück/Vor aus der Fensterleiste: CloakServer setzt _CLOKEOS_NAV (1 = zurück, 2 = vor) am Fenster. Das ist
+ * zuverlässiger als gesendete Tasten; Thunar und NetSurf bekommen weiter Alt+Links/Rechts. */
+static void (*nav_cb)(gpointer, int);
+
+static gboolean on_nav_prop(GtkWidget *w, GdkEventProperty *e, gpointer data) {
+  if (e->state != GDK_PROPERTY_NEW_VALUE || strcmp(gdk_atom_name(e->atom), "_CLOKEOS_NAV")) return FALSE;
+  GdkAtom type;
+  gint fmt, len;
+  guchar *d = NULL;
+  if (gdk_property_get(gtk_widget_get_window(w), e->atom, GDK_NONE, 0, 4, FALSE, &type, &fmt, &len, &d) && d && len >= 4) {
+    int v = *(gint32 *)d == 1 || *(long *)d == 1 ? -1 : 1;
+    if (len >= (int)sizeof(long)) v = *(long *)d == 1 ? -1 : 1;
+    nav_cb(data, v);
+  }
+  g_free(d);
+  return FALSE;
+}
+
+static void add_nav(GtkWidget *win, void (*cb)(gpointer, int), gpointer data) {
+  nav_cb = cb;
+  gtk_widget_add_events(win, GDK_PROPERTY_CHANGE_MASK);
+  g_signal_connect(win, "property-notify-event", G_CALLBACK(on_nav_prop), data);
+}
+
+/* Werkzeugleiste in der Fensterleiste (Finder/Safari-Art): CloakServer zeichnet links 146 px Ampel und
+ * Zurück/Vor und lässt dort kein Programm durch; die Leiste des Programms beginnt rechts davon. */
+static GtkWidget *unified_bar(GtkWidget *root, const char *title) {
+  GtkWidget *tb = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+  GtkStyleContext *sc = gtk_widget_get_style_context(tb);
+  gtk_style_context_add_class(sc, "toolbar");
+  gtk_style_context_add_class(sc, "cl-tb");
+  gtk_widget_set_size_request(tb, -1, 38);
+  gtk_widget_set_margin_start(tb, 150);
+  GtkWidget *l = gtk_label_new(title);
+  gtk_style_context_add_class(gtk_widget_get_style_context(l), "cl-tbtitle");
+  gtk_box_pack_start(GTK_BOX(tb), l, FALSE, FALSE, 0);
+  gtk_box_pack_start(GTK_BOX(root), tb, FALSE, FALSE, 0);
+  return tb;
 }
 
 /* ---- Notizen ----------------------------------------------------------------------------------- */
@@ -222,6 +264,14 @@ static GtkWidget *icon_button(const char *label, const char *tip) {
   return b;
 }
 
+static void notes_nav(gpointer data, int dir) {
+  Notes *n = data;
+  GtkListBoxRow *cur = gtk_list_box_get_selected_row(GTK_LIST_BOX(n->list));
+  int i = cur ? gtk_list_box_row_get_index(cur) : 0;
+  GtkListBoxRow *r = gtk_list_box_get_row_at_index(GTK_LIST_BOX(n->list), i + dir);
+  if (r) gtk_list_box_select_row(GTK_LIST_BOX(n->list), r);
+}
+
 static void run_notes(void) {
   Notes *n = g_new0(Notes, 1);
   n->dir = g_build_filename(g_get_home_dir(), "Notes", NULL);
@@ -239,20 +289,19 @@ static void run_notes(void) {
   g_free(old);
 
   GtkWidget *win = new_window("com.clokeos.notizen", T("Notes", "Notizen"), 740, 470, FALSE);
+  GtkWidget *root = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
   GtkWidget *hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
   GtkWidget *side = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
   gtk_style_context_add_class(gtk_widget_get_style_context(side), "cl-side");
   gtk_widget_set_size_request(side, 230, -1);
-  GtkWidget *bar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);
-  gtk_style_context_add_class(gtk_widget_get_style_context(bar), "cl-bar");
+  GtkWidget *bar = unified_bar(root, T("Notes", "Notizen"));
   GtkWidget *bnew = icon_button("＋", T("New note", "Neue Notiz"));
   GtkWidget *bdel = icon_button(T("Delete", "Löschen"), T("Delete note", "Notiz löschen"));
-  gtk_box_pack_start(GTK_BOX(bar), bnew, FALSE, FALSE, 0);
   gtk_box_pack_end(GTK_BOX(bar), bdel, FALSE, FALSE, 0);
+  gtk_box_pack_end(GTK_BOX(bar), bnew, FALSE, FALSE, 0);
   n->list = gtk_list_box_new();
   GtkWidget *sc = gtk_scrolled_window_new(NULL, NULL);
   gtk_container_add(GTK_CONTAINER(sc), n->list);
-  gtk_box_pack_start(GTK_BOX(side), bar, FALSE, FALSE, 0);
   gtk_box_pack_start(GTK_BOX(side), sc, TRUE, TRUE, 0);
   n->view = gtk_text_view_new();
   gtk_text_view_set_wrap_mode(GTK_TEXT_VIEW(n->view), GTK_WRAP_WORD_CHAR);
@@ -262,7 +311,9 @@ static void run_notes(void) {
   gtk_container_add(GTK_CONTAINER(sc2), n->view);
   gtk_box_pack_start(GTK_BOX(hbox), side, FALSE, FALSE, 0);
   gtk_box_pack_start(GTK_BOX(hbox), sc2, TRUE, TRUE, 0);
-  gtk_container_add(GTK_CONTAINER(win), hbox);
+  gtk_box_pack_start(GTK_BOX(root), hbox, TRUE, TRUE, 0);
+  gtk_container_add(GTK_CONTAINER(win), root);
+  add_nav(win, notes_nav, n);
 
   g_signal_connect(n->list, "row-selected", G_CALLBACK(on_row_selected), n);
   g_signal_connect(n->buf, "changed", G_CALLBACK(notes_changed), n);
@@ -417,7 +468,7 @@ static void run_calc(void) {
 /* ---- Kalender ------------------------------------------------------------------------------------- */
 
 typedef struct {
-  GtkWidget *title, *grid;
+  GtkWidget *title, *grid, *prev, *next;
   int y, m;   /* angezeigter Monat */
 } Cal;
 
@@ -482,17 +533,27 @@ static void cal_fill(Cal *c) {
   gtk_widget_show_all(c->grid);
 }
 
+static void cal_nav(gpointer data, int dir) {
+  Cal *c = data;
+  gtk_button_clicked(GTK_BUTTON(dir < 0 ? c->prev : c->next));
+}
+
 static void run_calendar(void) {
   Cal *c = g_new0(Cal, 1);
   GtkWidget *win = new_window("com.clokeos.kalender", T("Calendar", "Kalender"), 760, 520, FALSE);
+  GtkWidget *root = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
   GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 12);
   gtk_container_set_border_width(GTK_CONTAINER(box), 22);
-  GtkWidget *bar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+  GtkWidget *bar = unified_bar(root, "");
   c->title = gtk_label_new("");
   gtk_style_context_add_class(gtk_widget_get_style_context(c->title), "cl-month");
   GtkWidget *prev = icon_button("‹", T("Previous month", "Voriger Monat"));
   GtkWidget *next = icon_button("›", T("Next month", "Nächster Monat"));
   GtkWidget *today = gtk_button_new_with_label(T("Today", "Heute"));
+  g_object_ref_sink(prev);
+  g_object_ref_sink(next);
+  c->prev = prev;
+  c->next = next;
   g_object_set_data(G_OBJECT(prev), "dm", GINT_TO_POINTER(-1));
   g_object_set_data(G_OBJECT(next), "dm", GINT_TO_POINTER(1));
   g_object_set_data(G_OBJECT(today), "dm", GINT_TO_POINTER(0));
@@ -500,16 +561,15 @@ static void run_calendar(void) {
   g_signal_connect(next, "clicked", G_CALLBACK(cal_step), c);
   g_signal_connect(today, "clicked", G_CALLBACK(cal_step), c);
   gtk_box_pack_start(GTK_BOX(bar), c->title, FALSE, FALSE, 0);
-  gtk_box_pack_end(GTK_BOX(bar), next, FALSE, FALSE, 0);
   gtk_box_pack_end(GTK_BOX(bar), today, FALSE, FALSE, 0);
-  gtk_box_pack_end(GTK_BOX(bar), prev, FALSE, FALSE, 0);
+  add_nav(win, cal_nav, c);
   c->grid = gtk_grid_new();
   gtk_grid_set_column_homogeneous(GTK_GRID(c->grid), TRUE);
   gtk_grid_set_row_spacing(GTK_GRID(c->grid), 4);
   gtk_widget_set_vexpand(c->grid, TRUE);
-  gtk_box_pack_start(GTK_BOX(box), bar, FALSE, FALSE, 0);
   gtk_box_pack_start(GTK_BOX(box), c->grid, TRUE, TRUE, 0);
-  gtk_container_add(GTK_CONTAINER(win), box);
+  gtk_box_pack_start(GTK_BOX(root), box, TRUE, TRUE, 0);
+  gtk_container_add(GTK_CONTAINER(win), root);
   cal_step(GTK_BUTTON(today), c);
   gtk_widget_show_all(win);
   gtk_main();
@@ -570,6 +630,7 @@ static void run_activity(void) {
   Act *a = g_new0(Act, 1);
   GtkWidget *win = new_window("com.clokeos.aktivitaet", T("Activity Monitor", "Aktivitätsanzeige"), 680, 460, FALSE);
   GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+  unified_bar(box, T("Activity Monitor", "Aktivitätsanzeige"));
   a->stat = gtk_label_new("");
   gtk_label_set_xalign(GTK_LABEL(a->stat), 0);
   gtk_style_context_add_class(gtk_widget_get_style_context(a->stat), "cl-stat");

@@ -157,22 +157,15 @@ Later, "Restart in Recovery…" in the ClokeOS menu starts the recovery on the d
 
 ## New in $CLOKE_VERSION
 
-- English as the default language as on macOS, German in System Settings > Language & Region or in the setup assistant
-- Setup assistant on first start: language, region with time zone, your own account with password, appearance
-- Remote login over SSH (System Settings > Sharing > Remote Login, on by default): \`ssh <account>@<address>\`, the address is shown on the same page
-- USB sticks for real PCs, offline (carries the system) and online (small, downloads it), also for PCs whose firmware leaves little memory free below 1 GB
-- Ready-made SSD image as a way without a stick
-- Built-in notebook keyboard and PS/2 touchpad (own kernel driver ClokePS2); Insert, Home, Delete, End, Page Up/Down, keypad and the ISO key <>| now work on USB keyboards too
-- SATA disks are found when starting from the stick
-- Downloads continue where they broke off
-- GTK theme ClokeOS in the desktop's colors
-- Slimmer recovery (under 600 MB instead of 1.4 GB)
-- All CPU cores on PCs, including hybrid CPUs such as the Intel i5-1235U (12 threads on an HP 15s-fq5655ng); hold U at power-on for the single-core kernel
-- I²C touchpads (Intel LPSS), tested on the HP 15s-fq5655ng
-- Updater: System updates arrive through the EFI partition (\`clokeos-update\`, Recovery option "Update"), no reinstall needed
-- Apps look like their Mac counterparts: Fundus like Finder, Search like Safari with the address bar in the window bar and back/forward buttons next to the traffic lights; new icon theme ClokeOS
-- 18 wallpapers (System Settings > Wallpaper): the ClokeOS default, four drawn ones from the prototype and 13 artworks by [Pixel Makes Art](https://www.instagram.com/pixelmakesart), used with permission
-- Wi-Fi driver for Realtek RTL8821CE in development (ClokeRtw88, off by default; boot argument \`cloke_wifi\`): firmware loads and runs, the radio receives, networks are not listed yet
+- System Settings like the prototype: user card, a symbol for every section, General (logo, version, computer), Wallpaper, Keyboard and Language & Region; the Xfce settings are gone
+- 18 wallpapers: the ClokeOS default, four drawn ones and 13 artworks by [Pixel Makes Art](https://www.instagram.com/pixelmakesart), used with permission (4K)
+- Languages: English, Deutsch, Français, Español and Italiano, also in the setup assistant, with date and clock formats
+- Keyboard layouts for the whole system (U.S., British, Deutsch, Français, Español, Italiano, Português, Nederlands, Swiss, Austrian, Polish, Swedish, Turkish, Russian), applied right away through XKB
+- Chinese, Japanese and Korean text (Noto Sans CJK, SIL Open Font License)
+- About 90 more symbolic GTK icons in the thin Mac style of the ClokeOS icon theme
+- Window bars as on macOS: Notes, Calendar and Activity Monitor carry their toolbar in the bar, with Back/Forward next to the traffic lights (Calendar months, Notes one by one) like Fundus and Search
+- Wi-Fi driver for the Realtek RTL8821CE in development (off by default; boot argument \`cloke_wifi\`): firmware runs and the radio receives, networks are not listed yet
+- Everything from 2.4: all CPU cores, I²C touchpads, the updater, new apps look and icons
 
 ## What is inside
 
