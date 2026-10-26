@@ -819,6 +819,10 @@ static void rx_scan(volatile uint8_t *b, bool btg) {
         unsigned len = w0 & 0x3fff, drv = ((w0 >> 16) & 0xf) * 8, sh = (w0 >> 24) & 3, off = 24 + drv + sh;
         got++;
         total++;
+        if (total <= 6)
+          LOG("rx: pkt ch %u w0 0x%08x w1 0x%08x w2 0x%08x w3 0x%08x len %u drv %u off %u data %02x %02x %02x %02x %02x %02x %02x %02x", ch, w0,
+              *(uint32_t *)(p + 4), w2, *(uint32_t *)(p + 12), len, drv, off, p[off], p[off + 1], p[off + 2], p[off + 3], p[off + 4],
+              p[off + 5], p[off + 6], p[off + 7]);
         if (!((w2 >> 28) & 1) && len >= 36 && off + len <= RX_BUF) {
           uint8_t *f = p + off;
           if (f[0] == 0x80 || f[0] == 0x50) {
