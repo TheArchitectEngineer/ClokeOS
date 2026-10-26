@@ -5,7 +5,7 @@
  * bildet BAR2 (die Register, wie rtw88 in Linux: pci.c, bar_id = 2) ab und schreibt Kennung, Versionsregister
  * und den PCIe-Verbindungsstatus ins Kernel-Log (dmesg, "ClokeRtw88:"), damit es das Diagnosefenster
  * (clokeos-diag) zeigt. Geschrieben wird nur das PCI-Befehlsregister und der Energiezustand, an den Chip-
- * Registern nichts. Nur mit Boot-Arg cloke_wifi=1 aktiv (2: zusätzlich aus- und einschalten, Stufe 2b; 3: dazu die Firmware laden, Stufe 3). Weiter (Stufe 2: Einschalten, Firmware, Ringe) steht in NOTES.md.
+ * Registern nichts. Nur mit Boot-Arg cloke_wifi=1 aktiv (2: zusätzlich aus- und einschalten, Stufe 2b; 3: dazu die Firmware laden, Stufe 3; 4: dazu MAC einrichten und ein Befehl an die Firmware, Stufe 4). Weiter (Stufe 2: Einschalten, Firmware, Ringe) steht in NOTES.md.
  */
 #include <IOKit/IOLib.h>
 #include <IOKit/IOBufferMemoryDescriptor.h>
@@ -14,6 +14,7 @@
 #include <pexpert/pexpert.h>
 #include "rtw8821c_pwr.h"
 #include "rtw8821c_fw.h"
+#include "rtw88_regs.h"
 
 #define LOG(fmt, ...) IOLog("ClokeRtw88: " fmt "\n", ##__VA_ARGS__)
 
@@ -26,7 +27,7 @@ public:
   void extendedConfigWrite16(IOByteCount offset, UInt16 data);
 };
 
-enum { REG_SYS_ISO_CTRL = 0x00, REG_SYS_FUNC_EN = 0x02, REG_SYS_CLK_CTRL = 0x08, REG_SYS_CFG1 = 0xF0, REG_SYS_CFG2 = 0xFC };
+enum { REG_SYS_ISO_CTRL = 0x00, REG_SYS_CFG1 = 0xF0, REG_SYS_CFG2 = 0xFC };
 
 /* ---- Stufe 2a: eFuse lesen (rtw88 efuse.c, rtw8821c: kein efuse_grant) ---------------------------------
  * Das eFuse enthält die Kennungen und die MAC-Adresse. Die Zahlen müssen zu denen der PCI-Konfiguration
@@ -100,7 +101,6 @@ static void dump_efuse(volatile uint8_t *base) {
  * dann mit der Ausschaltfolge aus und mit der Einschaltfolge wieder ein. Gelingt das (alle Abfragen kommen
  * rechtzeitig), ist der Weg zu Firmware und DMA frei. */
 enum { REG_WINDOW = 0x10000 }; /* BAR2: 64 KB Register */
-enum { REG_SYS_PW_CTRL = 0x04, BIT_PFM_WOWL = 1u << 3, REG_MCUFW_CTRL = 0x80, REG_CR = 0x100 };
 
 static bool pwr_poll(volatile uint8_t *base, unsigned off, uint8_t mask, uint8_t target) {
   target &= mask;
@@ -255,20 +255,9 @@ static bool hw_ready(volatile uint8_t *b, unsigned addr, uint32_t mask, uint32_t
 }
 
 enum {
-  REG_RSV_CTRL = 0x1c, REG_CPU_DMEM_CON = 0x1080, REG_CR_EXT = 0x1100, REG_GPIO_MUXCFG = 0x40, REG_TXDMA_PQ_MAP = 0x10c,
-  REG_H2CQ_CSR = 0x1330, REG_FIFOPAGE_INFO_1 = 0x230, REG_RQPN_CTRL_2 = 0x22c, REG_BCN_CTRL = 0x550, REG_DDMA_CH0SA = 0x1200,
-  REG_DDMA_CH0DA = 0x1204, REG_DDMA_CH0CTRL = 0x1208, REG_FW_DBG7 = 0x10fc, REG_TXDMA_STATUS = 0x210,
-  REG_FIFOPAGE_CTRL_2 = 0x204, REG_FWHW_TXQ_CTRL = 0x420, PCI_CTRL = 0x300, PCI_TXBD_DESA_BCNQ = 0x308,
-  PCI_TXBD_BCN_WORK = 0x383, LTE_CTRL = 0x1700, LTE_WDATA = 0x1704, LTE_RDATA = 0x1708,
-  OCPBASE_TXBUF = 0x18780000, OCPBASE_DMEM = 0x00200000, TX_DESC = 48, FW_HDR = 64, FW_CHKSUM = 8,
+  PCI_CTRL = 0x300, PCI_TXBD_DESA_BCNQ = 0x308, PCI_TXBD_BCN_WORK = 0x383, LTE_CTRL = 0x1700, LTE_WDATA = 0x1704,
+  LTE_RDATA = 0x1708, TX_DESC = 48, FW_HDR = 64, FW_CHKSUM = 8,
 };
-#define DDMA_OWN (1u << 31)
-#define DDMA_CHKSUM_EN (1u << 29)
-#define DDMA_CHKSUM_STS (1u << 27)
-#define DDMA_RESET_CHKSUM_STS (1u << 25)
-#define DDMA_CHKSUM_CONT (1u << 24)
-#define FW_READY_MASK (0xffffu & ~((1u << 12) | (1u << 13)))
-#define FW_READY ((1u << 15) | (1u << 14) | (1u << 3) | (1u << 5) | (1u << 4) | (1u << 6))
 
 static bool lte_read(volatile uint8_t *b, unsigned off, uint32_t *v) {
   if (!hw_ready(b, LTE_CTRL, 1u << 29, 1)) return false;
@@ -327,7 +316,7 @@ static bool write_rsvd_page(volatile uint8_t *b, Dma *ring, Dma *buf, const uint
 }
 
 static bool to_mem(volatile uint8_t *b, Dma *ring, Dma *buf, const uint8_t *data, uint32_t dst, uint32_t size, const char *what) {
-  w32(b, REG_DDMA_CH0CTRL, r32(b, REG_DDMA_CH0CTRL) | DDMA_RESET_CHKSUM_STS);
+  w32(b, REG_DDMA_CH0CTRL, r32(b, REG_DDMA_CH0CTRL) | BIT_DDMACH0_RESET_CHKSUM_STS);
   uint32_t off = 0;
   bool first = true;
   while (off < size) {
@@ -336,15 +325,15 @@ static bool to_mem(volatile uint8_t *b, Dma *ring, Dma *buf, const uint8_t *data
       LOG("fw %s: reserved page at +0x%x did not become valid (FIFOPAGE_CTRL_2 0x%04x)", what, off, r16(b, REG_FIFOPAGE_CTRL_2));
       return false;
     }
-    if (!hw_ready(b, REG_DDMA_CH0CTRL, DDMA_OWN, 0)) {
+    if (!hw_ready(b, REG_DDMA_CH0CTRL, BIT_DDMACH0_OWN, 0)) {
       LOG("fw %s: DDMA busy before +0x%x", what, off);
       return false;
     }
-    uint32_t ctrl = DDMA_CHKSUM_EN | DDMA_OWN | (n & 0x3ffff) | (first ? 0 : DDMA_CHKSUM_CONT);
-    w32(b, REG_DDMA_CH0SA, OCPBASE_TXBUF + TX_DESC);
+    uint32_t ctrl = BIT_DDMACH0_CHKSUM_EN | BIT_DDMACH0_OWN | (n & 0x3ffff) | (first ? 0 : BIT_DDMACH0_CHKSUM_CONT);
+    w32(b, REG_DDMA_CH0SA, OCPBASE_TXBUF_88XX + TX_DESC);
     w32(b, REG_DDMA_CH0DA, dst + off);
     w32(b, REG_DDMA_CH0CTRL, ctrl);
-    if (!hw_ready(b, REG_DDMA_CH0CTRL, DDMA_OWN, 0)) {
+    if (!hw_ready(b, REG_DDMA_CH0CTRL, BIT_DDMACH0_OWN, 0)) {
       LOG("fw %s: DDMA did not finish at +0x%x (CTRL 0x%08x)", what, off, r32(b, REG_DDMA_CH0CTRL));
       return false;
     }
@@ -353,8 +342,8 @@ static bool to_mem(volatile uint8_t *b, Dma *ring, Dma *buf, const uint8_t *data
   }
   /* check_fw_checksum */
   uint8_t fw = r8(b, REG_MCUFW_CTRL);
-  bool bad = (r32(b, REG_DDMA_CH0CTRL) & DDMA_CHKSUM_STS) != 0;
-  bool imem = dst < OCPBASE_DMEM;
+  bool bad = (r32(b, REG_DDMA_CH0CTRL) & BIT_DDMACH0_CHKSUM_STS) != 0;
+  bool imem = dst < OCPBASE_DMEM_88XX;
   if (bad) fw = (uint8_t)((fw | (imem ? 1u << 3 : 1u << 5)) & ~(imem ? 1u << 4 : 1u << 6));
   else fw |= imem ? (1u << 3) | (1u << 4) : (1u << 5) | (1u << 6);
   w8(b, REG_MCUFW_CTRL, fw);
@@ -362,7 +351,7 @@ static bool to_mem(volatile uint8_t *b, Dma *ring, Dma *buf, const uint8_t *data
   return !bad;
 }
 
-static void download_fw(volatile uint8_t *b) {
+static bool download_fw(volatile uint8_t *b) {
   const uint8_t *fw = rtw8821c_fw;
   uint32_t dmem_addr, dmem, imem, emem, emem_addr, imem_addr;
   memcpy(&dmem_addr, fw + 0x20, 4);
@@ -377,7 +366,7 @@ static void download_fw(volatile uint8_t *b) {
   if (emem) emem += FW_CHKSUM;
   if (FW_HDR + dmem + imem + emem != sizeof rtw8821c_fw) {
     LOG("fw: size check failed");
-    return;
+    return false;
   }
   LOG("fw: version %u.%u, dmem %u imem %u emem %u", fw[4] | fw[5] << 8, fw[6], dmem, imem, emem);
 
@@ -386,7 +375,7 @@ static void download_fw(volatile uint8_t *b) {
     LOG("fw: no DMA memory below 4 GB");
     dma_free(&ring);
     dma_free(&buf);
-    return;
+    return false;
   }
   /* rtw_pci_setup (nur die Beacon-Warteschlange) und DMA-Reset */
   w8(b, PCI_CTRL + 3, r8(b, PCI_CTRL + 3) | 0xf7);
@@ -426,6 +415,7 @@ static void download_fw(volatile uint8_t *b) {
 
   /* start_download_firmware */
   w16(b, REG_MCUFW_CTRL, (uint16_t)((r16(b, REG_MCUFW_CTRL) & 0x3800) | 1u));
+  bool running = false;
   bool ok = to_mem(b, &ring, &buf, fw + FW_HDR, dmem_addr & ~(1u << 31), dmem, "dmem") &&
             to_mem(b, &ring, &buf, fw + FW_HDR + dmem, imem_addr & ~(1u << 31), imem, "imem") &&
             (!emem || to_mem(b, &ring, &buf, fw + FW_HDR + dmem + imem, emem_addr & ~(1u << 31), emem, "emem"));
@@ -445,13 +435,14 @@ static void download_fw(volatile uint8_t *b) {
     w8(b, REG_RSV_CTRL + 1, r8(b, REG_RSV_CTRL + 1) | 1u);
     w8(b, REG_SYS_FUNC_EN + 1, r8(b, REG_SYS_FUNC_EN + 1) | (1u << 2));
     if (have_lte) lte_write(b, 0x38, lte);
-    bool ready = hw_ready(b, REG_MCUFW_CTRL, FW_READY_MASK, FW_READY);
+    bool ready = (r32(b, REG_MCUFW_CTRL) & FW_READY_MASK) == FW_READY;
     for (int i = 0; !ready && i < 50; i++) { /* großzügiger als rtw88: bis 0,5 s */
       IOSleep(10);
       ready = (r32(b, REG_MCUFW_CTRL) & FW_READY_MASK) == FW_READY;
     }
     LOG("fw: %s (MCUFW_CTRL 0x%04x, FW_DBG7 0x%08x)", ready ? "FIRMWARE RUNNING" : "firmware not ready", r16(b, REG_MCUFW_CTRL),
         r32(b, REG_FW_DBG7));
+    running = ready;
   } else {
     w8(b, REG_MCUFW_CTRL, r8(b, REG_MCUFW_CTRL) & (uint8_t)~1u);
     w8(b, REG_SYS_FUNC_EN + 1, r8(b, REG_SYS_FUNC_EN + 1) | (1u << 2));
@@ -461,6 +452,155 @@ static void download_fw(volatile uint8_t *b) {
   w32(b, PCI_TXBD_DESA_BCNQ, 0);
   dma_free(&ring);
   dma_free(&buf);
+  return running;
+}
+
+/* ---- Stufe 4: MAC einrichten (rtw88 mac.c: rtw_mac_init) und ein erster Befehl an die Firmware -----------------
+ * Nur mit cloke_wifi=4, nach geladener Firmware. Nur Register: txdma_queue_mapping, priority_queue_cfg (Seiten
+ * des TX-FIFO verteilen, Reserve bei 460), init_h2c, die 8821C-Voreinstellungen der Sende- und Empfangswege
+ * (rtw8821c_mac_init) und die Treiberinfo. Danach der H2C-Befehl "BT-Info abfragen" über die Mailbox: Quittiert
+ * die Firmware ihn (REG_HMETFR Bit 0 wird wieder 0), hört sie auf Befehle. */
+enum { RTW_DMA_MAPPING_EXTRA = 0, RTW_DMA_MAPPING_LOW = 1, RTW_DMA_MAPPING_NORMAL = 2, RTW_DMA_MAPPING_HIGH = 3 };
+
+static bool mac_init(volatile uint8_t *b) {
+  /* txdma_queue_mapping, PCIe: vo/vi normal, be/bk low, mg extra, hi high */
+  uint16_t map = 0;
+  map |= BIT_TXDMA_VOQ_MAP(RTW_DMA_MAPPING_NORMAL);
+  map |= BIT_TXDMA_VIQ_MAP(RTW_DMA_MAPPING_NORMAL);
+  map |= BIT_TXDMA_BEQ_MAP(RTW_DMA_MAPPING_LOW);
+  map |= BIT_TXDMA_BKQ_MAP(RTW_DMA_MAPPING_LOW);
+  map |= BIT_TXDMA_MGQ_MAP(RTW_DMA_MAPPING_EXTRA);
+  map |= BIT_TXDMA_HIQ_MAP(RTW_DMA_MAPPING_HIGH);
+  w16(b, REG_TXDMA_PQ_MAP, map);
+  w8(b, REG_CR, 0);
+  w8(b, REG_CR, MAC_TRX_ENABLE);
+  w32(b, REG_H2CQ_CSR, BIT_H2CQ_FULL);
+
+  /* rtw_set_trx_fifo_info: 64 KB TX-FIFO in 128-Byte-Seiten, Reserve für Treiber, H2C, Firmware */
+  const unsigned txff_pg = 65536 / TX_PAGE_SIZE, drv_pg = 8, csi = 0;
+  const unsigned rsvd = drv_pg + RSVD_PG_H2C_EXTRAINFO_NUM + RSVD_PG_H2C_STATICINFO_NUM + RSVD_PG_H2CQ_NUM +
+                        RSVD_PG_CPU_INSTRUCTION_NUM + RSVD_PG_FW_TXBUF_NUM + csi;
+  const unsigned acq = txff_pg - rsvd, boundary = txff_pg - rsvd;
+  unsigned cur = txff_pg - csi;
+  cur -= RSVD_PG_FW_TXBUF_NUM;
+  cur -= RSVD_PG_CPU_INSTRUCTION_NUM;
+  cur -= RSVD_PG_H2CQ_NUM;
+  const unsigned h2cq_pg = cur;
+  cur -= RSVD_PG_H2C_STATICINFO_NUM;
+  cur -= RSVD_PG_H2C_EXTRAINFO_NUM;
+  cur -= drv_pg;
+  if (cur != boundary) {
+    LOG("mac: reserve boundary mismatch %u vs %u", cur, boundary);
+    return false;
+  }
+  /* priority_queue_cfg: page_table_8821c[1] = {hq 16, lq 16, nq 16, exq 14, gapq 1} */
+  const unsigned hq = 16, lq = 16, nq = 16, exq = 14, gapq = 1;
+  const unsigned pubq = acq - hq - lq - nq - exq - gapq;
+  w16(b, REG_FIFOPAGE_INFO_1, hq);
+  w16(b, REG_FIFOPAGE_INFO_2, lq);
+  w16(b, REG_FIFOPAGE_INFO_3, nq);
+  w16(b, REG_FIFOPAGE_INFO_4, exq);
+  w16(b, REG_FIFOPAGE_INFO_5, pubq);
+  w32(b, REG_RQPN_CTRL_2, r32(b, REG_RQPN_CTRL_2) | BIT_LD_RQPN);
+  w16(b, REG_FIFOPAGE_CTRL_2, boundary);
+  w8(b, REG_FWHW_TXQ_CTRL + 2, r8(b, REG_FWHW_TXQ_CTRL + 2) | (BIT_EN_WR_FREE_TAIL >> 16));
+  w16(b, REG_BCNQ_BDNY_V1, boundary);
+  w16(b, REG_FIFOPAGE_CTRL_2 + 2, boundary);
+  w16(b, REG_BCNQ1_BDNY_V1, boundary);
+  w32(b, REG_RXFF_BNDY, 16384 - C2H_PKT_BUF - 1);
+  w8(b, REG_AUTO_LLT_V1, r8(b, REG_AUTO_LLT_V1) | BIT_AUTO_INIT_LLT_V1);
+  if (!hw_ready(b, REG_AUTO_LLT_V1, BIT_AUTO_INIT_LLT_V1, 0)) {
+    LOG("mac: auto LLT init did not finish");
+    return false;
+  }
+  w8(b, REG_CR + 3, 0);
+  LOG("mac: tx fifo %u pages, reserved from %u, public queue %u", txff_pg, boundary, pubq);
+
+  /* init_h2c */
+  const uint32_t h2cq_addr = h2cq_pg << TX_PAGE_SIZE_SHIFT, h2cq_size = RSVD_PG_H2CQ_NUM << TX_PAGE_SIZE_SHIFT;
+  uint32_t v = r32(b, REG_H2C_HEAD);
+  w32(b, REG_H2C_HEAD, (v & 0xFFFC0000) | h2cq_addr);
+  v = r32(b, REG_H2C_READ_ADDR);
+  w32(b, REG_H2C_READ_ADDR, (v & 0xFFFC0000) | h2cq_addr);
+  v = r32(b, REG_H2C_TAIL);
+  w32(b, REG_H2C_TAIL, (v & 0xFFFC0000) | (h2cq_addr + h2cq_size));
+  uint8_t v8 = r8(b, REG_H2C_INFO);
+  w8(b, REG_H2C_INFO, (uint8_t)((v8 & 0xFC) | 0x01));
+  v8 = r8(b, REG_H2C_INFO);
+  w8(b, REG_H2C_INFO, (uint8_t)((v8 & 0xFB) | 0x04));
+  v8 = r8(b, REG_TXDMA_OFFSET_CHK + 1);
+  w8(b, REG_TXDMA_OFFSET_CHK + 1, (uint8_t)((v8 & 0x7f) | 0x80));
+  uint32_t wp = r32(b, REG_H2C_PKT_WRITEADDR) & 0x3FFFF, rp = r32(b, REG_H2C_PKT_READADDR) & 0x3FFFF;
+  uint32_t free_ = wp >= rp ? h2cq_size - (wp - rp) : rp - wp;
+  if (free_ != h2cq_size) {
+    LOG("mac: H2C queue mismatch (wp 0x%x rp 0x%x)", wp, rp);
+    return false;
+  }
+
+  /* rtw8821c_mac_init */
+  w8(b, REG_AMPDU_MAX_TIME_V1, WLAN_AMPDU_MAX_TIME);
+  w8(b, REG_TX_HANG_CTRL, r8(b, REG_TX_HANG_CTRL) | BIT_EN_EOF_V1);
+  uint16_t pre = WLAN_PRE_TXCNT_TIME_TH | BIT_EN_PRECNT;
+  w8(b, REG_PRECNT_CTRL, (uint8_t)(pre & 0xff));
+  w8(b, REG_PRECNT_CTRL + 1, (uint8_t)(pre >> 8));
+  w32(b, REG_PROT_MODE_CTRL, WLAN_RTS_LEN_TH | (WLAN_RTS_TX_TIME_TH << 8) | (WLAN_MAX_AGG_PKT_LIMIT << 16) |
+                                 ((uint32_t)WLAN_RTS_MAX_AGG_PKT_LIMIT << 24));
+  w16(b, REG_BAR_MODE_CTRL + 2, WLAN_BAR_RETRY_LIMIT | WLAN_RA_TRY_RATE_AGG_LIMIT << 8);
+  w8(b, REG_FAST_EDCA_VOVI_SETTING, FAST_EDCA_VO_TH);
+  w8(b, REG_FAST_EDCA_VOVI_SETTING + 2, FAST_EDCA_VI_TH);
+  w8(b, REG_FAST_EDCA_BEBK_SETTING, FAST_EDCA_BE_TH);
+  w8(b, REG_FAST_EDCA_BEBK_SETTING + 2, FAST_EDCA_BK_TH);
+  w8(b, REG_INIRTS_RATE_SEL, r8(b, REG_INIRTS_RATE_SEL) | BIT(5));
+  w8(b, REG_TIMER0_SRC_SEL, r8(b, REG_TIMER0_SRC_SEL) & (uint8_t)~BIT_TSFT_SEL_TIMER0);
+  w16(b, REG_TXPAUSE, 0);
+  w8(b, REG_SLOT, WLAN_SLOT_TIME);
+  w8(b, REG_PIFS, WLAN_PIFS_TIME);
+  w32(b, REG_SIFS, WLAN_SIFS_CFG);
+  w16(b, REG_EDCA_VO_PARAM + 2, WLAN_VO_TXOP_LIMIT);
+  w16(b, REG_EDCA_VI_PARAM + 2, WLAN_VI_TXOP_LIMIT);
+  w32(b, REG_RD_NAV_NXT, WLAN_NAV_CFG);
+  w16(b, REG_RXTSF_OFFSET_CCK, WLAN_RX_TSF_CFG);
+  w8(b, REG_BCN_CTRL, r8(b, REG_BCN_CTRL) | BIT_EN_BCN_FUNCTION);
+  w32(b, REG_TBTT_PROHIBIT, WLAN_TBTT_TIME);
+  w8(b, REG_DRVERLYINT, WLAN_DRV_EARLY_INT);
+  w8(b, REG_BCNDMATIM, WLAN_BCN_DMA_TIME);
+  w8(b, REG_TX_PTCL_CTRL + 1, r8(b, REG_TX_PTCL_CTRL + 1) & (uint8_t)~(BIT_SIFS_BK_EN >> 8));
+  w16(b, REG_RXFLTMAP0, WLAN_RX_FILTER0);
+  w16(b, REG_RXFLTMAP1, WLAN_RX_FILTER1);
+  w16(b, REG_RXFLTMAP2, WLAN_RX_FILTER2);
+  w32(b, REG_RCR, WLAN_RCR_CFG);
+  w8(b, REG_RX_PKT_LIMIT, WLAN_RXPKT_MAX_SZ_512);
+  w8(b, REG_TCR + 2, WLAN_TX_FUNC_CFG2);
+  w8(b, REG_TCR + 1, WLAN_TX_FUNC_CFG1);
+  w8(b, REG_ACKTO_CCK, 0x40);
+  w8(b, REG_WMAC_TRXPTCL_CTL_H, r8(b, REG_WMAC_TRXPTCL_CTL_H) | BIT(1));
+  w8(b, REG_SND_PTCL_CTRL, r8(b, REG_SND_PTCL_CTRL) | BIT_DIS_CHK_VHTSIGB_CRC);
+  w32(b, REG_WMAC_OPTION_FUNCTION + 8, WLAN_MAC_OPT_FUNC2);
+  w8(b, REG_WMAC_OPTION_FUNCTION + 4, WLAN_MAC_OPT_NORM_FUNC1);
+
+  /* rtw_drv_info_cfg */
+  w8(b, REG_RX_DRVINFO_SZ, PHY_STATUS_SIZE);
+  v8 = r8(b, REG_TRXFF_BNDY + 1);
+  w8(b, REG_TRXFF_BNDY + 1, (uint8_t)((v8 & 0xF0) | 0xF));
+  w32(b, REG_RCR, r32(b, REG_RCR) | BIT_APP_PHYSTS);
+  w32(b, REG_WMAC_OPTION_FUNCTION + 4, r32(b, REG_WMAC_OPTION_FUNCTION + 4) & ~(BIT(8) | BIT(9)));
+  LOG("mac: init done (CR 0x%02x RCR 0x%08x TXPAUSE 0x%04x)", r8(b, REG_CR), r32(b, REG_RCR), r16(b, REG_TXPAUSE));
+  return true;
+}
+
+static void h2c_probe(volatile uint8_t *b) {
+  /* H2C_CMD_QUERY_BT_INFO (0x61) mit Bit 8, wie rtw_fw_query_bt_info: Mailbox 0 */
+  if (r8(b, REG_HMETFR) & 1) {
+    LOG("h2c: mailbox 0 still busy before sending (HMETFR 0x%02x)", r8(b, REG_HMETFR));
+    return;
+  }
+  w32(b, REG_HMEBOX0_EX, 0);
+  w32(b, REG_HMEBOX0, 0x61u | (1u << 8));
+  unsigned i = 0;
+  for (; i < 3000 && (r8(b, REG_HMETFR) & 1); i++) IODelay(100);
+  if (r8(b, REG_HMETFR) & 1) LOG("h2c: firmware did not take the command (HMETFR 0x%02x)", r8(b, REG_HMETFR));
+  else LOG("h2c: firmware took the command after %u us (HMETFR 0x%02x), FW_DBG7 0x%08x", i * 100, r8(b, REG_HMETFR),
+           r32(b, REG_FW_DBG7));
 }
 
 class ClokeRtw88 : public IOService {
@@ -528,7 +668,8 @@ bool ClokeRtw88::start(IOService *provider) {
     return true;
   }
   dump_efuse(base);
-  if (on >= 2 && power_cycle(base, (cfg1 >> 12) & 0xf) && on >= 3) download_fw(base);
+  if (on >= 2 && power_cycle(base, (cfg1 >> 12) & 0xf) && on >= 3 && download_fw(base) && on >= 4 && mac_init(base))
+    h2c_probe(base);
   return true;
 }
 
