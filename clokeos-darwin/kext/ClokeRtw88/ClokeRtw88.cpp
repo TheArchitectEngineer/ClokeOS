@@ -712,6 +712,152 @@ static bool phy_init(volatile uint8_t *b, unsigned cut) {
   return rf_read(b, 0) != RFREG_MASK && rf_read(b, 0) != 0;
 }
 
+/* ---- Stufe 6: Kanal einstellen, RX-Ring aufbauen und passiv nach Netzen suchen (2,4 GHz, 20 MHz) ----
+ * Wie rtw8821c_set_channel (BB, MAC, RF, RX-DFIR) für den Fall <= 14, plus Empfangsring wie rtw_pci_reset_buf_desc.
+ * Empfangen werden Management-Rahmen (Beacons, Probe-Antworten); aus ihnen liest der Treiber SSID, BSSID, Kanal. */
+static void wm(volatile uint8_t *b, unsigned reg, uint32_t mask, uint32_t val) {
+  w32(b, reg, (r32(b, reg) & ~mask) | ((val << __builtin_ctz(mask)) & mask));
+}
+
+static void rf_wm(volatile uint8_t *b, unsigned addr, uint32_t mask, uint32_t val) {
+  rf_write(b, addr, (rf_read(b, addr) & ~mask) | ((val << __builtin_ctz(mask)) & mask));
+}
+
+static void set_channel(volatile uint8_t *b, unsigned ch, bool btg) {
+  /* BB */
+  wm(b, 0x808, 1u << 28, 1);
+  wm(b, 0x454, 1u << 7, 0);
+  wm(b, 0xa80, 1u << 18, 0);
+  wm(b, 0x814, 0xfc00, 15);
+  wm(b, 0xc1c, 0xf00, 0);
+  wm(b, 0x860, 0x1ffe0000, 0x96a);
+  if (ch == 14) {
+    w32(b, 0xa24, 0xb81c);
+    wm(b, 0xa28, 0xffff, 0);
+    w32(b, 0xaac, 0x3667);
+  }
+  uint32_t v = r32(b, 0x8ac) & 0xffcffc00u;
+  w32(b, 0x8ac, v | 0x10010000u);
+  wm(b, 0x8c4, 1u << 30, 1);
+  static const uint32_t swing[4] = {0x200, 0x16a, 0x101, 0x0b6};
+  unsigned sw = g_logm[0xc6] > 9 ? 0 : g_logm[0xc6];
+  wm(b, 0xc1c, 0xffe00000u, swing[sw / 3]);
+  /* MAC */
+  w8(b, 0x483, 0);
+  w32(b, 0x668, r32(b, 0x668) & ~(3u << 7));
+  w32(b, 0x24, r32(b, 0x24) & ~(3u << 20));
+  w8(b, 0x55c, 80);
+  w8(b, 0x638, 80);
+  w8(b, 0x454, r8(b, 0x454) & (uint8_t)~0x80);
+  /* RF: Antennenpfad, Kanal, Bandbreite 20 MHz */
+  w32(b, 0x1080, r32(b, 0x1080) | (1u << 16));
+  w32(b, 0x0, r32(b, 0x0) | (1u << 26));
+  uint32_t reg = r32(b, 0xcb8);
+  if (btg) {
+    reg |= 1u << 16;
+    reg &= ~((1u << 18) | (1u << 20) | (1u << 22) | (1u << 21) | (1u << 23));
+    wm(b, 0xa84, 0xff0000, 0x0e);
+    wm(b, 0xa80, 0xffff, 0xfc84);
+  } else {
+    reg |= (1u << 20) | (1u << 22) | (1u << 21);
+    reg &= ~((1u << 16) | (1u << 18) | (1u << 23));
+    wm(b, 0xa84, 0xff0000, 0x12);
+    wm(b, 0xa80, 0xffff, 0x7532);
+  }
+  w32(b, 0xcb8, reg);
+  rf_wm(b, 0xdf, 1u << 6, 1);
+  rf_wm(b, 0x64, 0xf, 0xf);
+  uint32_t r18 = rf_read(b, 0x18);
+  r18 &= ~((1u << 16) | (1u << 9) | (1u << 8) | 0xffu | (1u << 18) | (1u << 17) | (1u << 11) | (1u << 10));
+  r18 |= (ch & 0xff) | (1u << 11) | (1u << 10);
+  rf_write(b, 0x18, r18);
+  rf_wm(b, 0xb8, 1u << 19, 0);
+  rf_wm(b, 0xb8, 1u << 19, 1);
+  /* RX-DFIR für 20 MHz */
+  wm(b, 0x948, 3u << 28, 2);
+  wm(b, 0x94c, 3u << 28, 2);
+  wm(b, 0xc20, 1u << 31, 1);
+  wm(b, 0x8f0, 1u << 31, 0);
+}
+
+enum { RX_N = 16, RX_BUF = 4096, RXBD_DESA = 0x338, RXBD_NUM = 0x382, RXBD_IDX = 0x3B4, BD_RWPTR_CLR = 0x3F4 };
+
+struct Seen { uint8_t bssid[6]; uint8_t ch; char ssid[33]; };
+
+static void rx_scan(volatile uint8_t *b, bool btg) {
+  static Dma ring, buf[RX_N];
+  if (!dma_alloc(&ring, 4096)) { LOG("rx: no ring memory"); return; }
+  memset(ring.va, 0, 4096);
+  for (int i = 0; i < RX_N; i++) {
+    if (!dma_alloc(&buf[i], RX_BUF)) { LOG("rx: no buffer %d", i); return; }
+    memset(buf[i].va, 0, RX_BUF);
+    uint8_t *d = ring.va + i * 8;
+    *(uint16_t *)d = RX_BUF;
+    *(uint16_t *)(d + 2) = 0;
+    *(uint32_t *)(d + 4) = buf[i].pa;
+  }
+  w8(b, PCI_CTRL + 3, r8(b, PCI_CTRL + 3) | 0xf7);
+  w16(b, RXBD_NUM, RX_N);
+  w32(b, RXBD_DESA, ring.pa);
+  w32(b, BD_RWPTR_CLR, 0xffffffff);
+  w32(b, PCI_CTRL, r32(b, PCI_CTRL) | (1u << 20) | (1u << 15));
+  /* alle Adressen annehmen (Beacons haben Broadcast-Ziel) und CRC-fehlerhafte nicht */
+  w32(b, 0x608, r32(b, 0x608) | 0xf);
+  LOG("rx: ring of %d buffers at 0x%08x, RCR 0x%08x, CR 0x%02x", RX_N, ring.pa, r32(b, 0x608), r8(b, 0x100));
+
+  static Seen seen[32];
+  unsigned nseen = 0, rp = 0, total = 0, mgmt = 0;
+  for (unsigned ch = 1; ch <= 13; ch++) {
+    set_channel(b, ch, btg);
+    unsigned got = 0;
+    for (int t = 0; t < 150; t++) {
+      IOSleep(2);
+      unsigned hw = (r32(b, RXBD_IDX) >> 16) & 0xfff;
+      while (rp != hw % RX_N) {
+        uint8_t *p = buf[rp].va;
+        uint32_t w0 = *(uint32_t *)p, w2 = *(uint32_t *)(p + 8);
+        unsigned len = w0 & 0x3fff, drv = ((w0 >> 16) & 0xf) * 8, sh = (w0 >> 24) & 3, off = 24 + drv + sh;
+        got++;
+        total++;
+        if (!((w2 >> 28) & 1) && len >= 36 && off + len <= RX_BUF) {
+          uint8_t *f = p + off;
+          if (f[0] == 0x80 || f[0] == 0x50) {
+            mgmt++;
+            char ssid[33] = {0};
+            unsigned fch = ch;
+            for (unsigned o = 36; o + 2 <= len;) {
+              unsigned id = f[o], l = f[o + 1];
+              if (o + 2 + l > len) break;
+              if (id == 0 && l <= 32) { memcpy(ssid, f + o + 2, l); ssid[l] = 0; }
+              if (id == 3 && l == 1) fch = f[o + 2];
+              o += 2 + l;
+            }
+            bool dup = false;
+            for (unsigned i = 0; i < nseen; i++)
+              if (!memcmp(seen[i].bssid, f + 16, 6)) { dup = true; break; }
+            if (!dup && nseen < 32) {
+              memcpy(seen[nseen].bssid, f + 16, 6);
+              seen[nseen].ch = (uint8_t)fch;
+              strlcpy(seen[nseen].ssid, ssid, sizeof ssid);
+              LOG("scan: ch %u  %02x:%02x:%02x:%02x:%02x:%02x  \"%s\"", fch, f[16], f[17], f[18], f[19], f[20], f[21], ssid);
+              nseen++;
+            }
+          }
+        }
+        memset(p, 0, 32);
+        uint8_t *d = ring.va + rp * 8;
+        *(uint16_t *)d = RX_BUF;
+        *(uint16_t *)(d + 2) = 0;
+        *(uint32_t *)(d + 4) = buf[rp].pa;
+        rp = (rp + 1) % RX_N;
+        w16(b, RXBD_IDX, (uint16_t)rp);
+      }
+    }
+    if (ch == 1 || got) LOG("rx: channel %u: %u packets (BD idx 0x%08x, RCR 0x%08x)", ch, got, r32(b, RXBD_IDX), r32(b, 0x608));
+  }
+  LOG("scan: done, %u packets, %u beacons/probe responses, %u networks", total, mgmt, nseen);
+}
+
 class ClokeRtw88 : public IOService {
   OSDeclareDefaultStructors(ClokeRtw88)
   IOMemoryMap *map = nullptr;
@@ -779,7 +925,7 @@ bool ClokeRtw88::start(IOService *provider) {
   dump_efuse(base);
   if (on >= 2 && power_cycle(base, (cfg1 >> 12) & 0xf) && (dump_efuse(base), true) && on >= 3 && download_fw(base) && on >= 4 && mac_init(base)) {
     h2c_probe(base);
-    if (on >= 5) phy_init(base, (cfg1 >> 12) & 0xf);
+    if (on >= 5 && phy_init(base, (cfg1 >> 12) & 0xf) && on >= 6) rx_scan(base, (g_logm[0xca] & 0x1f) == 2 || (g_logm[0xca] & 0x1f) == 4);
   }
   return true;
 }
