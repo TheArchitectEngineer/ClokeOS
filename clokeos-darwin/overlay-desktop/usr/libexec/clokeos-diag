@@ -33,6 +33,7 @@ for i in en0 en1 en2 en3; do a=$(ipconfig getifaddr $i 2>/dev/null); [[ -n $a ]]
 print "Network: ${net:-no address}"
 print "CPUs: hw.ncpu=$(sysctl -n hw.ncpu 2>/dev/null) physical=$(sysctl -n hw.physicalcpu 2>/dev/null)"
 dmesg 2>/dev/null | grep -E 'ClokeTrace|Started cpu' | tail -24 | cut -c1-148
+dmesg 2>/dev/null | grep -E 'ClokeRtw88' | tail -12 | cut -c1-148
 print "Kernel (ClokePS2, ClokeI2CHID, PS/2, HID):"
 dmesg 2>/dev/null | grep -E 'Cloke|PS2|IOUSBHID' | grep -v ClokeTrace | tail -16 | cut -c1-148
 print "Disk and USB errors:"
