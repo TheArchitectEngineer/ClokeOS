@@ -16,6 +16,7 @@
 #include <time.h>
 
 static gboolean de;
+static char lang2[3] = "en";
 #define T(en, deu) (de ? (deu) : (en))
 
 static const char *CSS =
@@ -41,7 +42,20 @@ static const char *CSS =
     ".cl-day.today { background: #ff3b30; color: white; border-radius: 999px; font-weight: 700; }"
     ".cl-stat { font-size: 12px; opacity: 0.75; }"
     ".cl-tb { min-height: 38px; padding: 0 10px 0 0; border: none; box-shadow: none; }"
-    ".cl-tbtitle { font-size: 13px; font-weight: 700; }";
+    ".cl-tbtitle { font-size: 13px; font-weight: 700; }"
+    ".cl-pill { background: alpha(currentColor, 0.09); border-radius: 999px; padding: 0 2px; margin: 6px 0; }"
+    ".cl-pill button { border-radius: 999px; min-height: 26px; min-width: 30px; padding: 0 8px; background: none; border: none; box-shadow: none; }"
+    ".cl-date { font-size: 11px; opacity: 0.55; }"
+    ".cl-cell { border-right: 1px solid alpha(currentColor, 0.12); border-bottom: 1px solid alpha(currentColor, 0.12); }"
+    ".cl-cell.we { background: alpha(currentColor, 0.045); }"
+    ".cl-cell.sel { box-shadow: inset 0 0 0 2px #7c5cff; }"
+    ".cl-cell .cl-dn { font-size: 13px; margin: 6px 8px 0 0; min-width: 22px; }"
+    ".cl-cell.out .cl-dn { opacity: 0.3; }"
+    ".cl-cell .cl-dn.today { background: #ff453a; color: white; border-radius: 999px; font-weight: 700; min-height: 22px; }"
+    ".cl-ev { font-size: 10.5px; padding: 0 6px; opacity: 0.8; }"
+    ".cl-side2 { border-left: 1px solid alpha(currentColor, 0.12); padding: 16px 14px; }"
+    ".cl-grid-wrap { padding: 18px 18px 0 18px; }"
+    ".cl-year { opacity: 0.45; font-weight: 400; }";
 
 static void load_css(void) {
   GtkCssProvider *p = gtk_css_provider_new();
@@ -85,25 +99,46 @@ static void add_nav(GtkWidget *win, void (*cb)(gpointer, int), gpointer data) {
 }
 
 /* Werkzeugleiste in der Fensterleiste (Finder/Safari-Art): CloakServer zeichnet links 146 px Ampel und
- * Zurück/Vor und lässt dort kein Programm durch; die Leiste des Programms beginnt rechts davon. */
-static GtkWidget *unified_bar(GtkWidget *root, const char *title) {
-  GtkWidget *tb = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
-  GtkStyleContext *sc = gtk_widget_get_style_context(tb);
+ * Zurück/Vor und lässt dort kein Programm durch. Der Titel steht in der Mitte des Fensters, die Bedienknöpfe
+ * rechts in einer Pille wie im Prototyp (.titlebar, .tb-actions). */
+typedef struct { GtkWidget *title, *right; } UBar;
+
+static UBar unified_bar(GtkWidget *root, const char *title) {
+  GtkWidget *ov = gtk_overlay_new();
+  GtkWidget *bg = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+  GtkStyleContext *sc = gtk_widget_get_style_context(bg);
   gtk_style_context_add_class(sc, "toolbar");
   gtk_style_context_add_class(sc, "cl-tb");
-  gtk_widget_set_size_request(tb, -1, 38);
-  gtk_widget_set_margin_start(tb, 150);
+  gtk_widget_set_size_request(bg, -1, 38);
+  gtk_container_add(GTK_CONTAINER(ov), bg);
   GtkWidget *l = gtk_label_new(title);
   gtk_style_context_add_class(gtk_widget_get_style_context(l), "cl-tbtitle");
-  gtk_box_pack_start(GTK_BOX(tb), l, FALSE, FALSE, 0);
-  gtk_box_pack_start(GTK_BOX(root), tb, FALSE, FALSE, 0);
-  return tb;
+  gtk_widget_set_halign(l, GTK_ALIGN_CENTER);
+  gtk_widget_set_valign(l, GTK_ALIGN_CENTER);
+  gtk_label_set_ellipsize(GTK_LABEL(l), PANGO_ELLIPSIZE_END);
+  gtk_label_set_max_width_chars(GTK_LABEL(l), 40);
+  gtk_overlay_add_overlay(GTK_OVERLAY(ov), l);
+  GtkWidget *right = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+  gtk_style_context_add_class(gtk_widget_get_style_context(right), "cl-pill");
+  gtk_widget_set_halign(right, GTK_ALIGN_END);
+  gtk_widget_set_valign(right, GTK_ALIGN_CENTER);
+  gtk_widget_set_margin_end(right, 10);
+  gtk_overlay_add_overlay(GTK_OVERLAY(ov), right);
+  gtk_box_pack_start(GTK_BOX(root), ov, FALSE, FALSE, 0);
+  return (UBar){l, right};
+}
+
+static GtkWidget *pill_button(const char *icon, const char *label, const char *tip) {
+  GtkWidget *b = icon ? gtk_button_new_from_icon_name(icon, GTK_ICON_SIZE_MENU) : gtk_button_new_with_label(label);
+  gtk_widget_set_tooltip_text(b, tip);
+  gtk_button_set_relief(GTK_BUTTON(b), GTK_RELIEF_NONE);
+  return b;
 }
 
 /* ---- Notizen ----------------------------------------------------------------------------------- */
 
 typedef struct {
-  GtkWidget *list, *view;
+  GtkWidget *list, *view, *date, *wtitle;
   GtkTextBuffer *buf;
   char *dir;
   char *cur;      /* Dateipfad der geöffneten Notiz */
@@ -163,6 +198,24 @@ static void notes_open(Notes *n, const char *path) {
   g_free(t);
   g_free(n->cur);
   n->cur = g_strdup(path);
+  GStatBuf st;
+  if (!g_stat(path, &st) && n->date) {
+    GDateTime *dt = g_date_time_new_from_unix_local(st.st_mtime);
+    char *when = g_date_time_format(dt, "%d.%m.%Y, %H:%M");
+    gtk_label_set_text(GTK_LABEL(n->date), when);
+    g_free(when);
+    g_date_time_unref(dt);
+  }
+  if (n->wtitle) {
+    GtkTextIter s, e;
+    gtk_text_buffer_get_bounds(n->buf, &s, &e);
+    char *all = gtk_text_buffer_get_text(n->buf, &s, &e, FALSE), *fl = first_line(all);
+    char *tt = g_strdup_printf("%s — %s", *fl ? fl : T("New note", "Neue Notiz"), T("Notes", "Notizen"));
+    gtk_label_set_text(GTK_LABEL(n->wtitle), tt);
+    g_free(tt);
+    g_free(fl);
+    g_free(all);
+  }
 }
 
 static void on_row_selected(GtkListBox *l, GtkListBoxRow *r, gpointer d) {
@@ -257,12 +310,6 @@ static void notes_delete(GtkButton *b, gpointer d) {
 }
 
 /* Textknopf statt Symbol: PureDarwins Symbolsatz hat nicht alle Zeichen */
-static GtkWidget *icon_button(const char *label, const char *tip) {
-  GtkWidget *b = gtk_button_new_with_label(label);
-  gtk_widget_set_tooltip_text(b, tip);
-  gtk_button_set_relief(GTK_BUTTON(b), GTK_RELIEF_NONE);
-  return b;
-}
 
 static void notes_nav(gpointer data, int dir) {
   Notes *n = data;
@@ -294,11 +341,12 @@ static void run_notes(void) {
   GtkWidget *side = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
   gtk_style_context_add_class(gtk_widget_get_style_context(side), "cl-side");
   gtk_widget_set_size_request(side, 230, -1);
-  GtkWidget *bar = unified_bar(root, T("Notes", "Notizen"));
-  GtkWidget *bnew = icon_button("＋", T("New note", "Neue Notiz"));
-  GtkWidget *bdel = icon_button(T("Delete", "Löschen"), T("Delete note", "Notiz löschen"));
-  gtk_box_pack_end(GTK_BOX(bar), bdel, FALSE, FALSE, 0);
-  gtk_box_pack_end(GTK_BOX(bar), bnew, FALSE, FALSE, 0);
+  UBar bar = unified_bar(root, T("Notes", "Notizen"));
+  n->wtitle = bar.title;
+  GtkWidget *bnew = pill_button("document-edit-symbolic", NULL, T("New note", "Neue Notiz"));
+  GtkWidget *bdel = pill_button("edit-delete-symbolic", NULL, T("Delete note", "Notiz löschen"));
+  gtk_box_pack_start(GTK_BOX(bar.right), bnew, FALSE, FALSE, 0);
+  gtk_box_pack_start(GTK_BOX(bar.right), bdel, FALSE, FALSE, 0);
   n->list = gtk_list_box_new();
   GtkWidget *sc = gtk_scrolled_window_new(NULL, NULL);
   gtk_container_add(GTK_CONTAINER(sc), n->list);
@@ -309,8 +357,14 @@ static void run_notes(void) {
   n->buf = gtk_text_view_get_buffer(GTK_TEXT_VIEW(n->view));
   GtkWidget *sc2 = gtk_scrolled_window_new(NULL, NULL);
   gtk_container_add(GTK_CONTAINER(sc2), n->view);
+  n->date = gtk_label_new("");
+  gtk_style_context_add_class(gtk_widget_get_style_context(n->date), "cl-date");
+  gtk_widget_set_margin_top(n->date, 12);
+  GtkWidget *rbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+  gtk_box_pack_start(GTK_BOX(rbox), n->date, FALSE, FALSE, 0);
+  gtk_box_pack_start(GTK_BOX(rbox), sc2, TRUE, TRUE, 0);
   gtk_box_pack_start(GTK_BOX(hbox), side, FALSE, FALSE, 0);
-  gtk_box_pack_start(GTK_BOX(hbox), sc2, TRUE, TRUE, 0);
+  gtk_box_pack_start(GTK_BOX(hbox), rbox, TRUE, TRUE, 0);
   gtk_box_pack_start(GTK_BOX(root), hbox, TRUE, TRUE, 0);
   gtk_container_add(GTK_CONTAINER(win), root);
   add_nav(win, notes_nav, n);
@@ -467,70 +521,250 @@ static void run_calc(void) {
 
 /* ---- Kalender ------------------------------------------------------------------------------------- */
 
+typedef struct { int y, m, d; char tm[8]; char *text; } Event;
+
 typedef struct {
-  GtkWidget *title, *grid, *prev, *next;
-  int y, m;   /* angezeigter Monat */
+  GtkWidget *month, *grid, *prev, *next, *dayhead, *evbox, *entry, *wtitle;
+  int y, m, sel_y, sel_m, sel_d;
+  GList *events;
+  char *file;
 } Cal;
 
-static void cal_fill(Cal *c);
+static const char *const MON_L[5][12] = {
+    {"January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"},
+    {"Januar", "Februar", "März", "April", "Mai", "Juni", "Juli", "August", "September", "Oktober", "November", "Dezember"},
+    {"janvier", "février", "mars", "avril", "mai", "juin", "juillet", "août", "septembre", "octobre", "novembre", "décembre"},
+    {"enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"},
+    {"gennaio", "febbraio", "marzo", "aprile", "maggio", "giugno", "luglio", "agosto", "settembre", "ottobre", "novembre", "dicembre"}};
+static const char *const DOW_L[5][7] = {{"Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"},  /* Sonntag zuerst, wie in den USA */
+                                        {"Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"},
+                                        {"Lu", "Ma", "Me", "Je", "Ve", "Sa", "Di"},
+                                        {"Lu", "Ma", "Mi", "Ju", "Vi", "Sá", "Do"},
+                                        {"Lu", "Ma", "Me", "Gi", "Ve", "Sa", "Do"}};
+static const char *const WD_L[5][7] = {{"Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"},
+                                       {"Sonntag", "Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag"},
+                                       {"dimanche", "lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi"},
+                                       {"domingo", "lunes", "martes", "miércoles", "jueves", "viernes", "sábado"},
+                                       {"domenica", "lunedì", "martedì", "mercoledì", "giovedì", "venerdì", "sabato"}};
+static int lang_idx(void) {
+  static const char *c[] = {"en", "de", "fr", "es", "it"};
+  for (int i = 1; i < 5; i++)
+    if (!strcmp(lang2, c[i])) return i;
+  return 0;
+}
 
-static void cal_step(GtkButton *b, gpointer d) {
-  Cal *c = d;
-  int dm = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(b), "dm"));
-  if (!dm) {
-    GDateTime *now = g_date_time_new_now_local();
-    c->y = g_date_time_get_year(now);
-    c->m = g_date_time_get_month(now);
-    g_date_time_unref(now);
-  } else {
-    c->m += dm;
-    if (c->m < 1) c->m = 12, c->y--;
-    if (c->m > 12) c->m = 1, c->y++;
+static void cal_fill(Cal *c);
+static void cal_side(Cal *c);
+
+static void cal_load(Cal *c) {
+  char *txt = NULL;
+  if (!g_file_get_contents(c->file, &txt, NULL, NULL)) return;
+  char **lines = g_strsplit(txt, "\n", -1);
+  for (char **l = lines; *l; l++) {
+    int y, m, d;
+    char tm[8] = "", *tab1 = strchr(*l, '\t');
+    if (!tab1 || sscanf(*l, "%d-%d-%d", &y, &m, &d) != 3) continue;
+    char *tab2 = strchr(tab1 + 1, '\t');
+    if (!tab2) continue;
+    g_strlcpy(tm, tab1 + 1, MIN((gsize)(tab2 - tab1), sizeof tm));
+    Event *e = g_new0(Event, 1);
+    e->y = y, e->m = m, e->d = d;
+    g_strlcpy(e->tm, tm, sizeof e->tm);
+    e->text = g_strdup(tab2 + 1);
+    c->events = g_list_append(c->events, e);
   }
+  g_strfreev(lines);
+  g_free(txt);
+}
+
+static void cal_save(Cal *c) {
+  GString *s = g_string_new("");
+  for (GList *l = c->events; l; l = l->next) {
+    Event *e = l->data;
+    g_string_append_printf(s, "%04d-%02d-%02d\t%s\t%s\n", e->y, e->m, e->d, e->tm, e->text);
+  }
+  char *dir = g_path_get_dirname(c->file);
+  g_mkdir_with_parents(dir, 0755);
+  g_free(dir);
+  g_file_set_contents(c->file, s->str, -1, NULL);
+  g_string_free(s, TRUE);
+}
+
+static int dow_of(int y, int m, int d) { /* 0 = Sonntag */
+  GDateTime *dt = g_date_time_new_local(y, m, d, 12, 0, 0);
+  int w = g_date_time_get_day_of_week(dt) % 7;
+  g_date_time_unref(dt);
+  return w;
+}
+
+static void cal_pick(GtkWidget *w, GdkEventButton *e, gpointer d) {
+  (void)e;
+  Cal *c = d;
+  c->sel_y = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(w), "y"));
+  c->sel_m = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(w), "m"));
+  c->sel_d = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(w), "d"));
+  if (c->sel_m != c->m || c->sel_y != c->y) c->y = c->sel_y, c->m = c->sel_m;
   cal_fill(c);
 }
 
 static void cal_fill(Cal *c) {
-  static const char *mde[] = {"Januar", "Februar", "März", "April", "Mai", "Juni", "Juli", "August", "September", "Oktober", "November", "Dezember"};
-  static const char *men[] = {"January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"};
-  char t[64];
-  snprintf(t, sizeof t, "%s %d", (de ? mde : men)[c->m - 1], c->y);
-  gtk_label_set_text(GTK_LABEL(c->title), t);
+  int li = lang_idx();
+  char t[160];
+  snprintf(t, sizeof t, "<b>%s</b> <span alpha=\"55%%\" weight=\"normal\">%d</span>", MON_L[li][c->m - 1], c->y);
+  gtk_label_set_markup(GTK_LABEL(c->month), t);
   GList *kids = gtk_container_get_children(GTK_CONTAINER(c->grid));
   for (GList *k = kids; k; k = k->next) gtk_widget_destroy(k->data);
   g_list_free(kids);
-  static const char *dde[] = {"Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"};
-  static const char *den[] = {"Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"};
+  int mon_first = li != 0; /* Montag zuerst außer im Englischen */
   for (int i = 0; i < 7; i++) {
-    GtkWidget *l = gtk_label_new(de ? dde[i] : den[i]);
-    gtk_style_context_add_class(gtk_widget_get_style_context(l), "cl-dow");
-    gtk_grid_attach(GTK_GRID(c->grid), l, i, 0, 1, 1);
+    GtkWidget *h = gtk_label_new(DOW_L[li][(i + mon_first) % 7]);
+    gtk_style_context_add_class(gtk_widget_get_style_context(h), "cl-dow");
+    gtk_widget_set_halign(h, GTK_ALIGN_END);
+    gtk_widget_set_margin_end(h, 8);
+    gtk_widget_set_margin_top(h, 8);
+    gtk_widget_set_margin_bottom(h, 8);
+    gtk_grid_attach(GTK_GRID(c->grid), h, i, 0, 1, 1);
   }
-  GDateTime *first = g_date_time_new_local(c->y, c->m, 1, 0, 0, 0);
-  int wd = g_date_time_get_day_of_week(first);          /* 1 = Montag … 7 = Sonntag */
-  int lead = de ? wd - 1 : wd % 7;                      /* Tage des Vormonats vor dem 1. */
-  GDateTime *start = g_date_time_add_days(first, -lead);
   GDateTime *now = g_date_time_new_now_local();
-  for (int i = 0; i < 42; i++) {
-    GDateTime *day = g_date_time_add_days(start, i);
-    char n[8];
-    snprintf(n, sizeof n, "%d", g_date_time_get_day_of_month(day));
-    GtkWidget *l = gtk_label_new(n);
-    GtkStyleContext *sc = gtk_widget_get_style_context(l);
-    gtk_style_context_add_class(sc, "cl-day");
-    if (g_date_time_get_month(day) != c->m) gtk_style_context_add_class(sc, "out");
-    if (g_date_time_get_year(day) == g_date_time_get_year(now) && g_date_time_get_month(day) == g_date_time_get_month(now) &&
-        g_date_time_get_day_of_month(day) == g_date_time_get_day_of_month(now))
-      gtk_style_context_add_class(sc, "today");
-    gtk_widget_set_halign(l, GTK_ALIGN_CENTER);
-    gtk_widget_set_size_request(l, 36, 36);
-    gtk_grid_attach(GTK_GRID(c->grid), l, i % 7, 1 + i / 7, 1, 1);
-    g_date_time_unref(day);
-  }
+  int ty = g_date_time_get_year(now), tm_ = g_date_time_get_month(now), td = g_date_time_get_day_of_month(now);
   g_date_time_unref(now);
+  int first = (dow_of(c->y, c->m, 1) - mon_first + 7) % 7;
+  GDateTime *f1 = g_date_time_new_local(c->y, c->m, 1, 12, 0, 0);
+  GDateTime *start = g_date_time_add_days(f1, -first);
+  g_date_time_unref(f1);
+  for (int i = 0; i < 42; i++) {
+    GDateTime *dd = g_date_time_add_days(start, i);
+    int y = g_date_time_get_year(dd), m = g_date_time_get_month(dd), d = g_date_time_get_day_of_month(dd);
+    int w = g_date_time_get_day_of_week(dd) % 7;
+    g_date_time_unref(dd);
+    GtkWidget *eb = gtk_event_box_new();
+    GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 1);
+    char dn[8];
+    snprintf(dn, sizeof dn, "%d", d);
+    GtkWidget *l = gtk_label_new(dn);
+    gtk_style_context_add_class(gtk_widget_get_style_context(l), "cl-dn");
+    gtk_widget_set_halign(l, GTK_ALIGN_END);
+    gtk_box_pack_start(GTK_BOX(box), l, FALSE, FALSE, 0);
+    int shown = 0;
+    for (GList *ev = c->events; ev; ev = ev->next) {
+      Event *e = ev->data;
+      if (e->y != y || e->m != m || e->d != d || shown >= 2) continue;
+      GtkWidget *el = gtk_label_new(e->text);
+      gtk_label_set_xalign(GTK_LABEL(el), 0);
+      gtk_label_set_ellipsize(GTK_LABEL(el), PANGO_ELLIPSIZE_END);
+      gtk_style_context_add_class(gtk_widget_get_style_context(el), "cl-ev");
+      gtk_box_pack_start(GTK_BOX(box), el, FALSE, FALSE, 0);
+      shown++;
+    }
+    gtk_container_add(GTK_CONTAINER(eb), box);
+    GtkStyleContext *sc = gtk_widget_get_style_context(eb);
+    gtk_style_context_add_class(sc, "cl-cell");
+    if (w == 0 || w == 6) gtk_style_context_add_class(sc, "we");
+    if (m != c->m) gtk_style_context_add_class(sc, "out");
+    if (y == c->sel_y && m == c->sel_m && d == c->sel_d) gtk_style_context_add_class(sc, "sel");
+    if (y == ty && m == tm_ && d == td) gtk_style_context_add_class(gtk_widget_get_style_context(l), "today");
+    gtk_widget_set_size_request(eb, 64, 56);
+    gtk_widget_set_hexpand(eb, TRUE);
+    gtk_widget_set_vexpand(eb, TRUE);
+    g_object_set_data(G_OBJECT(eb), "y", GINT_TO_POINTER(y));
+    g_object_set_data(G_OBJECT(eb), "m", GINT_TO_POINTER(m));
+    g_object_set_data(G_OBJECT(eb), "d", GINT_TO_POINTER(d));
+    g_signal_connect(eb, "button-press-event", G_CALLBACK(cal_pick), c);
+    gtk_grid_attach(GTK_GRID(c->grid), eb, i % 7, 1 + i / 7, 1, 1);
+  }
   g_date_time_unref(start);
-  g_date_time_unref(first);
   gtk_widget_show_all(c->grid);
+  cal_side(c);
+}
+
+static void cal_del(GtkButton *b, gpointer d) {
+  Cal *c = d;
+  Event *e = g_object_get_data(G_OBJECT(b), "ev");
+  c->events = g_list_remove(c->events, e);
+  g_free(e->text);
+  g_free(e);
+  cal_save(c);
+  cal_fill(c);
+}
+
+static void cal_side(Cal *c) {
+  int li = lang_idx();
+  char t[160];
+  const char *wd = WD_L[li][dow_of(c->sel_y, c->sel_m, c->sel_d)], *mo = MON_L[li][c->sel_m - 1];
+  if (li == 0) snprintf(t, sizeof t, "%s, %s %d", wd, mo, c->sel_d);
+  else if (li == 1) snprintf(t, sizeof t, "%s, %d. %s", wd, c->sel_d, mo);
+  else snprintf(t, sizeof t, "%s %d %s", wd, c->sel_d, mo);
+  gtk_label_set_text(GTK_LABEL(c->dayhead), t);
+  GList *kids = gtk_container_get_children(GTK_CONTAINER(c->evbox));
+  for (GList *k = kids; k; k = k->next) gtk_widget_destroy(k->data);
+  g_list_free(kids);
+  int n = 0;
+  for (GList *ev = c->events; ev; ev = ev->next) {
+    Event *e = ev->data;
+    if (e->y != c->sel_y || e->m != c->sel_m || e->d != c->sel_d) continue;
+    char line[300];
+    snprintf(line, sizeof line, "%s%s%s", e->tm, e->tm[0] ? "  " : "", e->text);
+    GtkWidget *row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+    GtkWidget *l = gtk_label_new(line);
+    gtk_label_set_xalign(GTK_LABEL(l), 0);
+    gtk_label_set_line_wrap(GTK_LABEL(l), TRUE);
+    gtk_widget_set_hexpand(l, TRUE);
+    GtkWidget *x = gtk_button_new_from_icon_name("edit-delete-symbolic", GTK_ICON_SIZE_MENU);
+    gtk_button_set_relief(GTK_BUTTON(x), GTK_RELIEF_NONE);
+    g_object_set_data(G_OBJECT(x), "ev", e);
+    g_signal_connect(x, "clicked", G_CALLBACK(cal_del), c);
+    gtk_box_pack_start(GTK_BOX(row), l, TRUE, TRUE, 0);
+    gtk_box_pack_end(GTK_BOX(row), x, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(c->evbox), row, FALSE, FALSE, 0);
+    n++;
+  }
+  if (!n) {
+    GtkWidget *l = gtk_label_new(T("No events on this day.", "Keine Termine an diesem Tag."));
+    gtk_label_set_xalign(GTK_LABEL(l), 0);
+    gtk_style_context_add_class(gtk_widget_get_style_context(l), "cl-date");
+    gtk_box_pack_start(GTK_BOX(c->evbox), l, FALSE, FALSE, 0);
+  }
+  gtk_widget_show_all(c->evbox);
+}
+
+static void cal_add(GtkEntry *en, gpointer d) {
+  Cal *c = d;
+  const char *s = gtk_entry_get_text(en);
+  while (*s == ' ') s++;
+  if (!*s) return;
+  Event *e = g_new0(Event, 1);
+  e->y = c->sel_y, e->m = c->sel_m, e->d = c->sel_d;
+  int h, mi, used = 0;
+  if (sscanf(s, "%d:%d%n", &h, &mi, &used) >= 2 && h >= 0 && h < 24 && mi >= 0 && mi < 60) {
+    snprintf(e->tm, sizeof e->tm, "%02d:%02d", h, mi);
+    s += used;
+    while (*s == ' ') s++;
+  }
+  e->text = g_strdup(*s ? s : T("Event", "Termin"));
+  c->events = g_list_append(c->events, e);
+  gtk_entry_set_text(en, "");
+  cal_save(c);
+  cal_fill(c);
+}
+
+static void cal_today(GtkButton *b, gpointer d) {
+  (void)b;
+  Cal *c = d;
+  GDateTime *now = g_date_time_new_now_local();
+  c->y = c->sel_y = g_date_time_get_year(now);
+  c->m = c->sel_m = g_date_time_get_month(now);
+  c->sel_d = g_date_time_get_day_of_month(now);
+  g_date_time_unref(now);
+  cal_fill(c);
+}
+
+static void cal_step(GtkButton *b, gpointer d) {
+  Cal *c = d;
+  int dm = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(b), "dm"));
+  c->m += dm;
+  if (c->m < 1) c->m = 12, c->y--;
+  if (c->m > 12) c->m = 1, c->y++;
+  cal_fill(c);
 }
 
 static void cal_nav(gpointer data, int dir) {
@@ -540,37 +774,60 @@ static void cal_nav(gpointer data, int dir) {
 
 static void run_calendar(void) {
   Cal *c = g_new0(Cal, 1);
+  c->file = g_build_filename(g_get_home_dir(), "Library", "Calendars", "events.tsv", NULL);
+  cal_load(c);
   GtkWidget *win = new_window("com.clokeos.kalender", T("Calendar", "Kalender"), 760, 520, FALSE);
   GtkWidget *root = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
-  GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 12);
-  gtk_container_set_border_width(GTK_CONTAINER(box), 22);
-  GtkWidget *bar = unified_bar(root, "");
-  c->title = gtk_label_new("");
-  gtk_style_context_add_class(gtk_widget_get_style_context(c->title), "cl-month");
-  GtkWidget *prev = icon_button("‹", T("Previous month", "Voriger Monat"));
-  GtkWidget *next = icon_button("›", T("Next month", "Nächster Monat"));
-  GtkWidget *today = gtk_button_new_with_label(T("Today", "Heute"));
-  g_object_ref_sink(prev);
-  g_object_ref_sink(next);
-  c->prev = prev;
-  c->next = next;
-  g_object_set_data(G_OBJECT(prev), "dm", GINT_TO_POINTER(-1));
-  g_object_set_data(G_OBJECT(next), "dm", GINT_TO_POINTER(1));
-  g_object_set_data(G_OBJECT(today), "dm", GINT_TO_POINTER(0));
-  g_signal_connect(prev, "clicked", G_CALLBACK(cal_step), c);
-  g_signal_connect(next, "clicked", G_CALLBACK(cal_step), c);
-  g_signal_connect(today, "clicked", G_CALLBACK(cal_step), c);
-  gtk_box_pack_start(GTK_BOX(bar), c->title, FALSE, FALSE, 0);
-  gtk_box_pack_end(GTK_BOX(bar), today, FALSE, FALSE, 0);
-  add_nav(win, cal_nav, c);
+  UBar bar = unified_bar(root, T("Calendar", "Kalender"));
+  c->prev = gtk_button_new();
+  c->next = gtk_button_new();
+  g_object_ref_sink(c->prev);
+  g_object_ref_sink(c->next);
+  g_object_set_data(G_OBJECT(c->prev), "dm", GINT_TO_POINTER(-1));
+  g_object_set_data(G_OBJECT(c->next), "dm", GINT_TO_POINTER(1));
+  g_signal_connect(c->prev, "clicked", G_CALLBACK(cal_step), c);
+  g_signal_connect(c->next, "clicked", G_CALLBACK(cal_step), c);
+  GtkWidget *today = pill_button(NULL, T("Today", "Heute"), T("Go to today", "Zu heute"));
+  g_signal_connect(today, "clicked", G_CALLBACK(cal_today), c);
+  gtk_box_pack_start(GTK_BOX(bar.right), today, FALSE, FALSE, 0);
+
+  GtkWidget *body = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+  GtkWidget *left = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);
+  gtk_style_context_add_class(gtk_widget_get_style_context(left), "cl-grid-wrap");
+  c->month = gtk_label_new("");
+  gtk_style_context_add_class(gtk_widget_get_style_context(c->month), "cl-month");
+  gtk_label_set_xalign(GTK_LABEL(c->month), 0);
   c->grid = gtk_grid_new();
   gtk_grid_set_column_homogeneous(GTK_GRID(c->grid), TRUE);
-  gtk_grid_set_row_spacing(GTK_GRID(c->grid), 4);
+  gtk_grid_set_row_homogeneous(GTK_GRID(c->grid), FALSE);
   gtk_widget_set_vexpand(c->grid, TRUE);
-  gtk_box_pack_start(GTK_BOX(box), c->grid, TRUE, TRUE, 0);
-  gtk_box_pack_start(GTK_BOX(root), box, TRUE, TRUE, 0);
+  gtk_box_pack_start(GTK_BOX(left), c->month, FALSE, FALSE, 0);
+  gtk_box_pack_start(GTK_BOX(left), c->grid, TRUE, TRUE, 0);
+
+  GtkWidget *side = gtk_box_new(GTK_ORIENTATION_VERTICAL, 10);
+  gtk_style_context_add_class(gtk_widget_get_style_context(side), "cl-side2");
+  gtk_widget_set_size_request(side, 230, -1);
+  c->dayhead = gtk_label_new("");
+  gtk_label_set_xalign(GTK_LABEL(c->dayhead), 0);
+  gtk_style_context_add_class(gtk_widget_get_style_context(c->dayhead), "cl-tbtitle");
+  c->evbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
+  c->entry = gtk_entry_new();
+  gtk_entry_set_placeholder_text(GTK_ENTRY(c->entry), T("New event, e.g. 14:00 Dentist", "Neuer Termin, z. B. 14:00 Zahnarzt"));
+  g_signal_connect(c->entry, "activate", G_CALLBACK(cal_add), c);
+  GtkWidget *note = gtk_label_new(T("Events are saved in ~/Library/Calendars.", "Termine werden in ~/Library/Calendars gespeichert."));
+  gtk_label_set_xalign(GTK_LABEL(note), 0);
+  gtk_label_set_line_wrap(GTK_LABEL(note), TRUE);
+  gtk_style_context_add_class(gtk_widget_get_style_context(note), "cl-date");
+  gtk_box_pack_start(GTK_BOX(side), c->dayhead, FALSE, FALSE, 0);
+  gtk_box_pack_start(GTK_BOX(side), c->evbox, FALSE, FALSE, 0);
+  gtk_box_pack_start(GTK_BOX(side), c->entry, FALSE, FALSE, 0);
+  gtk_box_pack_end(GTK_BOX(side), note, FALSE, FALSE, 0);
+  gtk_box_pack_start(GTK_BOX(body), left, TRUE, TRUE, 0);
+  gtk_box_pack_start(GTK_BOX(body), side, FALSE, FALSE, 0);
+  gtk_box_pack_start(GTK_BOX(root), body, TRUE, TRUE, 0);
   gtk_container_add(GTK_CONTAINER(win), root);
-  cal_step(GTK_BUTTON(today), c);
+  add_nav(win, cal_nav, c);
+  cal_today(NULL, c);
   gtk_widget_show_all(win);
   gtk_main();
 }
@@ -665,6 +922,7 @@ static void run_activity(void) {
 int main(int argc, char **argv) {
   char *lang = NULL;
   de = g_file_get_contents("/etc/clokeos-language", &lang, NULL, NULL) && g_str_has_prefix(lang, "de");
+  if (lang && strlen(lang) >= 2) g_strlcpy(lang2, lang, 3);
   g_free(lang);
   if (argc < 2) {
     g_printerr("usage: clokeapps notes|calc|calendar|activity\n");

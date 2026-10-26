@@ -165,6 +165,7 @@ ICONS = {
     'object-flip-horizontal': seg(8, 2, 8, 14) + tri([(6.5, 4), (6.5, 12), (2, 12)]) + poly([(9.5, 4), (14, 12), (9.5, 12)], 1.2, True),
     'process-working': arc(8, 8, 5, 20, 320) + poly([(9.5, 1.8), (12, 3.2), (9.8, 4.8)]),
     'edit-paste-symbolic-placeholder': '',
+    'document-edit': poly([(10.5, 2.5), (13.5, 5.5), (6, 13), (3, 13), (3, 10)], W, True) + seg(9, 4, 12, 7),
     'format-text-bold': '<path d="M5 3h3.4a2.6 2.6 0 0 1 1.5 4.7A2.9 2.9 0 0 1 8.9 13H5zm1.6 1.5v2.7h1.7a1.3 1.3 0 0 0 0-2.7zm0 4.2v2.8h2.1a1.4 1.4 0 0 0 0-2.8z" fill-rule="evenodd"/>',
     'format-text-italic': seg(9.5, 3, 6, 13) + seg(7.5, 3, 11.5, 3) + seg(4.5, 13, 8.5, 13),
     'format-text-underline': arc(8, 6.5, 3.5, 180, 0) + seg(4.5, 3, 4.5, 6.5) + seg(11.5, 3, 11.5, 6.5) + seg(3.5, 13.2, 12.5, 13.2),

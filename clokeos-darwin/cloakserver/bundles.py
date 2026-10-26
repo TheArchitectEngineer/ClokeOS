@@ -32,7 +32,8 @@ def term(ident, title_en, title_de, size, cmd):
 # Search ist NetSurf mit der Startseite aus /share/clokeos (nur beim ersten Start, danach gilt, was NetSurf in
 # Choices speichert; die mitgelieferte Willkommensseite von NetSurf wird ersetzt)
 SEARCH_START = (
-    "start=/share/clokeos/search.html; [ \"$(cat /etc/clokeos-language 2>/dev/null)\" = de ] && start=/share/clokeos/search-de.html\n"
+    "l=$(cut -c1-2 /etc/clokeos-language 2>/dev/null); case \"$l\" in de|fr|es|it) ;; *) l=en;; esac; t=hell; [ \"$CLOKEOS_DARK\" = 1 ] && t=dunkel\n"
+    "start=/share/clokeos/search-$l-$t.html\n"
     "c=\"$HOME/.netsurf/Choices\"; mkdir -p \"$HOME/.netsurf\"\n"
     "{ grep -v -e '^homepage_url:' -e '^toolbar_items:' -e '^http_proxy' \"$c\" 2>/dev/null; echo \"homepage_url:file://$start\"; "
     "echo 'toolbar_items:back/history/forward/home/url_bar/reloadstop/openmenu'; } > \"$c.new\" && mv \"$c.new\" \"$c\"\n"

@@ -265,6 +265,13 @@ static void show_tip(int i);
 static void dock_target(Client *c, double *x, double *y);
 static bool app_running(int i);
 static void show_launchpad(void);
+static void show_spot(void);
+static void hide_spot(void);
+static void sp_click(int x, int y);
+static void sp_key(XKeyEvent *e);
+static void draw_spot(void);
+static bool sp_open;
+static Window spotwin;
 static void show_settings(long section);
 static void show_app_problem(int i);
 static void update_workarea(void);
@@ -457,7 +464,7 @@ static void rgba_hex(char *buf, RGBA c) {
 typedef void (*painter)(cairo_t *, int w, int h, void *);
 static void paint_window(Window w, int width, int height, painter fn, void *arg) {
   /* Dock, Menüs und Namensschild sind mit Compositor 32-Bit-Fenster mit Durchsicht */
-  Visual *v = comp_on && w && (w == dock || w == menuwin || w == subwin || w == tipwin) ? comp_argb : vis;
+  Visual *v = comp_on && w && (w == dock || w == menuwin || w == subwin || w == tipwin || w == spotwin) ? comp_argb : vis;
   for (Client *c = clients; c; c = c->next)
     if (c->frame == w && c->argb) v = comp_argb;
   cairo_surface_t *s = cairo_xlib_surface_create(dpy, w, v, width, height);
@@ -659,6 +666,7 @@ static void apply_theme(void) {
   dark = want_dark();
   T = dark ? &DARK : &LIGHT;
   unsetenv("GTK_THEME"); /* sonst hätte die Variable Vorrang vor XSETTINGS */
+  setenv("CLOKEOS_DARK", dark ? "1" : "0", 1); /* Programme, die beim Start eine Seite wählen (Search) */
   xsettings_update();
 
   if (wall_img) cairo_surface_destroy(wall_img);
@@ -2618,7 +2626,8 @@ static void cmd_quit_app(long app) {
   for (Client *c = clients; c; c = c->next)
     if (c->app == app) close_client(c);
 }
-static void cmd_spot(long unused) { (void)unused; show_launchpad(); }
+static void show_spot(void);
+static void cmd_spot(long unused) { (void)unused; show_spot(); }
 
 static int current_app(void) {
   if (!focused) return app_fundus;
@@ -3941,6 +3950,408 @@ static void lp_key(XKeyEvent *e) {
   draw_launchpad();
 }
 
+
+/* ---------------------------------------------------------------------------------------- */
+/* Spotlight wie #spot in clokeos.html: ein Suchfeld über dem Bildschirm, darunter Treffer: Rechnen,   */
+/* Programme, Suche mit Search, Einstellungen, Dateien und Ordner im Home-Verzeichnis.                 */
+
+#define SP_W 620
+#define SP_IN 54
+#define SP_ITEM 38
+#define SP_HEAD 24
+#define SP_MAX 24
+enum { SR_CALC, SR_APP, SR_WEB, SR_SET, SR_FILE };
+typedef struct {
+  int type, app, sec;
+  const char *kind;
+  char label[128], sub[160], path[PATH_MAX];
+  bool dir;
+} SpRes;
+static char sp_query[96];
+static SpRes sp_res[SP_MAX];
+static int sp_n, sp_cur;
+
+/* kleiner Rechner für Ausdrücke wie 12*7, (3+4)^2, 15% von 80 geht nicht: nur + - * / ^ % und Klammern */
+static const char *ep;
+static bool eok;
+static double e_expr(void);
+static void e_ws(void) {
+  while (*ep == ' ') ep++;
+}
+static double e_atom(void) {
+  e_ws();
+  if (*ep == '(') {
+    ep++;
+    double v = e_expr();
+    e_ws();
+    if (*ep == ')') ep++;
+    else eok = false;
+    return v;
+  }
+  if (*ep == '-') {
+    ep++;
+    return -e_atom();
+  }
+  if (*ep == '+') {
+    ep++;
+    return e_atom();
+  }
+  char *end;
+  double v = strtod(ep, &end);
+  if (end == ep) {
+    eok = false;
+    return 0;
+  }
+  ep = end;
+  return v;
+}
+static double e_pow(void) {
+  double b = e_atom();
+  e_ws();
+  if (*ep == '^') {
+    ep++;
+    return pow(b, e_pow());
+  }
+  return b;
+}
+static double e_term(void) {
+  double v = e_pow();
+  for (;;) {
+    e_ws();
+    if (*ep == '*' || *ep == 'x') ep++, v *= e_pow();
+    else if (*ep == '/') {
+      ep++;
+      double d = e_pow();
+      if (d == 0) eok = false;
+      else v /= d;
+    } else if (*ep == '%') {
+      ep++;
+      double d = e_pow();
+      if (d == 0) eok = false;
+      else v = fmod(v, d);
+    } else return v;
+  }
+}
+static double e_expr(void) {
+  double v = e_term();
+  for (;;) {
+    e_ws();
+    if (*ep == '+') ep++, v += e_term();
+    else if (*ep == '-') ep++, v -= e_term();
+    else return v;
+  }
+}
+static bool calc_eval(const char *s, double *out) {
+  bool op = false, digit = false;
+  for (const char *p = s; *p; p++) {
+    if (strchr("+-*/^%(x", *p)) op = true;
+    if (isdigit((unsigned char)*p)) digit = true;
+    if (!isdigit((unsigned char)*p) && !strchr("+-*/^%(). xX,", *p)) return false;
+  }
+  if (!op || !digit) return false;
+  char t[96];
+  snprintf(t, sizeof t, "%s", s);
+  for (char *p = t; *p; p++)
+    if (*p == ',') *p = '.';
+    else if (*p == 'X') *p = 'x';
+  ep = t;
+  eok = true;
+  *out = e_expr();
+  e_ws();
+  return eok && !*ep && isfinite(*out);
+}
+
+static bool ci_has(const char *hay, const char *needle) {
+  if (!*needle) return true;
+  size_t n = strlen(needle);
+  for (const char *p = hay; *p; p++)
+    if (!strncasecmp(p, needle, n)) return true;
+  return false;
+}
+
+static void sp_add(SpRes *r) {
+  if (sp_n < SP_MAX) sp_res[sp_n++] = *r;
+}
+
+static void sp_walk(const char *dir, int depth, int *budget) {
+  DIR *d = opendir(dir);
+  if (!d) return;
+  for (struct dirent *e; (e = readdir(d)) && *budget > 0 && sp_n < SP_MAX;) {
+    if (e->d_name[0] == '.') continue;
+    (*budget)--;
+    char p[PATH_MAX];
+    snprintf(p, sizeof p, "%s/%s", dir, e->d_name);
+    struct stat st;
+    if (stat(p, &st)) continue;
+    bool isdir = S_ISDIR(st.st_mode);
+    size_t n = strlen(e->d_name);
+    if (isdir && n > 4 && !strcmp(e->d_name + n - 4, ".app")) continue;
+    if (ci_has(e->d_name, sp_query)) {
+      SpRes r = {.type = SR_FILE, .kind = isdir ? "Folders" : "Documents", .dir = isdir};
+      snprintf(r.label, sizeof r.label, "%s", e->d_name);
+      const char *home = getenv("HOME") ? getenv("HOME") : "";
+      snprintf(r.sub, sizeof r.sub, "%s", strncmp(dir, home, strlen(home)) ? dir : dir + strlen(home));
+      if (!r.sub[0]) snprintf(r.sub, sizeof r.sub, "~");
+      snprintf(r.path, sizeof r.path, "%s", p);
+      sp_add(&r);
+    }
+    if (isdir && depth > 0 && strcmp(e->d_name, "Library")) sp_walk(p, depth - 1, budget);
+  }
+  closedir(d);
+}
+
+static void sp_build(void) {
+  sp_n = 0;
+  sp_cur = 0;
+  if (!sp_query[0]) return;
+  double v;
+  if (calc_eval(sp_query, &v)) {
+    SpRes r = {.type = SR_CALC, .kind = "Calculator"};
+    snprintf(r.label, sizeof r.label, "%s = %.10g", sp_query, v);
+    snprintf(r.sub, sizeof r.sub, "%s", L("Open in Calculator"));
+    r.app = app_by_ident("com.clokeos.rechner");
+    sp_add(&r);
+  }
+  for (int i = 0; i < napps; i++) {
+    if (apps[i].gone || apps[i].b.hidden || !strcmp(apps[i].b.internal, "launchpad")) continue;
+    if (!ci_has(apps[i].b.name, sp_query)) continue;
+    SpRes r = {.type = SR_APP, .app = i, .kind = "Applications"};
+    snprintf(r.label, sizeof r.label, "%s", apps[i].b.name);
+    snprintf(r.sub, sizeof r.sub, "/Applications");
+    sp_add(&r);
+  }
+  {
+    SpRes r = {.type = SR_WEB, .kind = "Search", .app = app_by_ident("com.clokeos.search")};
+    snprintf(r.label, sizeof r.label, L("Search for “%s” with Search"), sp_query);
+    snprintf(r.sub, sizeof r.sub, "%s", L("Browser"));
+    sp_add(&r);
+  }
+  static const struct { const char *name; int sec; } SET[] = {
+      {"General", 0}, {"Appearance", 1}, {"Wallpaper", 2}, {"Desktop & Dock", 3}, {"Keyboard", 4}, {"Language & Region", 5}, {"Sharing", 7}};
+  for (size_t k = 0; k < sizeof SET / sizeof SET[0]; k++)
+    if (ci_has(SET[k].name, sp_query) || ci_has(L(SET[k].name), sp_query)) {
+      SpRes r = {.type = SR_SET, .kind = "System Settings", .sec = SET[k].sec};
+      snprintf(r.label, sizeof r.label, "%s", L(SET[k].name));
+      snprintf(r.sub, sizeof r.sub, "%s", L("System Settings"));
+      sp_add(&r);
+    }
+  if (strlen(sp_query) >= 2) {
+    int budget = 2500;
+    sp_walk(getenv("HOME") ? getenv("HOME") : "/var/root", 3, &budget);
+  }
+}
+
+static int sp_height(void) {
+  if (!sp_n) return sp_query[0] ? SP_IN + 40 : SP_IN;
+  int h = SP_IN + 12;
+  const char *last = "";
+  for (int i = 0; i < sp_n; i++) {
+    if (strcmp(sp_res[i].kind, last)) h += SP_HEAD, last = sp_res[i].kind;
+    h += SP_ITEM;
+  }
+  return h;
+}
+
+static void paint_spot(cairo_t *cr, int w, int h, void *arg) {
+  (void)arg;
+  int sx, sy;
+  Window child;
+  XTranslateCoordinates(dpy, spotwin, root, 0, 0, &sx, &sy, &child);
+  glass(cr, sx, sy, (RGBA){T->tint.r, T->tint.g, T->tint.b, (dark ? .88 : .82) - (comp_on ? .08 : 0)}, w, h, 26);
+  rim(cr, 0, 0, w, h, 26);
+  /* Lupe */
+  set(cr, T->fg2);
+  cairo_set_line_width(cr, 1.8);
+  cairo_arc(cr, 31, 26, 7.5, 0, 2 * M_PI);
+  cairo_stroke(cr);
+  cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND);
+  cairo_move_to(cr, 36.5, 31.5);
+  cairo_line_to(cr, 42, 37);
+  cairo_stroke(cr);
+  if (sp_query[0]) text(cr, 56, SP_IN / 2.0, sp_query, 22, false, T->fg, w - 80, 0);
+  else text(cr, 56, SP_IN / 2.0, L("Search"), 22, false, T->fg3, w - 80, 0);
+  if (!sp_n && !sp_query[0]) return;
+  cairo_rectangle(cr, 0, SP_IN, w, 1);
+  set(cr, T->line);
+  cairo_fill(cr);
+  if (!sp_n) {
+    char b[160];
+    snprintf(b, sizeof b, L("No results for “%s”"), sp_query);
+    text(cr, 22, SP_IN + 20, b, 12, true, T->fg3, w - 40, 0);
+    return;
+  }
+  int y = SP_IN + 6;
+  const char *last = "";
+  for (int i = 0; i < sp_n; i++) {
+    SpRes *r = &sp_res[i];
+    if (strcmp(r->kind, last)) {
+      text(cr, 22, y + SP_HEAD / 2.0 + 2, L(r->kind), 11, true, T->fg3, w - 40, 0);
+      y += SP_HEAD;
+      last = r->kind;
+    }
+    if (i == sp_cur) {
+      rrect(cr, 6, y, w - 12, SP_ITEM - 2, 8);
+      set(cr, ACCENT);
+      cairo_fill(cr);
+    }
+    bool hl = i == sp_cur;
+    double ix = 16, iy = y + (SP_ITEM - 2 - 28) / 2.0;
+    int ai = r->type == SR_APP || r->type == SR_CALC || r->type == SR_WEB ? r->app : r->type == SR_SET ? app_by_ident("com.clokeos.systemeinstellungen") : -1;
+    if (ai >= 0 && ai < napps) {
+      App *a = &apps[ai];
+      if (!a->icon_lp) a->icon_lp = bundle_icon(&a->b, LP_ICON, cal_subst());
+      cairo_save(cr);
+      cairo_translate(cr, ix, iy);
+      cairo_scale(cr, 28.0 / LP_ICON, 28.0 / LP_ICON);
+      cairo_set_source_surface(cr, a->icon_lp, 0, 0);
+      cairo_paint(cr);
+      cairo_restore(cr);
+    } else {
+      rrect(cr, ix, iy, 28, 28, 7);
+      set(cr, r->dir ? (RGBA){.35, .6, 1, 1} : (RGBA){.7, .72, .78, 1});
+      cairo_fill(cr);
+      text(cr, ix + 14, iy + 14, r->dir ? "▭" : "≡", 14, true, (RGBA){1, 1, 1, 1}, 0, 1);
+    }
+    int lw = text(cr, 54, y + (SP_ITEM - 2) / 2.0, r->label, 13, true, hl ? (RGBA){1, 1, 1, 1} : T->fg, w - 80, 0);
+    if (lw < w - 200) text(cr, 54 + lw + 10, y + (SP_ITEM - 2) / 2.0, r->sub, 11.5, false, hl ? (RGBA){1, 1, 1, .8} : T->fg3, w - lw - 80, 0);
+    y += SP_ITEM;
+  }
+}
+
+static void draw_spot(void) {
+  if (!sp_open) return;
+  int h = sp_height();
+  XResizeWindow(dpy, spotwin, SP_W, h);
+  paint_window(spotwin, SP_W, h, paint_spot, NULL);
+}
+
+static void hide_spot(void) {
+  if (!sp_open) return;
+  sp_open = false;
+  XUngrabPointer(dpy, CurrentTime);
+  XUngrabKeyboard(dpy, CurrentTime);
+  XDestroyWindow(dpy, spotwin);
+  spotwin = None;
+  focus_client(focused);
+}
+
+static void launch_with(int i, const char *arg) {
+  if (i < 0 || i >= napps || apps[i].gone || apps[i].b.kind != APP_OK) return;
+  char q[2600], a[1200], cmd[3900];
+  sh_quote(q, sizeof q, apps[i].b.exec);
+  sh_quote(a, sizeof a, arg);
+  snprintf(cmd, sizeof cmd, "%s %s", q, a);
+  apps[i].bounce_t0 = now_s();
+  apps[i].pid = spawn_env(cmd, false, apps[i].b.macfw);
+  draw_dock();
+}
+
+static void sp_activate(int i) {
+  if (i < 0 || i >= sp_n) return;
+  SpRes r = sp_res[i];
+  char q[96];
+  snprintf(q, sizeof q, "%s", sp_query);
+  hide_spot();
+  switch (r.type) {
+  case SR_CALC:
+  case SR_APP: launch(r.app); break;
+  case SR_SET: show_settings(r.sec); break;
+  case SR_WEB: {
+    char enc[400] = "", url[520];
+    size_t k = 0;
+    for (const char *p = q; *p && k + 4 < sizeof enc; p++) {
+      if (isalnum((unsigned char)*p) || strchr("-._~", *p)) enc[k++] = *p;
+      else k += (size_t)snprintf(enc + k, sizeof enc - k, "%%%02X", (unsigned char)*p);
+    }
+    snprintf(url, sizeof url, "https://duckduckgo.com/?q=%s", enc);
+    launch_with(r.app, url);
+    break;
+  }
+  case SR_FILE: {
+    char qp[PATH_MAX * 2];
+    sh_quote(qp, sizeof qp, r.path);
+    char cmd[PATH_MAX * 2 + 40];
+    snprintf(cmd, sizeof cmd, "exec thunar %s", qp);
+    spawn(cmd);
+    break;
+  }
+  }
+}
+
+static void show_spot(void) {
+  if (locked) return;
+  if (sp_open) {
+    hide_spot();
+    return;
+  }
+  close_menu();
+  show_tip(-1);
+  if (lp_open) hide_launchpad();
+  sp_query[0] = 0;
+  sp_n = 0;
+  sp_cur = 0;
+  sp_open = true;
+  scan_apps();
+  spotwin = ui_window((SW - SP_W) / 2, SH * 22 / 100, SP_W, SP_IN,
+                      ExposureMask | ButtonPressMask | KeyPressMask, true, NET_WM_WINDOW_TYPE_POPUP_MENU);
+  XMapRaised(dpy, spotwin);
+  XGrabPointer(dpy, spotwin, False, ButtonPressMask, GrabModeAsync, GrabModeAsync, None, cur_arrow, CurrentTime);
+  XGrabKeyboard(dpy, spotwin, True, GrabModeAsync, GrabModeAsync, CurrentTime);
+  draw_spot();
+}
+
+static void sp_click(int x, int y) {
+  if (x < 0 || y < 0 || x >= SP_W || y >= sp_height()) {
+    hide_spot();
+    return;
+  }
+  int yy = SP_IN + 6;
+  const char *last = "";
+  for (int i = 0; i < sp_n; i++) {
+    if (strcmp(sp_res[i].kind, last)) yy += SP_HEAD, last = sp_res[i].kind;
+    if (y >= yy && y < yy + SP_ITEM) {
+      sp_activate(i);
+      return;
+    }
+    yy += SP_ITEM;
+  }
+}
+
+static void sp_key(XKeyEvent *e) {
+  char buf[16];
+  KeySym ks = NoSymbol;
+  int n = XLookupString(e, buf, sizeof buf, &ks, NULL);
+  size_t l = strlen(sp_query);
+  if (ks == XK_Escape) {
+    hide_spot();
+    return;
+  } else if (ks == XK_Return || ks == XK_KP_Enter) {
+    sp_activate(sp_cur);
+    return;
+  } else if (ks == XK_Down) {
+    if (sp_n) sp_cur = (sp_cur + 1) % sp_n;
+  } else if (ks == XK_Up) {
+    if (sp_n) sp_cur = (sp_cur + sp_n - 1) % sp_n;
+  } else if (ks == XK_BackSpace) {
+    while (l > 0 && (sp_query[l - 1] & 0xc0) == 0x80) l--;
+    if (l > 0) l--;
+    sp_query[l] = 0;
+    sp_build();
+  } else if (n == 1 && (unsigned char)buf[0] >= 0xa0 && l + 2 < sizeof sp_query) {
+    sp_query[l] = (char)(0xc0 | (unsigned char)buf[0] >> 6);
+    sp_query[l + 1] = (char)(0x80 | ((unsigned char)buf[0] & 0x3f));
+    sp_query[l + 2] = 0;
+    sp_build();
+  } else if (n == 1 && (unsigned char)buf[0] >= 32 && (unsigned char)buf[0] < 127 && l + 1 < sizeof sp_query) {
+    sp_query[l] = buf[0];
+    sp_query[l + 1] = 0;
+    sp_build();
+  } else {
+    return;
+  }
+  draw_spot();
+}
+
 /* ---------------------------------------------------------------------------------------- */
 /* Systemeinstellungen wie im Prototyp: links die Bereiche, rechts die Einstellungen.           */
 /* Erscheinungsbild (Hell, Dunkel, Automatisch), Schreibtisch & Dock (Lage, Größe), Programme   */
@@ -4366,6 +4777,11 @@ static void on_button_press(XButtonEvent *e) {
     if (e->window == loginwin && e->button == Button1) login_click(e->x, e->y);
     return;
   }
+  if (sp_open) {
+    if (e->window == spotwin && e->button == Button1) sp_click(e->x, e->y);
+    else if (e->window != spotwin || e->button != Button1) hide_spot();
+    return;
+  }
   if (lp_open && e->window != dock) {
     if (gc && e->window == gc->win) XAllowEvents(dpy, AsyncPointer, CurrentTime);
     if (e->window == lpwin && e->button == Button1) lp_click(e->x, e->y);
@@ -4597,6 +5013,7 @@ static void on_expose(XExposeEvent *e) {
   else if (subwin && e->window == subwin) draw_sub();
   else if (e->window == tipwin) paint_window(tipwin, tip_w, 24, paint_tip, NULL);
   else if (e->window == lpwin) draw_launchpad();
+  else if (sp_open && e->window == spotwin) draw_spot();
   else if (setupwin && e->window == setupwin) draw_setup();
   else {
     Client *c = find_client(e->window);
@@ -4638,6 +5055,10 @@ static void on_key(XKeyEvent *e) {
   }
   if (locked) {
     login_key(e);
+    return;
+  }
+  if (sp_open) {
+    sp_key(e);
     return;
   }
   if (lp_open && !menuwin) {
@@ -4698,6 +5119,8 @@ static void on_key(XKeyEvent *e) {
     if (last && last != focused) restore_client(last);
   } else if (ks == XK_F4 && (e->state & Mod1Mask)) {
     close_client(focused);
+  } else if (ks == XK_space && (e->state & ControlMask)) { /* Strg+Leertaste: Spotlight wie im Prototyp */
+    show_spot();
   }
 }
 
@@ -4899,6 +5322,7 @@ WinStyle cs_window_style(Window w) {
     return (WinStyle){WK_GLASS, ds * .42 + 6, 22, 10, .28, .it = dock_pos == POS_BOTTOM ? dock_lift : 0,
                       .ir = dock_pos == POS_LEFT ? dock_lift : 0, .il = dock_pos == POS_RIGHT ? dock_lift : 0};
   if (w && (w == menuwin || w == subwin)) return (WinStyle){WK_GLASS, 14, 16, 8, .26};
+  if (w && w == spotwin) return (WinStyle){WK_GLASS, 26, 20, 10, .26};
   if (w && w == tipwin) return (WinStyle){WK_GLASS, 12, 10, 4, .2};
   for (Client *c = clients; c; c = c->next)
     if (c->frame == w) {
@@ -5027,6 +5451,7 @@ int main(int argc, char **argv) {
   if (!recovery) XMapRaised(dpy, dock); /* die Wiederherstellung hat kein Dock */
   XGrabKey(dpy, XKeysymToKeycode(dpy, XK_Tab), Mod1Mask, root, True, GrabModeAsync, GrabModeAsync);
   XGrabKey(dpy, XKeysymToKeycode(dpy, XK_F4), Mod1Mask, root, True, GrabModeAsync, GrabModeAsync);
+  XGrabKey(dpy, XKeysymToKeycode(dpy, XK_space), ControlMask, root, True, GrabModeAsync, GrabModeAsync);
   render_mb_icons();
   scan_existing();
   save_root_env();
