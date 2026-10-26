@@ -16,7 +16,7 @@
     <dict>
       <key>CFBundleIdentifier</key><string>com.clokeos.driver.ClokeRtw88</string>
       <key>IOClass</key><string>ClokeRtw88</string>
-      <key>IOPCIPrimaryMatch</key><string>0xc82210ec 0xb82210ec</string>
+      <key>IOPCIPrimaryMatch</key><string>0xc82110ec 0xc82210ec 0xb82210ec</string>
       <key>IOProbeScore</key><integer>5000</integer>
       <key>IOProviderClass</key><string>IOPCIDevice</string>
     </dict>

@@ -1,4 +1,4 @@
-# ClokeRtw88: Wi-Fi for the RTL8822CE (HP 15s-fq5655ng)
+# ClokeRtw88: Wi-Fi for the RTL8821CE (HP 15s-fq5655ng; the diagnostics show 10ec:c821)
 
 Status: stage 1 only (identify and read, `ClokeRtw88.cpp`). Not tried on the laptop yet.
 
@@ -8,7 +8,8 @@ Status: stage 1 only (identify and read, `ClokeRtw88.cpp`). Not tried on the lap
 - Source to port from: Linux `drivers/net/wireless/realtek/rtw88` (`rtw8822c*.c`, `main.c`, `pci.c`, `fw.c`, `coex.c`,
   `tx.c`, `rx.c`), licensed `GPL-2.0 OR BSD-3-Clause`, so it can be used under BSD. Firmware: `rtw88/rtw8822c_fw.bin`
   from linux-firmware (Realtek's redistribution licence). Register tables in `rtw8822c_table.c` are 1.1 MB of data.
-- PCI id 10ec:c822, registers in BAR2 (`pci.c`: `bar_id = 2`), chip id in `REG_SYS_CFG1` (0xF0).
+- PCI id 10ec:c821 on this laptop (RTL8821CE, 1x1; rtw88 files `rtw8821c*.c`, firmware `rtw88/rtw8821c_fw.bin`); the
+  8822CE (c822, `rtw8822c*.c`) is the 2x2 sibling. Registers in BAR2 (`pci.c`: `bar_id = 2`), chip id in `REG_SYS_CFG1` (0xF0).
 
 ## Stages
 1. Identify, map BAR2, read version registers, log (done; check `dmesg | grep ClokeRtw88` or clokeos-diag on the HP).
