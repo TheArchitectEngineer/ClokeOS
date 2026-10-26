@@ -5,11 +5,12 @@
  * bildet BAR2 (die Register, wie rtw88 in Linux: pci.c, bar_id = 2) ab und schreibt Kennung, Versionsregister
  * und den PCIe-Verbindungsstatus ins Kernel-Log (dmesg, "ClokeRtw88:"), damit es das Diagnosefenster
  * (clokeos-diag) zeigt. Geschrieben wird nur das PCI-Befehlsregister und der Energiezustand, an den Chip-
- * Registern nichts. Weiter (Stufe 2: Einschalten, Firmware, Ringe) steht in NOTES.md.
+ * Registern nichts. Nur mit Boot-Arg cloke_wifi=1 aktiv. Weiter (Stufe 2: Einschalten, Firmware, Ringe) steht in NOTES.md.
  */
 #include <IOKit/IOLib.h>
 #include <IOKit/IOMemoryDescriptor.h>
 #include <IOKit/IOService.h>
+#include <pexpert/pexpert.h>
 
 #define LOG(fmt, ...) IOLog("ClokeRtw88: " fmt "\n", ##__VA_ARGS__)
 
@@ -36,6 +37,10 @@ public:
 OSDefineMetaClassAndStructors(ClokeRtw88, IOService)
 
 bool ClokeRtw88::start(IOService *provider) {
+  /* Standardmäßig aus: Stufe 1 schreibt ins PCI-Befehlsregister und in den Energiezustand des Geräts, und
+   * auf dem HP fiel mit ihr im Kernel das Trackpad (ClokeI2CHID) aus. Nur mit Boot-Arg cloke_wifi=1. */
+  uint32_t on = 0;
+  if (!PE_parse_boot_argn("cloke_wifi", &on, sizeof on) || !on) return false;
   if (!IOService::start(provider)) return false;
   pci = (IOPCIDevice *)provider;
   uint16_t vendor = pci->extendedConfigRead16(0), device = pci->extendedConfigRead16(2);
