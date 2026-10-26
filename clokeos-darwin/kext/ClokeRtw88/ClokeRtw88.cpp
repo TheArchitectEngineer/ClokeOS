@@ -802,13 +802,18 @@ static void rx_scan(volatile uint8_t *b, bool btg) {
   w32(b, BD_RWPTR_CLR, 0xffffffff);
   w32(b, PCI_CTRL, r32(b, PCI_CTRL) | (1u << 20) | (1u << 15));
   /* alle Adressen annehmen (Beacons haben Broadcast-Ziel) und CRC-fehlerhafte nicht */
-  w32(b, 0x608, r32(b, 0x608) | 0xf);
+  w32(b, 0x608, r32(b, 0x608) | 0xf | (1u << 8)); /* auch Rahmen mit falscher Prüfsumme melden: Test, ob überhaupt etwas ankommt */
   LOG("rx: ring of %d buffers at 0x%08x, RCR 0x%08x, CR 0x%02x", RX_N, ring.pa, r32(b, 0x608), r8(b, 0x100));
 
   static Seen seen[32];
   unsigned nseen = 0, rp = 0, total = 0, mgmt = 0;
-  for (unsigned ch = 1; ch <= 13; ch++) {
-    set_channel(b, ch, btg);
+  for (int pass = 0; pass < 2 && !nseen; pass++) {
+   bool use_btg = pass ? !btg : btg;
+   LOG("scan: pass %d, antenna path %s", pass, use_btg ? "BTG" : "WLG");
+   total = 0;
+   for (unsigned ch = 1; ch <= 13; ch++) {
+    set_channel(b, ch, use_btg);
+    if (ch == 1) LOG("scan: RF 0x18 = 0x%05x, RFECTL 0x%08x, BB 0x808 = 0x%08x", rf_read(b, 0x18), r32(b, 0xcb8), r32(b, 0x808));
     unsigned got = 0;
     for (int t = 0; t < 150; t++) {
       IOSleep(2);
@@ -853,7 +858,9 @@ static void rx_scan(volatile uint8_t *b, bool btg) {
         w16(b, RXBD_IDX, (uint16_t)rp);
       }
     }
-    if (ch == 1 || got) LOG("rx: channel %u: %u packets (BD idx 0x%08x, RCR 0x%08x)", ch, got, r32(b, RXBD_IDX), r32(b, 0x608));
+    if (got) LOG("rx: channel %u: %u packets (BD idx 0x%08x)", ch, got, r32(b, RXBD_IDX));
+   }
+   LOG("scan: pass %d: %u packets, %u networks", pass, total, nseen);
   }
   LOG("scan: done, %u packets, %u beacons/probe responses, %u networks", total, mgmt, nseen);
 }
