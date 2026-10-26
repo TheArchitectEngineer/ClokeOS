@@ -68,6 +68,28 @@ echo "System: $sys_mb MB, UUID $sys_uuid"
 mkdir -p "$tmp/root" # rdump legt den Baum in einen vorhandenen Ordner
 "$DEBUGFS" -R "rdump / $tmp/root" "$out/system.ext4" >/dev/null 2>&1 || true
 [ -x "$tmp/root/sbin/launchd" ] || { echo "Wurzel nicht ausgepackt" >&2; exit 1; }
+
+# --- Update-Paket: Programme und Oberfläche des Systems, als Datei in der EFI-Partition (clokeos-update,
+# clokeos-apply-update). Das System selbst lässt sich in der Wiederherstellung nicht einbinden (ext4 würde den
+# Kernel abstürzen lassen), deshalb legt das nächste System-Start die Dateien hin. Das Paket entsteht vor dem
+# Ausdünnen; Benutzer, /etc und /var bleiben außen vor.
+upd_paths=(System/Library/CoreServices System/Applications Library/Fonts Library/Preferences/com.clokeos.dock.plist
+           share/themes share/icons share/clokeos share/glib-2.0/schemas lib/gtk-3.0/modules etc/xdg
+           usr/libexec/clokeos-aktivitaet usr/libexec/clokeos-diag usr/libexec/clokeos-kalender
+           usr/libexec/clokeos-apply-update usr/libexec/cloakserver-session usr/libexec/cloakserver-start
+           usr/libexec/cloakserver-xorg usr/lib/libclokeos-xpoll.dylib lib/libXcursor.1.dylib usr/bin/clokefetch)
+upd_have=()
+for q in "${upd_paths[@]}"; do [ -e "$tmp/root/$q" ] && upd_have+=("$q"); done
+COPYFILE_DISABLE=1 tar --uid 0 --gid 0 --numeric-owner --no-xattrs -C "$tmp/root" -cf "$tmp/update.tar" "${upd_have[@]}"
+xz -T0 -9 -c "$tmp/update.tar" > "$tmp/update.xz"
+upd_id="$CLOKE_VERSION-$CLOKE_BUILD-$(shasum -a 256 "$tmp/update.xz" | cut -c1-12)"
+printf '%s\n' "$upd_id" > "$tmp/update.id"
+echo "Update-Paket: $(stat -f %z "$tmp/update.xz") Bytes ($upd_id)"
+[ "$(stat -f %z "$tmp/update.xz")" -lt 14000000 ] || { echo "Update-Paket passt nicht mehr in die EFI-Partition" >&2; exit 1; }
+# Das frisch installierte System kennt seine Kennung schon (sonst legte der erste Start dieselben Dateien noch einmal hin)
+"$DEBUGFS" -w -R "write $tmp/update.id /var/db/clokeos-update-id" "$out/system.ext4" >/dev/null 2>&1
+"$DEBUGFS" -R 'stat /var/db/clokeos-update-id' "$out/system.ext4" 2>/dev/null | grep -q '^Inode' ||
+  { echo "Update-Kennung nicht im System" >&2; exit 1; }
 python3 -I "$HERE/recovery/imagetool.py" prune "$tmp/root" "$tmp/prune.list" --usb
 # die Liste steht tiefste zuerst: Dateien, Symlinks und leere Ordner
 while read -r p; do
@@ -121,6 +143,8 @@ mcopy -o -i "$esp" "$tmp/boot-args-system.txt" ::/EFI/BOOT/boot-args.txt
 mcopy -o -i "$esp" "$tmp/boot-args-system.txt" ::/EFI/BOOT/boot-args-system.txt
 mcopy -o -i "$esp" "$tmp/boot-args-recovery.txt" ::/EFI/BOOT/boot-args-recovery.txt
 mcopy -o -i "$tmp/installer-esp.img@@0" "$tmp/boot-args-installer.txt" ::/EFI/BOOT/boot-args.txt
+mcopy -o -i "$esp" "$tmp/update.xz" ::/EFI/BOOT/update.xz
+mcopy -o -i "$esp" "$tmp/update.id" ::/EFI/BOOT/update.id
 for f in boot-args.txt boot-args-system.txt boot-args-recovery.txt; do
   mtype -i "$esp" "::/EFI/BOOT/$f" | grep -q "boot-uuid=" || { echo "$f nicht in esp.img" >&2; exit 1; }
 done

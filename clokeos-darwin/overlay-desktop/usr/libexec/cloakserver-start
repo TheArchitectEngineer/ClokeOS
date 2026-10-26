@@ -3,6 +3,8 @@
 # Xorg zeichnet mit PureDarwins Treiber puredarwingop: auf x86_64 über IOGOPFramebuffer in den
 # Framebuffer, den der Loader übergibt (/dev/fb0), auf arm64 über IOVirtIOGPU (virtio-gpu).
 . /etc/profile
+# Dateien eines Updates aus der EFI-Partition anwenden, bevor CloakServer startet
+/usr/libexec/clokeos-apply-update
 # Bild, Tastatur und Maus erscheinen erst, wenn IOKit die Treiber gestartet hat.
 bild() { [[ -e /dev/fb0 ]] || /usr/sbin/ioreg -c IOVirtIOGPU 2>/dev/null | grep -q IOVirtIOGPU }
 for i in {1..90}; do

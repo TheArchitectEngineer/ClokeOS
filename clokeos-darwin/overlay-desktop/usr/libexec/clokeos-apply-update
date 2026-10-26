@@ -1,0 +1,20 @@
+#!/bin/zsh
+# Beim Start, vor CloakServer (cloakserver-start): Hat ein Update (clokeos-update in der Wiederherstellung)
+# Dateien in der EFI-Partition mitgebracht (\EFI\BOOT\update.xz mit der Kennung update.id), werden sie hier
+# auf das System gelegt. Benutzer, Einstellungen und Netz bleiben unberührt.
+emulate -L zsh
+INSTALLER=/usr/libexec/clokeos-installer
+export PATH=/usr/bin:/bin:/usr/sbin:/sbin:$PATH
+STAMP=/var/db/clokeos-update-id
+new=$($INSTALLER esp-cat update.id 2>/dev/null | head -1) || exit 0
+[[ -n $new ]] || exit 0
+[[ $new == "$(cat $STAMP 2>/dev/null)" ]] && exit 0
+print "clokeos-apply-update: $new"
+if $INSTALLER esp-cat update.xz | xz -dc | tar -C / -xpf -; then
+  print -r -- $new > $STAMP
+  sync
+  print "clokeos-apply-update: fertig"
+else
+  print "clokeos-apply-update: fehlgeschlagen"
+fi
+exit 0

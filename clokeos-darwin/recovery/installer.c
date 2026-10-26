@@ -787,34 +787,6 @@ static void cmd_install(const char *disk, const char *base) {
   out("DONE %s", m.version);
 }
 
-/* Aktualisieren: nur die EFI-Partition (Loader, Kernel, Boot-Argumente) einer installierten Platte aus dem
- * Abbild neu schreiben; System und Wiederherstellung bleiben, die Kennungen der Partitionen werden wieder
- * in boot-args-*.txt eingesetzt. Die Dateien des Systems kopiert clokeos-update. */
-static void cmd_update_esp(const char *disk, const char *base) {
-  Disk d;
-  if (!probe_disk(disk, &d)) fail("No disk %s", disk);
-  if (d.installer || d.root) fail("Choose the disk that ClokeOS is installed on, and start from the installer.");
-  if (!d.clokeos || d.nparts < 2) fail("There is no ClokeOS on this disk.");
-  out("STEP %s", L("Loading information about ClokeOS"));
-  curl_global_init(CURL_GLOBAL_DEFAULT);
-  Manifest m;
-  fetch_manifest(base, machine_arch(), &m);
-  uint32_t bs = d.bsize;
-  if (d.part[0].count * bs < m.esp.raw) fail("The EFI partition is too small for this version.");
-  unmount_disk(disk, 0);
-  char part[24];
-  snprintf(part, sizeof part, "%ss1", disk);
-  int fd = open_raw(part, O_RDWR);
-  if (fd < 0) fail("Could not write to %s: %s", part, strerror(errno));
-  out("STEP %s", L("Setting up the startup volume"));
-  install_asset(base, &m.esp, fd, 0, d.part[0].count * bs, 0, m.esp.xz);
-  bool have_rec = d.nparts >= 3 && !strcmp(d.part[2].name, "ClokeOS Recovery");
-  patch_esp(fd, bs, 0, d.part[1].guid, have_rec ? d.part[2].guid : d.part[1].guid, have_rec);
-  fsync(fd);
-  close(fd);
-  out("DONE %s", m.version);
-}
-
 /* Lesen mit Wiederholung: PureDarwins einziger Treiber für USB-Massenspeicher
  * (RavynXHCIMassStorageDisk) bricht bei langen Lesevorgängen gelegentlich mit E/A-Fehlern ab */
 static ssize_t pread_retry(int fd, void *buf, size_t n, off_t off) {
@@ -1009,6 +981,74 @@ static void patch_esp(int fd, uint32_t dbs, uint64_t esp_off, const uint8_t sys[
  * \ClokeOS\Install auf der EFI-Partition des Sticks (recovery/usb.sh offline) und werden über den
  * USB-Treiber gelesen: die FAT einmal ganz, die Dateien in zusammenhängenden Stücken bis 1 MB, jeder
  * Lesevorgang mit Wiederholung, bei Fehlern in Stücken von 64 KB. */
+
+/* Datei aus \EFI\BOOT der EFI-Partition der Platte, von der das System läuft, auf die Standardausgabe
+ * (für große Dateien: Cluster für Cluster). Damit holt clokeos-apply-update beim Start die Dateien, die ein
+ * Update in der EFI-Partition mitgebracht hat; ein Einbinden der Partitionen wäre in der Wiederherstellung
+ * ein Absturz des Kernels (ext4) beziehungsweise gibt es für FAT keinen mount-Helfer. */
+static int cmd_esp_cat(const char *name) {
+  int disk = -1;
+  for (int i = 0; i < 16 && disk < 0; i++) {
+    char n[16];
+    snprintf(n, sizeof n, "disk%d", i);
+    if (root_part(n)) disk = i;
+  }
+  if (disk < 0) fail("Startup disk not found");
+  char dn[16], esp[24];
+  snprintf(dn, sizeof dn, "disk%d", disk);
+  Disk d;
+  if (!probe_disk(dn, &d) || d.nparts < 1 || memcmp(d.part[0].type, GUID_ESP, 16)) fail("No EFI partition");
+  snprintf(esp, sizeof esp, "%ss1", dn);
+  int fd = open_raw(esp, O_RDONLY);
+  if (fd < 0) fail("Could not open the EFI partition (%s): %s", esp, strerror(errno));
+  Fat f;
+  if (!fat_init(&f, fd, d.bsize, 0)) fail("The EFI partition is not FAT32");
+  uint8_t e[32];
+  uint64_t eo;
+  if (!fat_boot_file(&f, name, &eo, e)) return 1;
+  uint64_t left = e[28] | e[29] << 8 | e[30] << 16 | (uint64_t)e[31] << 24;
+  size_t csize = (size_t)f.spc * f.bps;
+  uint8_t *buf = malloc(csize);
+  uint32_t c = ent_clus(e);
+  while (buf && left && c >= 2 && c < 0x0ffffff8) {
+    size_t n = left < csize ? (size_t)left : csize;
+    if (pread_retry(fd, buf, csize, (off_t)clus_off(&f, c)) != (ssize_t)csize) return 2;
+    if (fwrite(buf, 1, n, stdout) != n) return 2;
+    left -= n;
+    c = fat_next(&f, c);
+  }
+  free(buf);
+  close(fd);
+  return left ? 2 : 0;
+}
+
+/* Aktualisieren: nur die EFI-Partition (Loader, Kernel, Boot-Argumente) einer installierten Platte aus dem
+ * Abbild neu schreiben; System und Wiederherstellung bleiben, die Kennungen der Partitionen werden wieder
+ * in boot-args-*.txt eingesetzt. Die Dateien des Systems kopiert clokeos-update. */
+static void cmd_update_esp(const char *disk, const char *base) {
+  Disk d;
+  if (!probe_disk(disk, &d)) fail("No disk %s", disk);
+  if (d.installer || d.root) fail("Choose the disk that ClokeOS is installed on, and start from the installer.");
+  if (!d.clokeos || d.nparts < 2) fail("There is no ClokeOS on this disk.");
+  out("STEP %s", L("Loading information about ClokeOS"));
+  curl_global_init(CURL_GLOBAL_DEFAULT);
+  Manifest m;
+  fetch_manifest(base, machine_arch(), &m);
+  uint32_t bs = d.bsize;
+  if (d.part[0].count * bs < m.esp.raw) fail("The EFI partition is too small for this version.");
+  unmount_disk(disk, 0);
+  char part[24];
+  snprintf(part, sizeof part, "%ss1", disk);
+  int fd = open_raw(part, O_RDWR);
+  if (fd < 0) fail("Could not write to %s: %s", part, strerror(errno));
+  out("STEP %s", L("Setting up the startup volume"));
+  install_asset(base, &m.esp, fd, 0, d.part[0].count * bs, 0, m.esp.xz);
+  bool have_rec = d.nparts >= 3 && !strcmp(d.part[2].name, "ClokeOS Recovery");
+  patch_esp(fd, bs, 0, d.part[1].guid, have_rec ? d.part[2].guid : d.part[1].guid, have_rec);
+  fsync(fd);
+  close(fd);
+  out("DONE %s", m.version);
+}
 
 static bool read_robust(int fd, void *buf, size_t n, off_t off, uint32_t dbs) {
   if (pread_retry(fd, buf, n, off) == (ssize_t)n) return true;
@@ -1300,6 +1340,7 @@ int main(int argc, char **argv) {
   lang_init();
   if (argc >= 2 && !strcmp(argv[1], "disks")) cmd_disks();
   else if (argc == 4 && !strcmp(argv[1], "install")) cmd_install(argv[2], argv[3]);
+  else if (argc == 3 && !strcmp(argv[1], "esp-cat")) return cmd_esp_cat(argv[2]);
   else if (argc == 4 && !strcmp(argv[1], "update-esp")) cmd_update_esp(argv[2], argv[3]);
   else if (argc == 3 && !strcmp(argv[1], "erase")) cmd_erase(argv[2]);
   else if (argc == 3 && !strcmp(argv[1], "bootnext") && (!strcmp(argv[2], "recovery") || !strcmp(argv[2], "system")))
