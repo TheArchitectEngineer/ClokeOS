@@ -63,9 +63,17 @@ for dir in "$src"/*/; do
   id=$(plutil -extract CFBundleIdentifier raw "$dir/Info.plist")
   ver=$(plutil -extract CFBundleVersion raw "$dir/Info.plist")
   objs=()
-  for c in "$dir"/*.cpp; do
+  # ClokeI2CHID malt seine Schritte auf den Bildschirm (ClokeTrace aus kext/pdacpi, mit eigenen Namen, damit
+  # sich die Symbole nicht mit denen der ACPI-Plattform beißen), um zu sehen, wo ein Hänger sitzt
+  extra=()
+  xflags=()
+  if [ "$name" = ClokeI2CHID ]; then
+    extra=("$src/pdacpi/ClokeTrace.cpp")
+    xflags=(-Dcloke_trace=i2c_trace -Dcloke_trace_show=i2c_trace_show -I"$src/pdacpi")
+  fi
+  for c in "$dir"/*.cpp ${extra[@]+"${extra[@]}"}; do
     o="$tmp/$name-$(basename "$c" .cpp).o"
-    clang++ "${cflags[@]}" -fapple-kext -std=gnu++17 -fno-exceptions -fno-rtti -nostdinc++ -c "$c" -o "$o"
+    clang++ "${cflags[@]}" ${xflags[@]+"${xflags[@]}"} -fapple-kext -std=gnu++17 -fno-exceptions -fno-rtti -nostdinc++ -c "$c" -o "$o"
     objs+=("$o")
   done
   cat > "$tmp/$name-info.c" <<EOF

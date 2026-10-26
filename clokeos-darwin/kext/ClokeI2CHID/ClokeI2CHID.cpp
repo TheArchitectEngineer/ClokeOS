@@ -26,6 +26,7 @@
 #include <IOKit/IOTimerEventSource.h>
 #include <IOKit/IOWorkLoop.h>
 #include <pexpert/pexpert.h>
+#include "ClokeTrace.h"
 
 extern "C" {
 #include <miscfs/devfs/devfs.h>
@@ -206,6 +207,7 @@ static void scanBars() {
       else if (base < gLowLow) gLowLow = base;
     }
     LOG("PCI %s", line);
+    cloke_trace("PCI %s", line);
   }
   it->release();
   LOG("lowest memory BAR: above 4 GB 0x%llx, below 4 GB 0x%llx", (unsigned long long)gLowHigh,
@@ -475,6 +477,7 @@ bool ClokeI2CHID::start(IOService *provider) {
   uint32_t on = 0;
   if (!PE_parse_boot_argn("cloke_i2c", &on, sizeof on) || !on) return false;
   LOG("start on %s", provider->getName());
+  cloke_trace("I2C: START %s", provider->getName());
   if (!IOService::start(provider)) return false;
   pci = (IOPCIDevice *)provider;
   uint16_t vendor = pci->extendedConfigRead16(0), device = pci->extendedConfigRead16(2);
@@ -515,6 +518,7 @@ bool ClokeI2CHID::start(IOService *provider) {
         /* vergebene Adresse: nur gelten lassen, wenn dort der Controller antwortet. Im Reset liefert
          * IC_COMP_TYPE 0; das LPSS-Reset-Register (0x204) ist immer da, leere Adressen lesen als 0xffffffff */
         uint32_t t = rd(IC_COMP_TYPE), rr = rd(LPSS_RESETS);
+        cloke_trace("I2C %04x: GELESEN TYPE 0x%08x RESETS 0x%08x", device, t, rr);
         LOG("%04x:%04x: probe at 0x%llx: COMP_TYPE 0x%08x, LPSS resets 0x%08x", vendor, device, (unsigned long long)phys, t, rr);
         if (t == 0x44570140 || (t == 0 && rr != 0xffffffffu)) break;
       }
@@ -533,6 +537,7 @@ bool ClokeI2CHID::start(IOService *provider) {
     if (low == ~0ull || low < 0x30000000ull) break;
     uint64_t cand = (low - 0x200000 - (uint64_t)(gAssigned + (unsigned)attempt) * 0x1000 - (uint64_t)attempt * 0x1000000) & ~0xfffull;
     if (!is64 && (cand >> 32)) break;
+    cloke_trace("I2C %04x: VERSUCH %d BAR0 = 0x%llx, SCHREIBE ...", device, attempt + 1, (unsigned long long)cand);
     pci->extendedConfigWrite16(4, (uint16_t)(pci->extendedConfigRead16(4) & ~0x0002u)); /* Speicher aus */
     pci->extendedConfigWrite32(0x10, (uint32_t)(cand & 0xfffffff0u) | (bar0 & 0xf));
     if (is64) pci->extendedConfigWrite32(0x14, (uint32_t)(cand >> 32));
@@ -540,6 +545,7 @@ bool ClokeI2CHID::start(IOService *provider) {
     phys = cand;
     assigned = true;
     LOG("%04x:%04x: assigning BAR0 = 0x%llx (attempt %d)", vendor, device, (unsigned long long)cand, attempt + 1);
+    cloke_trace("I2C %04x: BAR0 GESCHRIEBEN, LESE ...", device);
   }
   if (assigned && map) gAssigned++;
   IOLockUnlock(gAssignLock);
