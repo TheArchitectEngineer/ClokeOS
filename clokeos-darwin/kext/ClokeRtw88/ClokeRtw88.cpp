@@ -294,24 +294,27 @@ static bool write_rsvd_page(volatile uint8_t *b, Dma *ring, Dma *buf, const uint
   uint8_t txq = r8(b, REG_FWHW_TXQ_CTRL + 2);
   w8(b, REG_FWHW_TXQ_CTRL + 2, txq & (uint8_t)~(1u << 6));      /* ~BIT_EN_BCNQ_DL >> 16 */
 
-  /* TX-Beschreibung (48 Byte) und Daten direkt dahinter */
-  memset(buf->va, 0, TX_DESC);
+  /* TX-Beschreibung (48 Byte) in der Seite des Rings ab 0x100, die Daten in einer eigenen Seite: PureDarwin gibt
+   * zusammenhängenden Speicher unter 4 GB nur seitenweise her (4 KB + 48 Byte scheiterten auf dem HP), und die
+   * Pufferbeschreibung hat ohnehin zwei Teile mit eigener Adresse */
+  uint8_t *desc = ring->va + 0x100;
+  memset(desc, 0, TX_DESC);
   const uint8_t *a1 = data + 4; /* rtw88 deutet die Daten als 802.11-Kopf: BMC aus addr1 */
   bool bmc = (a1[0] & 1) != 0;
   uint32_t w0 = (size & 0xffff) | ((uint32_t)TX_DESC << 16) | ((bmc ? 1u : 0u) << 24) | (1u << 26);
   uint32_t w1 = 16u << 8; /* QSEL Beacon */
-  memcpy(buf->va, &w0, 4);
-  memcpy(buf->va + 4, &w1, 4);
-  memcpy(buf->va + TX_DESC, data, size);
+  memcpy(desc, &w0, 4);
+  memcpy(desc + 4, &w1, 4);
+  memcpy(buf->va, data, size);
   /* Pufferbeschreibung: zwei Teile, Beacon-Warteschlange mit OWN */
   uint16_t *bd16 = (uint16_t *)ring->va;
   uint32_t *bd32 = (uint32_t *)ring->va;
   memset(ring->va, 0, 16);
   bd16[0] = TX_DESC;                                                       /* buf_size */
   bd16[1] = (uint16_t)((((TX_DESC + size) - 1) / 128 + 1) | (1u << 15));   /* psb_len | OWN */
-  bd32[1] = buf->pa;
+  bd32[1] = ring->pa + 0x100;
   bd16[4] = (uint16_t)size;
-  bd32[3] = buf->pa + TX_DESC;
+  bd32[3] = buf->pa;
   __asm__ volatile("mfence" ::: "memory");
   w8(b, PCI_TXBD_BCN_WORK, r8(b, PCI_TXBD_BCN_WORK) | (1u << 4));
   bool ok = hw_ready(b, REG_FIFOPAGE_CTRL_2, 1u << 15, 1);
@@ -379,7 +382,7 @@ static void download_fw(volatile uint8_t *b) {
   LOG("fw: version %u.%u, dmem %u imem %u emem %u", fw[4] | fw[5] << 8, fw[6], dmem, imem, emem);
 
   Dma ring, buf;
-  if (!dma_alloc(&ring, 4096) || !dma_alloc(&buf, 4096 + 2 * TX_DESC + 64)) {
+  if (!dma_alloc(&ring, 4096) || !dma_alloc(&buf, 4096)) {
     LOG("fw: no DMA memory below 4 GB");
     dma_free(&ring);
     dma_free(&buf);
