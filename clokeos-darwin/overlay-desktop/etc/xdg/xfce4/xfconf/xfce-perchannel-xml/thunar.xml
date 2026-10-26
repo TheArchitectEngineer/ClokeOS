@@ -1,6 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <channel name="thunar" version="1.0">
-  <property name="last-toolbar-visible" type="bool" value="false"/>
+  <property name="last-toolbar-visible" type="bool" value="true"/>
+  <!-- nur Pfadleiste und Ansichtsschalter: Zurück und Vor sitzen in der Titelleiste (CloakServer) -->
+  <property name="last-toolbar-items" type="string" value="location-bar:1,view-switcher:0"/>
   <property name="last-statusbar-visible" type="bool" value="true"/>
   <property name="last-location-bar" type="string" value="ThunarLocationButtons"/>
   <property name="last-view" type="string" value="ThunarIconView"/>

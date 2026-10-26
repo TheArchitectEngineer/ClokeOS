@@ -575,9 +575,11 @@ static void xsettings_update(void) {
   bool menus = access(CLOAKMENU, X_OK) == 0;
   /* Gtk/FontName: Cloke Sans (overlay-desktop/Library/Fonts/ClokeSans) auch in den GTK-Programmen */
   bool font = access(UI_FONT_FILE, R_OK) == 0;
-  uint32_t nl = (uint32_t)strlen(name), vl = (uint32_t)strlen(val), count = 1 + menus + font;
+  /* Net/IconThemeName: ClokeOS-Symbole (Ordner wie in clokeos.html), erbt von hicolor */
+  bool icons = access("/share/icons/ClokeOS/index.theme", R_OK) == 0;
+  uint32_t nl = (uint32_t)strlen(name), vl = (uint32_t)strlen(val), count = 1 + menus + font + icons;
   uint16_t nl16 = (uint16_t)nl;
-  unsigned char buf[256] = {0}, *p = buf;
+  unsigned char buf[512] = {0}, *p = buf;
   p += 4;                                    /* Byte-Reihenfolge 0 = LSBFirst (x86), 3 frei */
   memcpy(p, &xsettings_serial, 4), p += 4;
   memcpy(p, &count, 4), p += 4;              /* Anzahl der Einstellungen */
@@ -607,6 +609,17 @@ static void xsettings_update(void) {
     memcpy(p, &xsettings_serial, 4), p += 4;
     memcpy(p, &fvl, 4), p += 4;
     memcpy(p, fval, fvl), p += (fvl + 3) & ~3u;
+  }
+  if (icons) {
+    static const char *iname = "Net/IconThemeName", *ival = "ClokeOS";
+    uint16_t il = (uint16_t)strlen(iname);
+    uint32_t ivl = (uint32_t)strlen(ival);
+    *p = 1, p += 2;
+    memcpy(p, &il, 2), p += 2;
+    memcpy(p, iname, il), p += (il + 3) & ~3u;
+    memcpy(p, &xsettings_serial, 4), p += 4;
+    memcpy(p, &ivl, 4), p += 4;
+    memcpy(p, ival, ivl), p += (ivl + 3) & ~3u;
   }
   XChangeProperty(dpy, xsettings_win, XSETTINGS_SETTINGS, XSETTINGS_SETTINGS, 8, PropModeReplace, buf, (int)(p - buf));
   xsettings_serial++;
@@ -1527,10 +1540,13 @@ static void paint_frame(cairo_t *cr, int w, int h, void *arg) {
   set(cr, T->win);
   rrect(cr, c->bw, c->bw, w - 2 * c->bw, h - 2 * c->bw, RADIUS - 1);
   cairo_fill(cr);
-  /* Linie unter der Titelleiste */
-  set(cr, T->line);
-  cairo_rectangle(cr, c->bw, c->bw + c->th - 1, w - 2 * c->bw, 1);
-  cairo_fill(cr);
+  /* Linie unter der Titelleiste; bei Fundus und Search fehlt sie: Titelleiste und Werkzeugleiste des
+   * Programms bilden eine Fläche wie beim Finder und bei Safari */
+  if (!has_nav(c)) {
+    set(cr, T->line);
+    cairo_rectangle(cr, c->bw, c->bw + c->th - 1, w - 2 * c->bw, 1);
+    cairo_fill(cr);
+  }
   /* Glanzkante oben */
   cairo_save(cr);
   rrect(cr, 0, 0, w, h, RADIUS);
@@ -1591,6 +1607,14 @@ static void paint_frame(cairo_t *cr, int w, int h, void *arg) {
     side = 150;
   }
   const char *title = c->title[0] ? c->title : (c->app >= 0 ? apps[c->app].b.name : c->cls);
+  char short_title[256];
+  if (has_nav(c)) { /* Thunar und NetSurf hängen ihren Namen an: "gast - Thunar" wird "gast" */
+    snprintf(short_title, sizeof short_title, "%s", title);
+    char *dash = strstr(short_title, " - Thunar");
+    if (!dash) dash = strstr(short_title, " - NetSurf");
+    if (dash && dash != short_title) *dash = 0;
+    title = short_title;
+  }
   if (w - 2 * side > 24) text(cr, w / 2.0, cy, title, 13, true, active ? T->fg : T->fg2, w - 2 * side, 1);
 }
 
