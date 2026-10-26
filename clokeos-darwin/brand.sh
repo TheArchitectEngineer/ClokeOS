@@ -42,10 +42,11 @@ if [ "$CLOKE_FLAVOR" = desktop ]; then
   cp -R "$HERE/overlay-desktop/." "$tmp/stage/"
   "$HERE/cloakserver/build.sh" "$tmp/stage"
   "$HERE/menubar/build.sh" "$tmp/stage"
+  "$HERE/apps/build.sh" "$tmp/stage"
   "$HERE/recovery/installer-build.sh" "$tmp/stage"
   python3 -I "$HERE/cloakserver/bundles.py" "$tmp/stage" "$tmp/stage/System/Library/CoreServices/CloakServer/Resources/icons" \
     "$CLOKE_VERSION" "$CLOKE_BUILD"
-  "$HERE/macapps/install.sh" "$tmp/stage"
+  [ -n "${CLOKE_NO_MACAPPS:-}" ] || "$HERE/macapps/install.sh" "$tmp/stage"   # CLOKE_NO_MACAPPS=1: ohne Mac-Frameworks (schneller)
   # Tastentabelle in Xorgs Eingabetreiber ergänzen (Einfg, Pos1, Entf, Ziffernfeld, <>|, ...)
   pdi=/usr/lib/xorg/modules/input/puredarwininput_drv.so
   mkdir -p "$tmp/stage$(dirname "$pdi")"
