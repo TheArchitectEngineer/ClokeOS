@@ -819,10 +819,12 @@ static void rx_scan(volatile uint8_t *b, bool btg) {
   w8(b, PCI_CTRL + 3, r8(b, PCI_CTRL + 3) | 0xf7);
   w16(b, RXBD_NUM, RX_N);
   w32(b, RXBD_DESA, ring.pa);
+  w32(b, RXBD_DESA + 4, 0);
   w32(b, BD_RWPTR_CLR, 0xffffffff);
   w32(b, PCI_CTRL, r32(b, PCI_CTRL) | (1u << 20) | (1u << 15));
   /* alle Adressen annehmen (Beacons haben Broadcast-Ziel) und CRC-fehlerhafte nicht */
   w32(b, 0x608, r32(b, 0x608) | 0xf | (1u << 8)); /* auch Rahmen mit falscher Prüfsumme melden: Test, ob überhaupt etwas ankommt */
+  LOG("rx: readback NUM 0x%04x DESA 0x%08x:%08x IDX 0x%08x PCI_CTRL 0x%08x", r16(b, RXBD_NUM), r32(b, RXBD_DESA + 4), r32(b, RXBD_DESA), r32(b, RXBD_IDX), r32(b, PCI_CTRL));
   coex_wlan_only(b, g_logm[0xca] & 0x1f);
   LOG("rx: ring of %d buffers at 0x%08x, RCR 0x%08x, CR 0x%02x", RX_N, ring.pa, r32(b, 0x608), r8(b, 0x100));
 
