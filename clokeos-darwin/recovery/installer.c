@@ -787,6 +787,34 @@ static void cmd_install(const char *disk, const char *base) {
   out("DONE %s", m.version);
 }
 
+/* Aktualisieren: nur die EFI-Partition (Loader, Kernel, Boot-Argumente) einer installierten Platte aus dem
+ * Abbild neu schreiben; System und Wiederherstellung bleiben, die Kennungen der Partitionen werden wieder
+ * in boot-args-*.txt eingesetzt. Die Dateien des Systems kopiert clokeos-update. */
+static void cmd_update_esp(const char *disk, const char *base) {
+  Disk d;
+  if (!probe_disk(disk, &d)) fail("No disk %s", disk);
+  if (d.installer || d.root) fail("Choose the disk that ClokeOS is installed on, and start from the installer.");
+  if (!d.clokeos || d.nparts < 2) fail("There is no ClokeOS on this disk.");
+  out("STEP %s", L("Loading information about ClokeOS"));
+  curl_global_init(CURL_GLOBAL_DEFAULT);
+  Manifest m;
+  fetch_manifest(base, machine_arch(), &m);
+  uint32_t bs = d.bsize;
+  if (d.part[0].count * bs < m.esp.raw) fail("The EFI partition is too small for this version.");
+  unmount_disk(disk, 0);
+  char part[24];
+  snprintf(part, sizeof part, "%ss1", disk);
+  int fd = open_raw(part, O_RDWR);
+  if (fd < 0) fail("Could not write to %s: %s", part, strerror(errno));
+  out("STEP %s", L("Setting up the startup volume"));
+  install_asset(base, &m.esp, fd, 0, d.part[0].count * bs, 0, m.esp.xz);
+  bool have_rec = d.nparts >= 3 && !strcmp(d.part[2].name, "ClokeOS Recovery");
+  patch_esp(fd, bs, 0, d.part[1].guid, have_rec ? d.part[2].guid : d.part[1].guid, have_rec);
+  fsync(fd);
+  close(fd);
+  out("DONE %s", m.version);
+}
+
 /* Lesen mit Wiederholung: PureDarwins einziger Treiber für USB-Massenspeicher
  * (RavynXHCIMassStorageDisk) bricht bei langen Lesevorgängen gelegentlich mit E/A-Fehlern ab */
 static ssize_t pread_retry(int fd, void *buf, size_t n, off_t off) {
@@ -1272,6 +1300,7 @@ int main(int argc, char **argv) {
   lang_init();
   if (argc >= 2 && !strcmp(argv[1], "disks")) cmd_disks();
   else if (argc == 4 && !strcmp(argv[1], "install")) cmd_install(argv[2], argv[3]);
+  else if (argc == 4 && !strcmp(argv[1], "update-esp")) cmd_update_esp(argv[2], argv[3]);
   else if (argc == 3 && !strcmp(argv[1], "erase")) cmd_erase(argv[2]);
   else if (argc == 3 && !strcmp(argv[1], "bootnext") && (!strcmp(argv[2], "recovery") || !strcmp(argv[2], "system")))
     cmd_bootnext(argv[2]);

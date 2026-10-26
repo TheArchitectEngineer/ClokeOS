@@ -43,7 +43,7 @@ static bool dconfirm;
 static char dmsg[200];
 
 #define RW 640
-#define RH 440
+#define RH 520
 
 static void rec_init(void) {
   FILE *f = fopen(RECOVERY_MARK, "r");
@@ -201,13 +201,15 @@ static void icon_at(cairo_t *cr, const char *name, double x, double y, int s) {
 }
 
 /* Optionen der ersten Seite: Titel, Beschreibung, Symbol */
-static const char *const ROPT[4][3] = {
+static const char *const ROPT[5][3] = {
   {"Install ClokeOS", "Download the current version of ClokeOS from the internet and install it on a disk.",
    "logo-gradient.svg"},
   {"Get Help Online", "Browse the ClokeOS help in a web browser, even when ClokeOS itself does not start.",
    "icons/search.svg"},
   {"Disk Utility", "View disks and their partitions, and erase disks.", "icons/hd.svg"},
   {"Terminal", "Use the command line as the system administrator (root).", "icons/terminal.svg"},
+  {"Update ClokeOS", "Bring an installed ClokeOS up to the version on this medium. Your files and settings stay.",
+   "logo-gradient.svg"},
 };
 
 /* Platten, auf die installiert werden kann: alle außer dem Installationsmedium */
@@ -252,7 +254,7 @@ static void rec_paint(Client *c, cairo_t *cr) {
   switch (rp) {
   case RP_CHOOSE: {
     text(cr, w / 2.0, 34, L("ClokeOS Recovery"), 15, true, T->fg, 0, 1);
-    for (int i = 0; i < 4; i++) {
+    for (int i = 0; i < 5; i++) {
       double y = 62 + i * 76;
       bool sel = i == rsel;
       if (sel) {
@@ -499,6 +501,9 @@ static void rec_open_option(int i) {
     if (app_by_ident("com.clokeos.terminal") >= 0) launch_ident("com.clokeos.terminal");
     else spawn("xfce4-terminal");
     break;
+  case 4: /* Aktualisieren: clokeos-update läuft als root in einem Terminalfenster und zeigt, was es tut */
+    spawn_as("xfce4-terminal --disable-server --title='Update ClokeOS' --geometry=96x28 -x /usr/libexec/clokeos-update", true);
+    break;
   }
 }
 
@@ -536,9 +541,9 @@ static void rec_key(KeySym ks) {
   bool down = ks == XK_Down || ks == XK_Tab, up = ks == XK_Up;
   switch (rp) {
   case RP_CHOOSE:
-    if (down) rsel = rsel < 0 ? 0 : (rsel + 1) % 4;
-    else if (up) rsel = rsel <= 0 ? 3 : rsel - 1;
-    else if (ks >= XK_1 && ks <= XK_4) rsel = (int)(ks - XK_1);
+    if (down) rsel = rsel < 0 ? 0 : (rsel + 1) % 5;
+    else if (up) rsel = rsel <= 0 ? 4 : rsel - 1;
+    else if (ks >= XK_1 && ks <= XK_5) rsel = (int)(ks - XK_1);
     else if (ret && rsel >= 0) rec_do(A_CONT);
     break;
   case RP_INTRO:
@@ -573,7 +578,7 @@ static void rec_click(Client *c, int x, int y) {
   int nb = rec_buttons(c, b), a = hit_btn(b, nb, x, y);
   if (a < 0) {
     if (rp == RP_CHOOSE) {
-      for (int i = 0; i < 4; i++)
+      for (int i = 0; i < 5; i++)
         if (y >= 62 + i * 76 && y < 62 + i * 76 + 68) {
           static double last;
           static int last_i = -1;

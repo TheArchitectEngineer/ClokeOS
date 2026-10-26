@@ -79,7 +79,8 @@ void freeifaddrs(struct ifaddrs *);
 #define UI_FONT_FILE "/Library/Fonts/ClokeSans/ClokeSans-Regular.otf"
 #define GM_TOP_MAX 16 /* höchstens so viele Programm-Menüs in der Leiste */
 static bool recovery; /* läuft als Wiederherstellung (recovery.c, /etc/clokeos-recovery) */
-#define TITLE_H   38   /* wie die Titelleiste im Prototyp (clokeos.html: .titlebar) */
+#define TITLE_H   38
+#define UNI_CUT   146  /* Breite des Ausschnitts links oben bei Fundus und Search: Ampelknöpfe und Zurück/Vor */   /* wie die Titelleiste im Prototyp (clokeos.html: .titlebar) */
 #define BORDER    1
 #define RADIUS    12   /* Prototyp: .win border-radius */
 #define DOCK_PAD_X 8   /* entlang des Docks */
@@ -158,6 +159,7 @@ struct Client {
   char cls[128];
   int app;             /* Index in apps oder -1 */
   bool minimized, zoomed, can_delete, can_focus, take_focus, argb;
+  bool uni;            /* Fundus, Search: das Programm liegt auch hinter der Titelleiste (Werkzeugleiste = Titelleiste) */
   int zx, zy, zw, zh;  /* Lage vor dem Zoomen */
   int hover, pressed;  /* Ampelknopf: 0 keiner, 1 schließen, 2 ins Dock, 3 zoomen */
   int ignore_unmaps;
@@ -247,6 +249,7 @@ static void redraw_all(void);
 static void draw_menubar(void);
 static void draw_dock(void);
 static void draw_frame(Client *c);
+static bool has_nav(Client *c);
 static void focus_client(Client *c);
 static void raise_client(Client *c);
 static void close_menu(void);
@@ -1120,9 +1123,9 @@ static void send_configure(Client *c) {
   ce.event = c->win;
   ce.window = c->win;
   ce.x = c->x;
-  ce.y = c->y;
+  ce.y = c->uni ? c->y - c->th : c->y;
   ce.width = c->w;
-  ce.height = c->h;
+  ce.height = c->uni ? c->h + c->th : c->h;
   ce.above = None;
   XSendEvent(dpy, c->win, False, StructureNotifyMask, (XEvent *)&ce);
 }
@@ -1139,11 +1142,21 @@ static void work_area(int *x0, int *y0, int *x1, int *y1) {
 static void apply_geometry(Client *c) {
   int fw = c->w + 2 * c->bw, fh = c->h + c->th + 2 * c->bw;
   XMoveResizeWindow(dpy, c->frame, c->x - c->bw, c->y - c->th - c->bw, fw, fh);
-  XMoveResizeWindow(dpy, c->win, c->bw, c->th + c->bw, c->w, c->h);
+  if (c->uni) {
+    /* Programm von der Oberkante an; links oben bleibt ein Ausschnitt für Ampelknöpfe und Zurück/Vor */
+    int cut = UNI_CUT, ch = c->h + c->th;
+    XMoveResizeWindow(dpy, c->win, c->bw, c->bw, c->w, ch);
+    XRectangle r[2] = {{(short)cut, 0, (unsigned short)(c->w > cut ? c->w - cut : 1), (unsigned short)c->th},
+                       {0, (short)c->th, (unsigned short)c->w, (unsigned short)c->h}};
+    XShapeCombineRectangles(dpy, c->win, ShapeBounding, 0, 0, r, 2, ShapeSet, YXBanded);
+    XShapeCombineRectangles(dpy, c->win, ShapeInput, 0, 0, r, 2, ShapeSet, YXBanded);
+  } else {
+    XMoveResizeWindow(dpy, c->win, c->bw, c->th + c->bw, c->w, c->h);
+  }
   if (c->grip) XMoveWindow(dpy, c->grip, fw - 16, fh - 16);
   if (c->th) shape_round(c->frame, fw, fh, RADIUS, false);
   send_configure(c);
-  long ext[4] = {c->bw, c->bw, c->th + c->bw, c->bw};
+  long ext[4] = {c->bw, c->bw, c->uni ? c->bw : c->th + c->bw, c->bw};
   if (!c->draw) XChangeProperty(dpy, c->win, NET_FRAME_EXTENTS, XA_CARDINAL, 32, PropModeReplace, (unsigned char *)ext, 4);
 }
 
@@ -1238,6 +1251,8 @@ static Client *manage(Window w, bool already_mapped, bool own) {
     if (ch.res_class) XFree(ch.res_class);
   }
   c->app = app_for_window(w, c->cls);
+  c->uni = has_nav(c);
+  if (c->uni && c->h > c->th + 60) c->h -= c->th; /* c->h zählt ab Unterkante der Titelleiste */
   update_title(c);
 
   Atom *protos;
@@ -1289,7 +1304,7 @@ static Client *manage(Window w, bool already_mapped, bool own) {
   XSetWindowBorderWidth(dpy, w, 0);
   if (!own) XAddToSaveSet(dpy, w);
   if (already_mapped) c->ignore_unmaps++;
-  XReparentWindow(dpy, w, c->frame, c->bw, c->th + c->bw);
+  XReparentWindow(dpy, w, c->frame, c->bw, c->uni ? c->bw : c->th + c->bw);
   XSelectInput(dpy, w, PropertyChangeMask);
   if (c->th && (sh.flags & PMinSize ? !(sh.flags & PMaxSize) || sh.max_width != sh.min_width : true)) {
     XSetWindowAttributes ga = {.cursor = cur_resize};
@@ -1615,7 +1630,7 @@ static void paint_frame(cairo_t *cr, int w, int h, void *arg) {
     if (dash && dash != short_title) *dash = 0;
     title = short_title;
   }
-  if (w - 2 * side > 24) text(cr, w / 2.0, cy, title, 13, true, active ? T->fg : T->fg2, w - 2 * side, 1);
+  if (!c->uni && w - 2 * side > 24) text(cr, w / 2.0, cy, title, 13, true, active ? T->fg : T->fg2, w - 2 * side, 1);
 }
 
 static void draw_frame(Client *c) {
@@ -4336,9 +4351,9 @@ static void on_configure_request(XConfigureRequestEvent *e) {
   Client *c = find_client(e->window);
   if (c && e->window == c->win) {
     if (e->value_mask & CWX) c->x = e->x;
-    if (e->value_mask & CWY) c->y = e->y;
+    if (e->value_mask & CWY) c->y = c->uni ? e->y + c->th : e->y;
     if (e->value_mask & CWWidth) c->w = e->width;
-    if (e->value_mask & CWHeight) c->h = e->height;
+    if (e->value_mask & CWHeight) c->h = c->uni && e->height > c->th ? e->height - c->th : e->height;
     if (c->y - c->th < MENUBAR_H) c->y = MENUBAR_H + c->th + c->bw;
     apply_geometry(c);
     draw_frame(c);

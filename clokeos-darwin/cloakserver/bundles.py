@@ -35,7 +35,7 @@ SEARCH_START = (
     "start=/share/clokeos/search.html; [ \"$(cat /etc/clokeos-language 2>/dev/null)\" = de ] && start=/share/clokeos/search-de.html\n"
     "c=\"$HOME/.netsurf/Choices\"; mkdir -p \"$HOME/.netsurf\"\n"
     "{ grep -v -e '^homepage_url:' -e '^toolbar_items:' -e '^http_proxy' \"$c\" 2>/dev/null; echo \"homepage_url:file://$start\"; "
-    "echo 'toolbar_items:url_bar/reloadstop/openmenu'; } > \"$c.new\" && mv \"$c.new\" \"$c\"\n"
+    "echo 'toolbar_items:back/history/forward/home/url_bar/reloadstop/openmenu'; } > \"$c.new\" && mv \"$c.new\" \"$c\"\n"
     "exec netsurf-gtk3 \"$@\"")
 
 # Ordner, Name (englisch, deutsch), Kennung, Icon aus clokeos.html (oder None), Startzeile,

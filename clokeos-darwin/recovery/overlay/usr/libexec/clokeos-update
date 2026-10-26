@@ -1,0 +1,100 @@
+#!/bin/zsh
+# clokeos-update: bringt ein installiertes ClokeOS auf die Version dieses Mediums (Installationsstick),
+# ohne Neuinstallation. Dateien und Einstellungen der Benutzer bleiben.
+#
+#   1. Die Programme und Oberfläche des Systems (CloakServer, Apps, Themen, Symbole, Treiber-Module) werden
+#      aus der laufenden Wiederherstellung, die genau diese Version ist, auf die Systempartition kopiert.
+#   2. Die EFI-Partition (Loader, Kernel mit allen Treibern, Boot-Argumente) wird neu geschrieben
+#      (clokeos-installer update-esp), die Kennungen der Partitionen bleiben.
+#
+# Läuft in der Wiederherstellung (Option "ClokeOS aktualisieren") oder im Terminal als root.
+emulate -L zsh
+setopt NO_BANG_HIST
+dry=0; [[ ${1:-} == -n ]] && dry=1   # -n: nur zeigen, was getan würde
+INSTALLER=/usr/libexec/clokeos-installer
+TARGET=/Volumes/ClokeOS-Update
+de=0; [[ $(cat /etc/clokeos-language 2>/dev/null) == de* ]] && de=1
+t() { (( de )) && print -r -- "$2" || print -r -- "$1"; }
+say() { print -P "%B==> $*%b" }
+die() { print -P "%F{red}$*%f"; print -n "$(t 'Press Return to close.' 'Eingabetaste schließt das Fenster.') "; read -r _; exit 1 }
+
+[[ $EUID == 0 ]] || die "$(t 'This needs root.' 'Dafür sind Administratorrechte nötig.')"
+arch=$(uname -m); [[ $arch == arm64* ]] || arch=x86_64
+
+# --- installierte Platte finden ------------------------------------------------------------------
+say "$(t 'Looking for an installed ClokeOS' 'Suche ein installiertes ClokeOS')"
+disk="" sysn=""
+typeset -A flags
+while read -r kind a b c d; do
+  if [[ $kind == DISK ]]; then flags[$a]=$c
+  elif [[ $kind == PART && -n ${flags[$a]:-} && ${flags[$a]} == *c* && ${flags[$a]} != *i* && $d == ClokeOS ]]; then
+    disk=$a sysn=$b
+  fi
+done < <($INSTALLER disks 2>/dev/null)
+[[ -n $disk ]] || die "$(t 'No installed ClokeOS found on this computer.' 'Auf diesem Rechner wurde kein installiertes ClokeOS gefunden.')"
+print "  $disk (partition $sysn)"
+
+# --- Quelle der EFI-Partition: wie die Installation ----------------------------------------------
+base=""
+if [[ -f /Library/ClokeOS/Install/clokeos-$arch.txt ]]; then base="file:///Library/ClokeOS/Install"
+elif $INSTALLER stick 2>/dev/null | grep -q '^STICK '; then base="stick:"
+else
+  base=$(sed -n 's/^RELEASES="\(.*\)"/\1/p' /etc/clokeos-recovery 2>/dev/null | head -1)
+fi
+[[ -n $base ]] || die "$(t 'No update source (installer stick or internet).' 'Keine Quelle für das Update (Installationsstick oder Internet).')"
+
+# --- Systempartition einbinden und Dateien kopieren -----------------------------------------------
+say "$(t 'Updating the system files' 'Aktualisiere die Systemdateien')"
+umount $TARGET 2>/dev/null
+mkdir -p $TARGET
+mount -t ext4 /dev/${disk}s${sysn} $TARGET || die "$(t 'The system partition cannot be mounted.' 'Die Systempartition lässt sich nicht einbinden.')"
+[[ -d $TARGET/System/Library/CoreServices ]] || { umount $TARGET; die "$(t 'This is not a ClokeOS system partition.' 'Das ist keine ClokeOS-Systempartition.')" }
+old=$(sed -n 's/^VERSION="\(.*\)"/\1/p' $TARGET/etc/clokeos-release 2>/dev/null | head -1)
+new=$(sed -n 's/^VERSION="\(.*\)"/\1/p' /etc/clokeos-release 2>/dev/null | head -1)
+print "  ClokeOS ${old:-?} -> ${new:-?}"
+
+# Nur Programme und Oberfläche; Benutzer, Einstellungen, Netzwerk und Anmeldung (/Users, /var, /etc) bleiben
+paths=(System/Library/CoreServices System/Applications Applications Library/Fonts Library/Preferences/com.clokeos.dock.plist
+       Library/ClokeOS share/themes share/icons share/clokeos share/glib-2.0/schemas lib/gtk-3.0/modules
+       etc/xdg usr/libexec/clokeos-aktivitaet usr/libexec/clokeos-diag usr/libexec/clokeos-kalender
+       usr/libexec/cloakserver-session usr/libexec/cloakserver-start usr/libexec/cloakserver-xorg
+       usr/lib/libclokeos-xpoll.dylib lib/libXcursor.1.dylib usr/bin/clokefetch)
+have=()
+for p in $paths; do [[ -e /$p ]] && have+=($p); done
+# Dock und Programme des Benutzers nicht überschreiben: die Dock-Voreinstellung nur, wenn sie noch fehlt
+[[ -e $TARGET/Library/Preferences/com.clokeos.dock.plist ]] && have=(${have:#Library/Preferences/com.clokeos.dock.plist})
+if (( dry )); then print "  $(t "would copy:" "würde kopieren:") $have"; umount $TARGET; print "$(t "Dry run: nothing was changed." "Probelauf: nichts wurde verändert.")"; exit 0; fi
+tar -C / -cf - $have | tar -C $TARGET -xpf - || { umount $TARGET; die "$(t 'Copying failed.' 'Das Kopieren ist fehlgeschlagen.')" }
+
+# Versionsangaben nachziehen (LOGIN und Co. bleiben)
+command -v python3 >/dev/null && python3 - $TARGET/etc/clokeos-release /etc/clokeos-release <<'PYEOF'
+import re, sys
+dst, src = sys.argv[1:3]
+try:
+    s = open(src).read(); d = open(dst).read()
+except OSError:
+    sys.exit(0)
+for k in ("VERSION", "CODENAME", "BUILD"):
+    m = re.search(r'^%s="[^"]*"' % k, s, re.M)
+    if m:
+        d = re.sub(r'^%s="[^"]*"' % k, m.group(0), d, flags=re.M) if re.search(r'^%s=' % k, d, re.M) else d + m.group(0) + "\n"
+open(dst, "w").write(d)
+PYEOF
+sync
+umount $TARGET || print "$(t 'Warning: the system partition could not be unmounted cleanly.' 'Achtung: Die Systempartition ließ sich nicht sauber auswerfen.')"
+
+# --- EFI-Partition ------------------------------------------------------------------------------------
+say "$(t 'Updating the startup volume (loader and kernel)' 'Aktualisiere das Startvolume (Loader und Kernel)')"
+$INSTALLER update-esp $disk $base 2>&1 | while read -r line; do
+  case $line in
+    STEP*) print "  ${line#STEP }" ;;
+    ERROR*) print -P "%F{red}${line#ERROR }%f" ;;
+    DONE*) ;;
+  esac
+done
+rc=${pipestatus[1]}
+(( rc == 0 )) || die "$(t 'The startup volume could not be updated.' 'Das Startvolume ließ sich nicht aktualisieren.')"
+
+say "$(t 'Done. Restart the computer to use the new version.' 'Fertig. Starte den Rechner neu, um die neue Version zu nutzen.')"
+print -n "$(t 'Press Return to close.' 'Eingabetaste schließt das Fenster.') "
+read -r _

@@ -6,6 +6,8 @@
 {"Get Help Online", "Online-Hilfe"},
 {"Browse the ClokeOS help in a web browser, even when ClokeOS itself does not start.", "Zeigt die Hilfe zu ClokeOS im Browser an, auch wenn ClokeOS selbst nicht startet."},
 {"Disk Utility", "Festplattendienstprogramm"},
+{"Update ClokeOS", "ClokeOS aktualisieren"},
+{"Bring an installed ClokeOS up to the version on this medium. Your files and settings stay.", "Bringt ein installiertes ClokeOS auf die Version dieses Mediums. Deine Dateien und Einstellungen bleiben."},
 {"View disks and their partitions, and erase disks.", "Festplatten und ihre Partitionen ansehen und Festplatten löschen."},
 {"Use the command line as the system administrator (root).", "Befehlszeile als Systemverwalter (root)."},
 {"Continue", "Fortfahren"},

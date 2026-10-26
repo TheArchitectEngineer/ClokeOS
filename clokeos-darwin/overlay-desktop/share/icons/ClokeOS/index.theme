@@ -2,25 +2,47 @@
 Name=ClokeOS
 Comment=Symbole wie in clokeos.html
 Inherits=hicolor
-Directories=scalable/places,scalable/mimetypes,scalable/devices
+Directories=scalable/places,scalable/mimetypes,scalable/devices,scalable/actions,scalable/status,scalable/emblems
 
 [scalable/places]
-Size=64
-MinSize=16
+Size=16
+MinSize=8
 MaxSize=512
 Type=Scalable
 Context=Places
 
 [scalable/mimetypes]
-Size=64
-MinSize=16
+Size=16
+MinSize=8
 MaxSize=512
 Type=Scalable
 Context=MimeTypes
 
 [scalable/devices]
-Size=64
-MinSize=16
+Size=16
+MinSize=8
 MaxSize=512
 Type=Scalable
 Context=Devices
+
+[scalable/actions]
+Size=16
+MinSize=8
+MaxSize=512
+Type=Scalable
+Context=Actions
+
+[scalable/status]
+Size=16
+MinSize=8
+MaxSize=512
+Type=Scalable
+Context=Status
+
+[scalable/emblems]
+Size=16
+MinSize=8
+MaxSize=512
+Type=Scalable
+Context=Emblems
+
