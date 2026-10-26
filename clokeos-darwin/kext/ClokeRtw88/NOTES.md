@@ -1,6 +1,10 @@
 # ClokeRtw88: Wi-Fi for the RTL8821CE (HP 15s-fq5655ng; the diagnostics show 10ec:c821)
 
-Status: stage 1 only (identify and read, `ClokeRtw88.cpp`). Not tried on the laptop yet.
+Status (HP 15s-fq5655ng, RTL8821CE C-cut): stage 1 (identify), 2a (eFuse: ids 10ec:c821 / 103c:884d match) and
+2b (rtw88 power-on sequence, 18 steps) work on the laptop. Stage 3 (firmware download over the beacon queue and DDMA,
+`cloke_wifi=3`) is built, not tried yet. Boot-arg `cloke_wifi`: 0 off (default), 1 identify + eFuse, 2 + power on,
+3 + firmware. Firmware: linux-firmware `rtw88/rtw8821c_fw.bin` (v24), fetched by kext/build.sh and compiled into the
+driver; licence in `LICENCE.rtlwifi_firmware.txt`.
 
 ## What exists on the machine side
 - PureDarwin has no Wi-Fi at all: no IO80211Family, no Wi-Fi-capable `configd` plugins, no supplicant. Apple's own

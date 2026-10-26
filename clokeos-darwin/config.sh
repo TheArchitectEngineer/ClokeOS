@@ -71,6 +71,11 @@ PDSRC_REV="1bbaeb2ee6aa41e6f792a0b1e2943cc295b3b290"
 PDSRC_URL="https://codeload.github.com/PureDarwin/PureDarwin/tar.gz/$PDSRC_REV"
 PDSRC_SHA256="022d0ce38f40acd212ce535e6bc85529b31c62298df603483cdf8b3864cbe795"
 PDSRC_TGZ="$WORK/download/puredarwin-src/PureDarwin-${PDSRC_REV:0:7}.tar.gz"
+# Firmware des WLAN-Chips RTL8821CE (kext/ClokeRtw88) aus linux-firmware; weitergeben erlaubt
+# (kext/ClokeRtw88/LICENCE.rtlwifi_firmware.txt)
+RTW8821C_FW_URL="https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git/plain/rtw88/rtw8821c_fw.bin"
+RTW8821C_FW_SHA256="2ef409bc418549fcf294061dd0cae1fc22fd9da79b60524950b25de18732f3f0"
+RTW8821C_FW="$WORK/download/rtw88/rtw8821c_fw.bin"
 GNU_EFI_VERSION="4.0.2"
 GNU_EFI_URL="https://codeload.github.com/ncroxon/gnu-efi/tar.gz/refs/tags/$GNU_EFI_VERSION"
 GNU_EFI_SHA256="f31488c3fc7d64257ec8fcad470ec75a936a4db77350fabaf043c52a7acbae72"

@@ -67,6 +67,22 @@ for dir in "$src"/*/; do
   # sich die Symbole nicht mit denen der ACPI-Plattform beißen), um zu sehen, wo ein Hänger sitzt
   extra=()
   xflags=()
+  if [ "$name" = ClokeRtw88 ]; then
+    # Firmware als C-Feld einbauen (kein Dateisystem nötig, wenn der Treiber startet)
+    fetch_file "$RTW8821C_FW_URL" "$RTW8821C_FW_SHA256" "$RTW8821C_FW" >/dev/null
+    mkdir -p "$tmp/rtw88"
+    python3 -I - "$RTW8821C_FW" "$tmp/rtw88/rtw8821c_fw.h" <<'PYFW'
+import sys
+d = open(sys.argv[1], 'rb').read()
+with open(sys.argv[2], 'w') as f:
+    f.write('/* rtw88/rtw8821c_fw.bin aus linux-firmware, Realtek (LICENCE.rtlwifi_firmware.txt) */\n')
+    f.write('static const unsigned char rtw8821c_fw[%d] = {\n' % len(d))
+    for i in range(0, len(d), 16):
+        f.write(','.join('0x%02x' % b for b in d[i:i + 16]) + ',\n')
+    f.write('};\n')
+PYFW
+    xflags=(-I"$tmp/rtw88")
+  fi
   if [ "$name" = ClokeI2CHID ]; then
     extra=("$src/pdacpi/ClokeTrace.cpp")
     xflags=(-Dcloke_trace=i2c_trace -Dcloke_trace_show=i2c_trace_show -I"$src/pdacpi")
