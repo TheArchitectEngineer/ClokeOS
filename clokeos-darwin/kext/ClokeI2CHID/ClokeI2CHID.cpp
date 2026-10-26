@@ -475,10 +475,10 @@ void ClokeI2CHID::poll(IOTimerEventSource *) {
 }
 
 bool ClokeI2CHID::start(IOService *provider) {
-  /* Zeitweise nur mit Boot-Arg cloke_i2c=1: Mit dem Mehrkern-Kernel bleibt der HP beim Adresszuweisen
-   * stehen (kein Ladebalken), bis klar ist, wo; ohne den Treiber bootet er. */
-  uint32_t on = 0;
-  if (!PE_parse_boot_argn("cloke_i2c", &on, sizeof on) || !on) return false;
+  /* cloke_i2c=0 schaltet den Treiber ab (zum Eingrenzen von Hängern beim Start) */
+  uint32_t on = 1;
+  PE_parse_boot_argn("cloke_i2c", &on, sizeof on);
+  if (!on) return false;
   LOG("start on %s", provider->getName());
   cloke_trace("I2C: START %s", provider->getName());
   if (!IOService::start(provider)) return false;
