@@ -103,9 +103,9 @@ CLOKE_BOOT_ARGS=""
 
 # ClokeOS-Version, passend zur Oberfläche in clokeos.html (OS-Objekt).
 CLOKE_NAME="ClokeOS"
-CLOKE_VERSION="2.3"
+CLOKE_VERSION="2.4"
 CLOKE_CODENAME="Presidio"
-CLOKE_BUILD="2C1"
+CLOKE_BUILD="2D1"
 CLOKE_HOST="clokeos"
 # Zeitzone als POSIX-TZ-Regel: PureDarwin hat keine Zeitzonen-Datenbank, die Uhr der VM läuft in UTC.
 # Gilt für Shell und Desktop (Uhr in der Menüleiste). Mitteleuropa mit Sommerzeit:
