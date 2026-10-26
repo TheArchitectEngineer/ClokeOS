@@ -507,6 +507,7 @@ static bool sp_create_account(Account *out) {
     size_t bl = 0;
     for (size_t i = 0; i < sizeof fav / sizeof fav[0] && bl < sizeof bm; i++)
       bl += (size_t)snprintf(bm + bl, sizeof bm - bl, "file://%s/%s %s\n", home, fav[i], fav[i]);
+    bl += (size_t)snprintf(bm + bl, sizeof bm - bl, "file:///Volumes Volumes\n");
     snprintf(p, sizeof p, "%s/.config/gtk-3.0/bookmarks", home);
     sp_write_owned(p, bm, uid, 0644);
   }

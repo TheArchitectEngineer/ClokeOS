@@ -179,6 +179,7 @@ if [ "$CLOKE_FLAVOR" = desktop ] && [ -n "$CLOKE_USER" ]; then
   cp "$HERE/overlay-desktop/var/root/.config/gtk-3.0/gtk.css" "$h/.config/gtk-3.0/"
   # Seitenleiste von Fundus (Thunar): Favoriten wie im Finder
   for d in Documents Downloads Pictures Music Movies; do printf 'file://%s/%s %s\n' "$home" "$d" "$d"; done > "$h/.config/gtk-3.0/bookmarks"
+  echo 'file:///Volumes Volumes' >> "$h/.config/gtk-3.0/bookmarks"
   for f in profile zprofile zshrc; do printf 'test -r /etc/%s && . /etc/%s\n' $f $f > "$h/.$f"; done
   printf "alias ll='ls -la'\n" >> "$h/.zshrc"
   cat > "$h/Desktop/Welcome.txt" <<EOF

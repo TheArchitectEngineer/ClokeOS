@@ -164,6 +164,7 @@ Later, "Restart in Recovery…" in the ClokeOS menu starts the recovery on the d
 - Chinese, Japanese and Korean text (Noto Sans CJK, SIL Open Font License)
 - About 90 more symbolic GTK icons in the thin Mac style of the ClokeOS icon theme
 - Window bars as on macOS: Notes, Calendar and Activity Monitor carry their toolbar in the bar, with Back/Forward next to the traffic lights (Calendar months, Notes one by one) like Fundus and Search
+- USB sticks and disks are mounted automatically under /Volumes (FAT12/16/32 read and write, HFS+ read-only; exFAT, NTFS, ext and ISO 9660 are detected but not mounted yet) and shown in Fundus as "Volumes"
 - Wi-Fi driver for the Realtek RTL8821CE in development (off by default; boot argument \`cloke_wifi\`): firmware runs and the radio receives, networks are not listed yet
 - Everything from 2.4: all CPU cores, I²C touchpads, the updater, new apps look and icons
 

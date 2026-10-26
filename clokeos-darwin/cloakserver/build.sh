@@ -98,6 +98,11 @@ clang -target "$target" -isysroot "$sysroot" -DPLATFORM_MacOSX=1 -fno-stack-chec
   -Wno-nullability-completeness -I"$sysroot/include" -nostdlib -L"$sysroot/libs" -Wl,-platform_version,macos,11.0,11.5 \
   -Wl,-no_fixup_chains -Wl,-dead_strip -o "$out/clokeos-xtest" "$src/xtest.c" -lSystem "${xlibs[@]}"
 
+# Automount für USB-Sticks und andere Datenträger (FAT lesen und schreiben, HFS+ lesen), siehe automount.c
+clang -target "$target" -isysroot "$sysroot" -DPLATFORM_MacOSX=1 -fno-stack-check -std=gnu11 -O2 -Wall -Wextra \
+  -Wno-nullability-completeness -I"$sysroot/include" -nostdlib -L"$sysroot/libs" -Wl,-platform_version,macos,11.0,11.5 \
+  -Wl,-no_fixup_chains -Wl,-dead_strip -o "$out/clokeos-automount" "$src/automount.c" -lSystem
+
 # arm64: PureDarwins libgdk hat Xlib und alle Erweiterungen statisch eingebaut, nur die 13
 # Xcursor-Funktionen sucht es zur Laufzeit im flachen Namensraum. Die einzige libXcursor.1.dylib
 # des Images ist aber für x86_64 gebaut, und so bricht jedes GTK-Programm ab, sobald es einen

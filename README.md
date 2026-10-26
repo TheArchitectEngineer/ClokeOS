@@ -312,6 +312,10 @@ Custom images (for example for the Raspberry Pi or with a custom kernel) need Pu
 
 Important: Apple's trademarks, icons and fonts must not be used. ClokeOS uses its own names, icons and logo.
 
+### USB sticks and disks
+
+`clokeos-automount` (CloakServer starts it at login, `cloakserver/automount.c`) looks at `/dev/disk*` every two seconds, recognizes the file system from the first sectors and mounts what the kernel can handle under `/Volumes/<label>`: FAT12/16/32 read and write (files belong to the logged-in user), HFS+ read-only. It never tries a file system blindly, because the kernel panics when HFS is mounted on a device with another file system. exFAT, NTFS, ext and ISO 9660 are recognized and logged (`/var/log/clokeos-automount.log`) but not mounted, since the kernel has no driver for them. The boot disk is skipped, EFI partitions stay hidden, a removed device is unmounted. Fundus lists `/Volumes` under Places.
+
 ## Credits
 
 - Wallpapers: 13 artworks by [Pixel Makes Art](https://www.instagram.com/pixelmakesart) (Instagram), used with permission. Thank you!

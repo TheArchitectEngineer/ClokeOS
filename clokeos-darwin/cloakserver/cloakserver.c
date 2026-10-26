@@ -256,6 +256,7 @@ static void raise_client(Client *c);
 static void close_menu(void);
 static void gm_focus(Client *c);
 static void gm_start(void);
+static void automount_start(void);
 static void gm_stop(void);
 static void gm_forget(Window w);
 static void gm_property(Client *c, Atom a);
@@ -1113,6 +1114,9 @@ static void update_title(Client *c) {
     }
   }
   if (data) XFree(data);
+  /* xfce4-terminal und andere hängen " - " an, wenn kein Titel gesetzt ist ("Terminal - "): abschneiden */
+  size_t n = strlen(c->title);
+  while (n > 1 && (c->title[n - 1] == ' ' || c->title[n - 1] == '-')) c->title[--n] = 0;
 }
 
 static void set_wm_state(Client *c, long state) {
@@ -2037,6 +2041,7 @@ static void start_session(const Account *a) {
   if (want_dark() != dark || wall_sel) apply_theme();
   update_workarea();
   gm_start(); /* als der Benutzer, auf dessen Sitzungsbus */
+  automount_start();
 }
 
 static void user_env(const Account *a) {
@@ -2706,6 +2711,25 @@ static void gm_send(const char *line) {
   if (gm_fd < 0) return;
   size_t n = strlen(line);
   if (write(gm_fd, line, n) != (ssize_t)n) warn("cloakmenu: Auftrag nicht geschickt");
+}
+
+/* Automount (automount.c): hängt USB-Sticks und Datenträger unter /Volumes ein; läuft als root und gibt dem
+ * angemeldeten Benutzer die Dateien. Beim Anmelden neu gestartet, damit der Besitzer stimmt. */
+static pid_t am_pid;
+static void automount_start(void) {
+  static const char *bin = "/System/Library/CoreServices/CloakServer/clokeos-automount";
+  if (recovery || access(bin, X_OK)) return;
+  if (am_pid > 0) kill(am_pid, SIGTERM);
+  char u[16], g[16];
+  snprintf(u, sizeof u, "%u", session ? (unsigned)session->uid : 501u);
+  snprintf(g, sizeof g, "%u", session ? (unsigned)session->gid : 20u);
+  am_pid = fork();
+  if (am_pid == 0) {
+    signal(SIGCHLD, SIG_DFL);
+    if (!freopen("/var/log/clokeos-automount.log", "a", stderr)) _exit(1);
+    execl(bin, bin, u, g, (char *)NULL);
+    _exit(1);
+  }
 }
 
 static void gm_start(void) {
