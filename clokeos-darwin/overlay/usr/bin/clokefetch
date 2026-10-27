@@ -6,7 +6,7 @@ NAME=ClokeOS VERSION= CODENAME= BASE=
 
 c=$'\e[1;35m' b=$'\e[1m' r=$'\e[0m'
 art=(
-  '      .——.      '
+  '       __       '
   '     / __ \     '
   '    / /  \ \    '
   '   | |    | |   '
