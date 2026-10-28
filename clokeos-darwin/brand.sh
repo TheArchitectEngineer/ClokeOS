@@ -207,6 +207,18 @@ if [ "$CLOKE_FLAVOR" = desktop ]; then
   # /Applications wie bei macOS für Administratoren beschreibbar; hier die Gruppe staff, damit
   # der Benutzer Programme durch Hineinziehen installieren kann
   printf 'set_inode_field /Applications mode 040775\nset_inode_field /Applications gid 20\n' >> "$tmp/extra.cmds"
+  # /NT = Laufwerk C: für Windows-Programme (Wine, x86_64): Windows, Program Files usw. legt Wine beim
+  # ersten Start an (/usr/bin/wine); Gruppe staff darf schreiben, Users hat das Sticky-Bit wie /tmp
+  {
+    echo "mkdir /NT"
+    echo "mkdir /NT/Windows"
+    echo "mkdir /NT/Users"
+    echo "set_inode_field /NT mode 040775"
+    echo "set_inode_field /NT gid 20"
+    echo "set_inode_field /NT/Windows mode 040775"
+    echo "set_inode_field /NT/Windows gid 20"
+    echo "set_inode_field /NT/Users mode 041777"
+  } >> "$tmp/extra.cmds"
 fi
 if [ "$CLOKE_FLAVOR" = desktop ] && [ -n "$CLOKE_USER" ]; then
   home="/Users/$CLOKE_USER"

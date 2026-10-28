@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Windows Program
+Comment=Run a Windows program with Wine
+Exec=sh -c 'cd "$(dirname "$1")" && exec wine "$1"' wine %f
+MimeType=application/x-ms-dos-executable;
+NoDisplay=true
+Terminal=false

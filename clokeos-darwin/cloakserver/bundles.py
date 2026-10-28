@@ -59,6 +59,8 @@ APPS = [
      'exec /System/Library/CoreServices/ClokeApps/clokeapps activity', '', ''),
     ('System/Applications', 'System Settings', 'Systemeinstellungen', 'com.clokeos.systemeinstellungen', 'einstellungen',
      None, '', 'settings'),
+    # Windows-Programme (Wine, nur x86_64): Dateimanager von Wine mit C: = /NT; .exe öffnet Fundus direkt
+    ('Applications', 'Wine', 'Wine', 'org.winehq.wine', None, 'exec wine winefile "$@"', 'winefile* wine* explorer* notepad* *.exe', ''),
     # nachinstalliert wie ein Programm aus dem Netz: liegt in /Applications
     ('Applications', 'Dillo', 'Dillo', 'org.dillo.dillo', None, 'exec dillo "$@"', 'Dillo', ''),
 ]

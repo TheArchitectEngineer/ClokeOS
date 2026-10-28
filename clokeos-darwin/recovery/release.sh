@@ -168,12 +168,14 @@ Later, "Restart in Recovery…" in the ClokeOS menu starts the recovery on the d
 - Notes, Calendar and Search like the prototype: title and buttons in the window bar, calendar with a month grid, day list and events (saved in ~/Library/Calendars), dark and light start page in Search
 - USB sticks and disks are mounted automatically under /Volumes (FAT12/16/32 read and write, HFS+ read-only; exFAT, NTFS, ext and ISO 9660 are detected but not mounted yet) and shown in Fundus as "Volumes"
 - Wi-Fi driver for the Realtek RTL8821CE in development (off by default; boot argument \`cloke_wifi\`): firmware runs and the radio receives, networks are not listed yet
+- Windows programs on x86_64 (Wine 11.0, 64-bit and 32-bit .exe through WoW64): drive C: is \`/NT\` (\`/NT/Windows\`, \`/NT/Program Files\`), the registry lives per user in \`~/Library/Wine\`, \`wine\` is on the PATH, a double-click on an .exe in Fundus starts it, and "Wine" in the Launchpad and the NT start menu opens Wine's file manager. arm64 cannot run Windows programs (there is no x86 translation yet). The first start of a user sets up the Windows environment and takes a while
 - Everything from 2.4: all CPU cores, I²C touchpads, the updater, new apps look and icons
 
 ## What is inside
 
 - CloakServer, ClokeOS' window server: menu bar, Dock, Launchpad, login, light and dark mode, windows with shadows and glass
 - Global menu bar as on macOS: apps' menus are at the top of the screen instead of in the window, for GTK apps like Fundus and Terminal as well as for Mac apps
+- Wine for Windows programs (x86_64 desktop only; the recovery leaves it out)
 - Recovery with installer, online help, Disk Utility and Terminal
 - $macnote
 

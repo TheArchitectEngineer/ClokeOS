@@ -246,13 +246,26 @@ The prefix is `/opt/homebrew` on arm64 (owned by the guest account, group `staff
 How it works (all in `tux/`): the PureDarwin kernel has no hook for foreign system calls. On arm64 an `svc` with a Linux number is not catchable (the call number lives in x16, which Linux code does not set), and on x86_64 a `syscall` with a Linux number silently does nothing. So `tux` loads the ELF file (and musl's dynamic loader) itself, builds stack and auxiliary vector like a Linux kernel, and rewrites every system call instruction in executable memory to a breakpoint; the signal handler translates the call (`tux/sys.c`: paths, `stat`, `open` flags, `ioctl` for terminals, signals, `fork`/`execve` through `tux` again). The kernel also zeroes `TPIDR_EL0` on every task switch, so the Linux thread pointer lives in a Darwin thread-local slot and the instructions that read or write it are rewritten as well.
 
 State: on arm64 `sh`, `ls`, `cat`, `sed`, `grep`, `find`, pipes, redirects, subshells and background jobs of BusyBox work in the VM. Not there yet: threads (`clone` with `CLONE_THREAD`), sockets, epoll, non-PIE programs (Darwin gives arm64 programs no memory below 4 GiB), and the **x86_64 version**: measured so far is that FS can be set through an LDT entry (works in the VM), but `syscall` sites must be found with a real instruction decoder (a byte scan hits false matches in musl), and that is not written yet.
+=======
+### Windows programs (Wine)
+
+The x86_64 desktop image runs Windows programs (`.exe`, `.msi`) with **Wine 11.0**. Nothing had to be built: PureDarwin's preview image `puredarwin.img` already ships Wine as a WoW64 build (64-bit `wine`, 32-bit programs run through WoW64, so no 32-bit libraries are needed) with the X11 driver `winex11` on the guest's own Xorg, libX11, freetype and fontconfig (`/usr/lib/wine`, `/usr/share/wine`; the build logs are in `/usr/share/wine-build`). There is no `winemac` because that needs Cocoa. XNU in the image allows Wine's preloader to reserve the address space (`wine --version`, wineserver, services, explorer and wineboot start). ClokeOS adds the layout around it:
+
+- **`/NT` is drive C:** (`/NT/Windows`, `/NT/Program Files`, `/NT/Users`), one Windows tree for the whole system, group `staff` may write. Wine fills it at the first start.
+- **`/usr/bin/wine`** (`overlay-desktop/usr/bin/wine`) is a small script in front of PureDarwin's binary: the prefix is per user in `~/Library/Wine` with `drive_c` and `dosdevices/c:` pointing to `/NT`, `DISPLAY=:0`, no `winemenubuilder`, no Mono/Gecko download. `wineboot`, `winecfg`, `winefile`, ... are links to it.
+- **Fundus** opens `.exe` and `.msi` with Wine by double-click. PureDarwin has no shared-mime-info, so `/share/mime/globs2`, `/share/applications/wine*.desktop`, `mimeinfo.cache` and `mimeapps.list` are written by hand (`overlay-desktop/share`).
+- **"Wine"** is an app in `/Applications` (Launchpad, NT start menu): it opens Wine's file manager `winefile` on C:.
+- **arm64 cannot run Windows programs**: there is no x86 translation layer yet (the arm64 image has neither `wine` nor the script).
+
+Try it in a terminal: `wine program.exe`, `wine cmd`, `wine notepad`, `winecfg`. The first start of a user creates the prefix (`wineboot` imports `wine.inf`), which takes a few minutes in the emulated x86_64 VM and well under a minute on a PC.
+>>>>>>> e5a57df (Wine: /NT als Laufwerk C:, wine-Skript, .exe in Fundus, Wine-App, libcompat-Bau für x86_64 repariert)
 
 ### Architectures
 
 | Target | State | Base |
 |---|---|---|
 | x86_64 (QEMU q35, UEFI) | built, booted, released | PureDarwin 20.5, `puredarwin-minimal.img` |
-| x86_64 desktop | built, booted, released (installer, USB sticks, SSD image) | PureDarwin's preview image `puredarwin.img` |
+| x86_64 desktop | built, booted, released (installer, USB sticks, SSD image), runs Windows programs with Wine | PureDarwin's preview image `puredarwin.img` |
 | x86_64 on real PCs | tested on an HP 15s-fq5655ng: boot from USB, recovery | the same |
 | arm64 (QEMU virt) | built, booted with Apple's hypervisor and emulated | `puredarwin-arm64-virt-minimal.img` |
 | arm64 desktop | built, booted with HVF, released (installer) | `puredarwin-arm64-virt.img` |
