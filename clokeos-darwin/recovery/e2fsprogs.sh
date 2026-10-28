@@ -20,6 +20,10 @@ tar -xJf "$tgz" -C "$b"
 cd "$b/e2fsprogs-1.47.4"
 # PureDarwins libSystem hat kein sbrk; e2fsprogs fragt es nur für die Speicherstatistik (-t) ab
 sed -i '' 's/sbrk(0)/((void *)0)/g' e2fsck/iscan.c e2fsck/util.c resize/resource_track.c
+# Rohgeräte von Darwin lehnen die 2-Byte-Schreibvorgänge ab, mit denen libext2fs den Superblock aktualisiert
+# ("alignment error"); ohne write_byte schreibt es den ganzen Block
+sed -i '' 's/^\t.write_byte\t= unix_write_byte,/\t.write_byte\t= NULL,/' lib/ext2fs/unix_io.c
+grep -q 'write_byte\t= NULL' lib/ext2fs/unix_io.c
 export CC="clang -arch $arch -mmacosx-version-min=11.0 -O2 -fno-stack-check"
 host=x86_64-apple-darwin
 [ "$arch" = arm64 ] && host=aarch64-apple-darwin
