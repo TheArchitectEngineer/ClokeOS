@@ -18,10 +18,12 @@ rm -rf "$b" "$out"
 mkdir -p "$b" "$out"
 tar -xJf "$tgz" -C "$b"
 cd "$b/e2fsprogs-1.47.4"
-export CC="clang -arch $arch -mmacosx-version-min=11.0 -O2"
+# PureDarwins libSystem hat kein sbrk; e2fsprogs fragt es nur für die Speicherstatistik (-t) ab
+sed -i '' 's/sbrk(0)/((void *)0)/g' e2fsck/iscan.c e2fsck/util.c resize/resource_track.c
+export CC="clang -arch $arch -mmacosx-version-min=11.0 -O2 -fno-stack-check"
 host=x86_64-apple-darwin
 [ "$arch" = arm64 ] && host=aarch64-apple-darwin
-./configure --host="$host" --build="$(uname -m)-apple-darwin" --disable-nls --disable-fuse2fs --disable-uuidd \
+ac_cv_func_sbrk=no ac_cv_func_chflags=no ./configure --host="$host" --build="$(uname -m)-apple-darwin" --disable-nls --disable-fuse2fs --disable-uuidd \
   --disable-defrag --disable-debugfs --disable-imager --disable-e2initrd-helper \
   --disable-testio-debug >"$b/configure.log" 2>&1 || { tail -20 "$b/configure.log" >&2; exit 1; }
 make -j8 libs >"$b/make.log" 2>&1 && make -j8 -C e2fsck e2fsck >>"$b/make.log" 2>&1 &&
