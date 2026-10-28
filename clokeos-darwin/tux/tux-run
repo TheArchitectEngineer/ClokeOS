@@ -1,0 +1,6 @@
+#!/bin/sh
+# tux-run [Programm [Argumente...]]: Linux-Programm in /TUX starten, ohne Argumente eine Linux-Shell
+case "$HOME" in /Users/*|/tmp*) ;; *) HOME=/root ;; esac
+export HOME TERM="${TERM:-xterm}"
+[ $# -eq 0 ] && exec tux /bin/sh -l
+exec tux "$@"

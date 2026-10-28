@@ -1,0 +1,3 @@
+#!/bin/sh
+# Doppelklick auf eine Linux-Datei in Fundus: in einem Terminalfenster ausführen
+exec xfce4-terminal --disable-server --role=com.clokeos.linux --title="$(basename "$1")" --hold -x tux "$@"

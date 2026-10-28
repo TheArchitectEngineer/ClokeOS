@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Linux Program
+Comment=Run a Linux program with tux
+Exec=tux-open %f
+MimeType=application/x-linux-elf;
+NoDisplay=true
+Terminal=false

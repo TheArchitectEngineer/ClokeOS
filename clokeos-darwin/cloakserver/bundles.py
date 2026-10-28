@@ -49,6 +49,7 @@ APPS = [
      'Netsurf-gtk3 Netsurf* NetSurf*', ''),
     ('System/Applications/Utilities', 'Terminal', 'Terminal', 'com.clokeos.terminal', 'terminal',
      'exec xfce4-terminal "$@"', 'Xfce4-terminal XTerm UXTerm', ''),
+    ('System/Applications/Utilities', 'Linux', 'Linux', 'com.clokeos.linux', None, term('com.clokeos.linux', 'Linux', 'Linux', '80x24', 'tux-run'), '', ''),
     ('System/Applications', 'Notes', 'Notizen', 'com.clokeos.notizen', 'notizen',
      'exec /System/Library/CoreServices/ClokeApps/clokeapps notes', '', ''),
     ('System/Applications', 'Calculator', 'Rechner', 'com.clokeos.rechner', 'rechner', 'exec /System/Library/CoreServices/ClokeApps/clokeapps calc', '', ''),

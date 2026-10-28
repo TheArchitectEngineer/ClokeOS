@@ -14,7 +14,7 @@ ClokeOS starts as a macOS-like system and grows towards running software from ot
 |---|---|---|
 | **Mac** (default interface "ClokeOS") | macOS-like desktop (CloakServer), Mac apps on Darling's frameworks (with many gaps), Fundus, Launchpad, Spotlight, System Settings, recovery and installer | bash and Homebrew, a modern browser |
 | **Windows** | the **NT interface**: a Windows-like desktop with taskbar, Start menu, tray and desktop icons (System Settings > Appearance > Interface) | `.exe` programs through Wine (x86_64 only, started), own tree `/NT` (`/NT/Windows`, `/NT/Program Files`, drive C:) |
-| **Linux** | not started | programs in their own tree `/TUX`; needs a translation layer for Linux system calls |
+| **Linux** | first version (arm64) | programs in their own tree `/TUX` (Alpine: musl, BusyBox) run through `tux`, a user-space loader that translates Linux system calls; BusyBox `sh`, `ls`, `cat` work on arm64; x86_64, threads and sockets are still missing (see [Linux programs](#linux-programs-tux)) |
 | **Other CPU** | images for x86_64 and arm64 | a translation layer between arm64 and x86_64 in both directions, like Rosetta 2; a feasibility study comes first |
 
 ![The NT interface: square windows with the buttons on the right, a taskbar with the Start button, the running apps, speaker, network and clock, and icons on the desktop](clokeos-darwin/screenshots/nt-desktop.png)
@@ -239,6 +239,14 @@ The prefix is `/opt/homebrew` on arm64 (owned by the guest account, group `staff
 - **Absolute paths Homebrew uses.** `/usr/bin/{curl,tar,sed,stat,...}` link to `/bin`, `/usr/bin/python`, `/private/{tmp,var,etc}`, and small shims `shasum` (openssl), `codesign` (no-op, PureDarwin does not check signatures) and `locale`.
 - **Limits.** Only formulae with a Big Sur bottle work (`brew install` of anything else would build from source and stops at "No developer tools"); the sandbox is unavailable; `brew update` is slow in the VM.
 
+### Linux programs (tux)
+
+`tux <program>` (or `tux-run`, which starts a Linux shell without arguments) runs a Linux ELF program of the same architecture. `/TUX` is the root of the Linux process, like a chroot (`/TUX/bin`, `/TUX/lib`, `/TUX/etc`, ...); `/dev`, `/tmp`, `/Users` and `/Volumes` are the Mac's. The image ships Alpine Linux's minirootfs (musl and BusyBox, downloaded by `fetch.sh`) in `/TUX`. There is a Linux entry in the Launchpad and Start menu (a terminal running `tux-run`), and a double click on an ELF file in Fundus opens it in a terminal.
+
+How it works (all in `tux/`): the PureDarwin kernel has no hook for foreign system calls. On arm64 an `svc` with a Linux number is not catchable (the call number lives in x16, which Linux code does not set), and on x86_64 a `syscall` with a Linux number silently does nothing. So `tux` loads the ELF file (and musl's dynamic loader) itself, builds stack and auxiliary vector like a Linux kernel, and rewrites every system call instruction in executable memory to a breakpoint; the signal handler translates the call (`tux/sys.c`: paths, `stat`, `open` flags, `ioctl` for terminals, signals, `fork`/`execve` through `tux` again). The kernel also zeroes `TPIDR_EL0` on every task switch, so the Linux thread pointer lives in a Darwin thread-local slot and the instructions that read or write it are rewritten as well.
+
+State: on arm64 `sh`, `ls`, `cat`, `sed`, `grep`, `find`, pipes, redirects, subshells and background jobs of BusyBox work in the VM. Not there yet: threads (`clone` with `CLONE_THREAD`), sockets, epoll, non-PIE programs (Darwin gives arm64 programs no memory below 4 GiB), and the **x86_64 version**: measured so far is that FS can be set through an LDT entry (works in the VM), but `syscall` sites must be found with a real instruction decoder (a byte scan hits false matches in musl), and that is not written yet.
+
 ### Architectures
 
 | Target | State | Base |
@@ -347,7 +355,7 @@ The kernel is the smaller problem, since XNU is open source (Apple Public Source
 5. ~~**Installer.**~~ Done: installer, recovery, USB sticks and SSD image (see [Recovery and installation](#recovery-and-installation)).
 6. **Real hardware.** Started: USB installers, SATA detection, PS/2 keyboard and touchpad (ClokePS2), I²C touchpads, several CPU cores. Next: Wi-Fi (Realtek RTL8821CE in development), graphics.
 7. **Windows.** The NT interface exists. Next: Wine for `.exe` programs on x86_64, with the Windows tree in `/NT`.
-8. **Linux.** Programs in `/TUX`; needs a translation layer for Linux system calls.
+8. **Linux.** First version done on arm64 (`tux`, see [Linux programs](#linux-programs-tux)); still to do: x86_64, threads, sockets, graphical Linux programs.
 9. **Other CPU.** A translation layer between arm64 and x86_64 in both directions, like Rosetta 2, for all binaries; feasibility study first.
 
 Custom images (for example for the Raspberry Pi or with a custom kernel) need PureDarwin's Nix build on Linux (about 60 GB) and Apple's `MacOSX11.3.sdk`, which you have to get yourself because it may not be redistributed.

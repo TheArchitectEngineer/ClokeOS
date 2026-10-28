@@ -135,6 +135,9 @@ printf '%s\n' "$CLOKE_LANGUAGE" > "$tmp/stage/etc/clokeos-language"
 grep -q PATH "$tmp/stage/etc/profile" || { echo "/etc/profile im Basisimage nicht gefunden" >&2; exit 1; }
 printf '\n# ClokeOS\n[ -n "$BASH_VERSION" ] && [ -r /etc/bashrc ] && . /etc/bashrc\n' >> "$tmp/stage/etc/profile"
 
+# tux: Linux-Programme und der Linux-Baum /TUX (Desktop)
+[ "$CLOKE_FLAVOR" = desktop ] && : > "$tmp/tux.cmds" && "$HERE/tux/image.sh" "$tmp/stage" "$tmp/tux.cmds"
+
 # --- Desktop: Homebrew (siehe README, "Homebrew") ------------------------------------------
 # libcompat: fehlende libSystem-Symbole und libffi.dylib; Absolute /usr/bin-Pfade, die Homebrew
 # erwartet (PureDarwin legt die Werkzeuge nach /bin); Präfix für den Benutzer anlegen (kein sudo)
@@ -198,6 +201,7 @@ EOF
 # Ohne Passwort (leeres Feld, die Eingabetaste meldet an), Gruppe staff, Ordner wie in clokeos.html.
 # PureDarwin hat kein su und kein sudo; für Verwaltung gibt es auf der Anmeldung root.
 : > "$tmp/extra.cmds"
+[ ! -f "$tmp/tux.cmds" ] || cat "$tmp/tux.cmds" >> "$tmp/extra.cmds"
 [ -z "$hb_cmds" ] || printf '%s\n' "$hb_cmds" >> "$tmp/extra.cmds"
 if [ "$CLOKE_FLAVOR" = desktop ]; then
   # /Applications wie bei macOS für Administratoren beschreibbar; hier die Gruppe staff, damit
