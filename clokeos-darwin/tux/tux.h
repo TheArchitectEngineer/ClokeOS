@@ -40,6 +40,10 @@ typedef struct tux_regs {
 } tux_regs;
 
 long tux_syscall(tux_regs *r);
+// mmap für das Linux-Programm: auf x86_64 ohne Adresswunsch unterhalb von 4 GiB (der FS-Zeiger geht nur über einen
+// LDT-Eintrag mit 32-Bit-Basis)
+void *tux_mmap(void *want, size_t len, int prot, int flags);
+long tux_arch_prctl(tux_regs *r, long code, uint64_t addr);
 void tux_sys_init(void);
 
 // Thread-Zeiger des Linux-Programms (TLS), pro Thread

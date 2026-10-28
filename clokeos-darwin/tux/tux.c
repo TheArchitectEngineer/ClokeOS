@@ -18,6 +18,7 @@
 #include <sys/stat.h>
 #include <sys/sysctl.h>
 #include <unistd.h>
+#include "x86dec.h"
 
 size_t tux_page;
 char tux_root[PATH_MAX] = "/TUX";
@@ -86,11 +87,80 @@ static void die(const char *fmt, ...)
 // (pthread_setspecific), den man mit zwei Befehlen über TPIDRRO_EL0 lesen kann.
 static pthread_key_t tp_key;
 
+extern void tux_ldt_init(void);
 void tux_set_tp(uint64_t tp) { pthread_setspecific(tp_key, (void *)tp); }
 uint64_t tux_get_tp(void) { return (uint64_t)pthread_getspecific(tp_key); }
 
+void *tux_mmap(void *want, size_t len, int prot, int flags)
+{
+#ifdef TUX_X86_64
+	static uintptr_t cur = 0x10000000UL;
+	if (!want && !(flags & MAP_FIXED)) {
+		for (int i = 0; i < 64 && cur + len < 0xf0000000UL; i++) {
+			void *p = mmap((void *)cur, len, prot, flags, -1, 0);
+			if (p == MAP_FAILED) return p;
+			if ((uintptr_t)p >= 0x10000000UL && (uintptr_t)p + len <= 0xf0000000UL) {
+				cur = ((uintptr_t)p + len + 0xffff) & ~0xffffUL;
+				return p;
+			}
+			munmap(p, len);
+			cur += 0x1000000UL;
+		}
+	}
+#endif
+	return mmap(want, len, prot, flags, -1, 0);
+}
+
 // ---------------------------------------------------------------------------------------------
 // Systemaufruf-Befehle umschreiben
+#ifdef TUX_X86_64
+// `syscall` mit Linux-Nummer tut in PureDarwins Kern nichts; darum wird jeder Systemaufruf-Befehl (0f 05) zu ud2 (0f 0b).
+// Befehlsgrenzen kommen aus einem Längendecoder, weil 0f 05 auch in Konstanten vorkommt.
+void tux_patch_range(void *addr, size_t len)
+{
+	uint8_t *p = addr;
+	size_t i = 0;
+	while (i < len) {
+		size_t l = x86_len(p + i, len - i);
+		if (!l) l = 1;
+		if (l == 2 && p[i] == 0x0f && p[i + 1] == 0x05) p[i + 1] = 0x0b;
+		i += l;
+	}
+}
+
+static void on_trap(int sig, siginfo_t *si, void *ucv)
+{
+	ucontext_t *uc = ucv;
+	_STRUCT_X86_THREAD_STATE64 *ss = &uc->uc_mcontext->__ss;
+	uint8_t *ip = (uint8_t *)ss->__rip;
+	if (sig != SIGILL || ip[0] != 0x0f || ip[1] != 0x0b) {
+		fprintf(stderr, "tux: Signal %d bei rip=%llx\n", sig, ss->__rip);
+		_exit(128 + sig);
+	}
+	tux_regs r;
+	r.nr = ss->__rax;
+	r.a[0] = ss->__rdi; r.a[1] = ss->__rsi; r.a[2] = ss->__rdx; r.a[3] = ss->__r10; r.a[4] = ss->__r8; r.a[5] = ss->__r9;
+	uint64_t ret = 0;
+	r.ret = &ret;
+	r.sp = (uint64_t *)&ss->__rsp;
+	r.pc = (uint64_t *)&ss->__rip;
+	r.uc = uc;
+	if (tux_trace) fprintf(stderr, "tux: rsp=%llx [rsp]=%llx rip=%llx\n", ss->__rsp, *(unsigned long long *)ss->__rsp, ss->__rip);
+	long v = tux_syscall(&r);
+	ss->__rax = (uint64_t)v;
+	ss->__rcx = ss->__rip + 2;   // wie der echte Befehl
+	ss->__r11 = ss->__rflags;
+	ss->__rip += 2;
+}
+
+#define ENTER_ASM \
+	".text\n.globl _tux_enter\n_tux_enter:\n" \
+	"	mov %rsi, %rsp\n	mov %rdi, %rax\n" \
+	"	xor %ebx, %ebx\n	xor %ecx, %ecx\n	xor %edx, %edx\n	xor %esi, %esi\n	xor %edi, %edi\n	xor %ebp, %ebp\n" \
+	"	xor %r8d, %r8d\n	xor %r9d, %r9d\n	xor %r10d, %r10d\n	xor %r11d, %r11d\n	xor %r12d, %r12d\n" \
+	"	xor %r13d, %r13d\n	xor %r14d, %r14d\n	xor %r15d, %r15d\n	jmp *%rax\n"
+#endif
+
 #ifdef TUX_ARM64
 #define BRK(imm) (0xd4200000u | ((uint32_t)(imm) << 5))
 #define IMM_SVC 0x7100
@@ -213,7 +283,7 @@ static int map_elf(const char *hostpath, elfinfo *ei)
 	hi = align_up(hi, tux_page);
 	uint8_t *base;
 	if (eh.type == 3) {
-		uint8_t *m = mmap(NULL, hi - lo + maxalign, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0);
+		uint8_t *m = tux_mmap(NULL, hi - lo + maxalign, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE);
 		if (m == MAP_FAILED) die("Speicher für %s fehlt: %s", hostpath, strerror(errno));
 		base = (uint8_t *)align_up((uintptr_t)m, maxalign) - lo;
 		ei->base = (uint64_t)base;
@@ -221,8 +291,8 @@ static int map_elf(const char *hostpath, elfinfo *ei)
 		void *m = mmap((void *)lo, hi - lo, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE | MAP_FIXED, -1, 0);
 		if (m == MAP_FAILED) {
 			fprintf(stderr,
-			    "tux: %s will bei Adresse 0x%llx laden (nicht-PIE); Darwin lässt Programmen auf arm64 erst ab 4 GiB Platz.\n",
-			    hostpath, (unsigned long long)lo);
+			    "tux: %s will bei Adresse 0x%llx laden (nicht-PIE): %s. Auf arm64 lässt Darwin Programmen erst ab 4 GiB Platz.\n",
+			    hostpath, (unsigned long long)lo, strerror(errno));
 			_exit(127);
 		}
 		base = 0;
@@ -265,7 +335,7 @@ static int map_elf(const char *hostpath, elfinfo *ei)
 static uint64_t build_stack(elfinfo *prog, elfinfo *interp, const char *execfn, char **argv, char **envp)
 {
 	size_t stack_size = 8UL << 20;
-	uint8_t *lo = mmap(NULL, stack_size, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0);
+	uint8_t *lo = tux_mmap(NULL, stack_size, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE);
 	if (lo == MAP_FAILED) die("Stapel: %s", strerror(errno));
 	uint8_t *top = lo + stack_size;
 	uint8_t *sp = top - 64;
@@ -413,6 +483,7 @@ int main(int argc, char **argv)
 	}
 	if (pthread_key_create(&tp_key, NULL) != 0) die("pthread_key_create");
 	tux_sys_init();
+	tux_ldt_init();
 	install_trap();
 	tux_signals_init();
 	{

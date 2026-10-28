@@ -32,7 +32,7 @@ target=x86_64-apple-macos11.0
 [ "$arch" = arm64 ] && target=arm64-apple-macos11.0
 # x86_64: wenig Platz ab Adresse 0 (kleine Seite 0), damit Linux-Programme mit Adressen unter 4 GiB laden können
 extra=()
-[ "$arch" = x86_64 ] && extra=(-Wl,-pagezero_size,0x1000)
+[ "$arch" = x86_64 ] && extra=(-Wl,-pagezero_size,0x1000 -Wl,-no_pie)
 cd "$here/tux"
 clang -target "$target" -isysroot "$(xcrun --show-sdk-path)" -std=gnu11 -O2 -fno-stack-check -Wall -Wno-unused-function \
   -Wno-deprecated-declarations -nostdlib -Wl,-platform_version,macos,11.0,11.5 -Wl,-no_fixup_chains ${extra[@]+"${extra[@]}"} \

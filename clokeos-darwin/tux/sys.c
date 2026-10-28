@@ -459,8 +459,8 @@ static uint8_t *brk_base, *brk_cur, *brk_end;
 
 void tux_sys_init(void)
 {
-	size_t sz = 256UL << 20;
-	brk_base = mmap(NULL, sz, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE | MAP_NORESERVE, -1, 0);
+	size_t sz = 128UL << 20;
+	brk_base = tux_mmap(NULL, sz, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE | MAP_NORESERVE);
 	if (brk_base == MAP_FAILED) brk_base = NULL;
 	brk_cur = brk_base;
 	brk_end = brk_base + sz;
@@ -553,7 +553,7 @@ static long sys_mmap(uint64_t addr, uint64_t len, int prot, int flags, int fd, i
 	void *want = (void *)addr;
 	if (flags & 0x100000) { hf &= ~MAP_FIXED; }   // MAP_FIXED_NOREPLACE
 	if (flags & 0x20) {
-		void *p = mmap(want, len, prot, hf | MAP_ANON, -1, 0);
+		void *p = tux_mmap(want, len, prot, hf | MAP_ANON);
 		if (p == MAP_FAILED) return ERR();
 		if ((flags & 0x100000) && addr && p != want) { munmap(p, len); return -EEXIST; }
 		return (long)p;
@@ -566,7 +566,7 @@ static long sys_mmap(uint64_t addr, uint64_t len, int prot, int flags, int fd, i
 	}
 	// Dateiabbildung: Seiten sind hier größer als bei Linux, der Versatz passt oft nicht; deshalb
 	// anonymen Speicher anlegen, die Datei hineinlesen und (bei Code) die Systemaufruf-Befehle umschreiben
-	void *p = mmap(want, len, PROT_READ | PROT_WRITE, (hf & ~MAP_SHARED) | MAP_PRIVATE | MAP_ANON, -1, 0);
+	void *p = tux_mmap(want, len, PROT_READ | PROT_WRITE, (hf & ~MAP_SHARED) | MAP_PRIVATE | MAP_ANON);
 	if (p == MAP_FAILED) return ERR();
 	if ((flags & 0x100000) && addr && p != want) { munmap(p, len); return -EEXIST; }
 	size_t got = 0;
@@ -639,7 +639,7 @@ long tux_syscall(tux_regs *r)
 	case N_lseek: return E(lseek((int)a0, a1, (int)a2));
 	case N_close: return E(close((int)a0));
 	case N_dup: return E(dup((int)a0));
-#ifdef N_dup2
+#ifdef TUX_X86_64
 	case N_dup2: return E(dup2((int)a0, (int)a1));
 #endif
 	case N_dup3: {
@@ -678,7 +678,7 @@ long tux_syscall(tux_regs *r)
 		memcpy((void *)a0, tux_cwd, n);
 		return n;
 	}
-#ifdef N_open
+#ifdef TUX_X86_64
 	case N_open: { PATH_(AT_FDCWD_L, a0, !(a1 & L_O_NOFOLLOW)); return E(open(host, open_flags(a1), (mode_t)a2)); }
 	case N_creat: { PATH_(AT_FDCWD_L, a0, 1); return E(open(host, O_WRONLY | O_CREAT | O_TRUNC, (mode_t)a1)); }
 	case N_access: { PATH_(AT_FDCWD_L, a0, 1); return E(access(host, (int)a1)); }
@@ -728,7 +728,7 @@ long tux_syscall(tux_regs *r)
 	case N_getpgrp: return getpgrp();
 	case N_time: { time_t t = time(NULL); if (a0) *(int64_t *)a0 = t; return t; }
 	case N_utimes: return -ENOSYS;
-	case N_arch_prctl: return -EINVAL;
+	case N_arch_prctl: return tux_arch_prctl(r, a0, a1);
 #endif
 	case N_openat: { PATH_(a0, a1, !(a2 & L_O_NOFOLLOW)); return E(open(host, open_flags(a2), (mode_t)a3)); }
 	case N_faccessat: case N_faccessat2: { PATH_(a0, a1, !(a3 & 0x100)); return E(access(host, (int)a2)); }
@@ -891,7 +891,7 @@ long tux_syscall(tux_regs *r)
 		size_t os = (a1 + tux_page - 1) & ~(tux_page - 1), ns = (a2 + tux_page - 1) & ~(tux_page - 1);
 		if (ns <= os) { if (ns < os) munmap((char *)a0 + ns, os - ns); return a0; }
 		if (!(a3 & 1)) return -ENOMEM;
-		void *p = mmap(NULL, ns, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0);
+		void *p = tux_mmap(NULL, ns, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE);
 		if (p == MAP_FAILED) return ERR();
 		memcpy(p, (void *)a0, os);
 		munmap((void *)a0, os);
@@ -1173,3 +1173,51 @@ long tux_syscall(tux_regs *r)
 		return -ENOSYS;
 	}
 }
+
+#ifdef TUX_X86_64
+#include <architecture/i386/table.h>
+#include <i386/user_ldt.h>
+// FS-Zeiger (TLS): Darwin kann ihn nicht direkt setzen (kein wrfsbase), aber ein LDT-Eintrag mit der Adresse als Basis
+// (nur 32 Bit, deshalb liegt Linux-Speicher unter 4 GiB) und das Segmentregister FS tun dasselbe.
+static int ldt_idx = -1;
+static uint64_t ldt_cur;
+static void ldt_set(uint64_t addr, int *out)
+{
+	union ldt_entry e;
+	uint8_t *d = (uint8_t *)&e;
+	memset(&e, 0, sizeof e);
+	d[0] = 0xff; d[1] = 0xff; d[2] = addr & 0xff; d[3] = (addr >> 8) & 0xff; d[4] = (addr >> 16) & 0xff;
+	d[5] = 0xf2; d[6] = 0xcf; d[7] = (addr >> 24) & 0xff;
+	*out = i386_set_ldt(ldt_idx < 0 ? LDT_AUTO_ALLOC : ldt_idx, &e, 1);
+}
+// Der Eintrag wird vor dem Start des Programms angelegt: im Signal-Handler neu angelegt, scheitert die Rückkehr
+// (Allgemeine Schutzverletzung beim Zurückspringen).
+void tux_ldt_init(void)
+{
+	int n;
+	ldt_set(0x10000000UL, &n);
+	if (n >= 0) ldt_idx = n;
+}
+long tux_arch_prctl(tux_regs *r, long code, uint64_t addr)
+{
+	int idx = ldt_idx;
+	uint64_t cur = ldt_cur;
+	if (code == 0x1003) { *(uint64_t *)addr = ldt_cur; return 0; }
+	if (code != 0x1002) return -EINVAL;
+	if (addr >> 32) { if (tux_trace) fprintf(stderr, "tux: TLS-Adresse %llx über 4 GiB\n", (unsigned long long)addr); return -ENOMEM; }
+	int n;
+	ldt_set(addr, &n);
+	if (n < 0) return ERR();
+	idx = n;
+	ldt_cur = addr;
+	(void)cur;
+	unsigned short sel = (idx << 3) | 7;
+	ucontext_t *uc = r->uc;
+	uc->uc_mcontext->__ss.__fs = sel;
+	__asm__ volatile("mov %0, %%fs" :: "r"(sel));
+	return 0;
+}
+#else
+void tux_ldt_init(void) {}
+long tux_arch_prctl(tux_regs *r, long code, uint64_t addr) { return -EINVAL; }
+#endif

@@ -13,8 +13,13 @@ ClokeOS starts as a macOS-like system and grows towards running software from ot
 | World | Works today | Planned |
 |---|---|---|
 | **Mac** (default interface "ClokeOS") | macOS-like desktop (CloakServer), Mac apps on Darling's frameworks (with many gaps), Fundus, Launchpad, Spotlight, System Settings, recovery and installer | bash and Homebrew, a modern browser |
+<<<<<<< HEAD
 | **Windows** | the **NT interface**: a Windows-like desktop with taskbar, Start menu, tray and desktop icons (System Settings > Appearance > Interface) | `.exe` programs through Wine 11.0 (x86_64 only): own tree `/NT` as drive C:, `wine` on the PATH, double-click in Fundus, "Wine" app; 64-bit and 32-bit console programs and notepad run in the VM | Windows programs on arm64 (needs the translation layer), more tested programs |
 | **Linux** | first version (arm64) | programs in their own tree `/TUX` (Alpine: musl, BusyBox) run through `tux`, a user-space loader that translates Linux system calls; BusyBox `sh`, `ls`, `cat` work on arm64; x86_64, threads and sockets are still missing (see [Linux programs](#linux-programs-tux)) |
+=======
+| **Windows** | the **NT interface**: a Windows-like desktop with taskbar, Start menu, tray and desktop icons (System Settings > Appearance > Interface) | `.exe` programs through Wine (x86_64 only, started), own tree `/NT` (`/NT/Windows`, `/NT/Program Files`, drive C:) |
+| **Linux** | first version (arm64 and x86_64) | programs in their own tree `/TUX` (Alpine: musl, BusyBox) run through `tux`, a user-space loader that translates Linux system calls; BusyBox `sh`, `ls`, `cat` work on both; threads and sockets are still missing (see [Linux programs](#linux-programs-tux)) |
+>>>>>>> b0bd637 (tux: x86_64 (Längendecoder, ud2-Falle, FS über LDT, Speicher unter 4 GiB), README)
 | **Other CPU** | images for x86_64 and arm64 | a translation layer between arm64 and x86_64 in both directions, like Rosetta 2; a feasibility study comes first |
 
 ![The NT interface: square windows with the buttons on the right, a taskbar with the Start button, the running apps, speaker, network and clock, and icons on the desktop](clokeos-darwin/screenshots/nt-desktop.png)
@@ -245,7 +250,7 @@ The prefix is `/opt/homebrew` on arm64 (owned by the guest account, group `staff
 
 How it works (all in `tux/`): the PureDarwin kernel has no hook for foreign system calls. On arm64 an `svc` with a Linux number is not catchable (the call number lives in x16, which Linux code does not set), and on x86_64 a `syscall` with a Linux number silently does nothing. So `tux` loads the ELF file (and musl's dynamic loader) itself, builds stack and auxiliary vector like a Linux kernel, and rewrites every system call instruction in executable memory to a breakpoint; the signal handler translates the call (`tux/sys.c`: paths, `stat`, `open` flags, `ioctl` for terminals, signals, `fork`/`execve` through `tux` again). The kernel also zeroes `TPIDR_EL0` on every task switch, so the Linux thread pointer lives in a Darwin thread-local slot and the instructions that read or write it are rewritten as well.
 
-State: on arm64 `sh`, `ls`, `cat`, `sed`, `grep`, `find`, pipes, redirects, subshells and background jobs of BusyBox work in the VM. Not there yet: threads (`clone` with `CLONE_THREAD`), sockets, epoll, non-PIE programs (Darwin gives arm64 programs no memory below 4 GiB), and the **x86_64 version**: measured so far is that FS can be set through an LDT entry (works in the VM), but `syscall` sites must be found with a real instruction decoder (a byte scan hits false matches in musl), and that is not written yet.
+State: BusyBox `sh`, `ls`, `cat`, `sed`, `grep`, `find`, pipes, redirects, subshells and background jobs work in the arm64 VM (HVF; about 11 ms to start a program) and in the x86_64 VM. On x86_64 the thread pointer (FS) is set through an LDT entry, which only takes 32-bit bases, so `tux` hands out Linux memory below 4 GiB there; `syscall` instructions are found with a small instruction-length decoder (a plain byte scan hits `0f 05` inside constants: 11 false matches in musl) and the PureDarwin kernel logs every trap to the console, which makes x86_64 slow under emulation. Not there yet: threads (`clone` with `CLONE_THREAD`), sockets, epoll, and on arm64 non-PIE programs (Darwin gives arm64 programs no memory below 4 GiB). Programs of the other architecture need a translator, which is a separate task.
 
 ### Windows programs (Wine)
 
@@ -366,8 +371,13 @@ The kernel is the smaller problem, since XNU is open source (Apple Public Source
 4. **Port the shell.** Menu bar, Dock, Launchpad and System Settings are native in CloakServer, apps are `.app` bundles, Mac apps run through Darling's AppKit. Open: Fundus, Search and the other prototype apps as native programs.
 5. ~~**Installer.**~~ Done: installer, recovery, USB sticks and SSD image (see [Recovery and installation](#recovery-and-installation)).
 6. **Real hardware.** Started: USB installers, SATA detection, PS/2 keyboard and touchpad (ClokePS2), I²C touchpads, several CPU cores. Next: Wi-Fi (Realtek RTL8821CE in development), graphics.
+<<<<<<< HEAD
 7. **Windows.** The NT interface and Wine for `.exe` programs on x86_64 exist (Windows tree in `/NT`). Next: a baked prefix so the first start is fast, more programs tested, arm64 through the translation layer.
 8. **Linux.** First version done on arm64 (`tux`, see [Linux programs](#linux-programs-tux)); still to do: x86_64, threads, sockets, graphical Linux programs.
+=======
+7. **Windows.** The NT interface exists. Next: Wine for `.exe` programs on x86_64, with the Windows tree in `/NT`.
+8. **Linux.** First version done on arm64 and x86_64 (`tux`, see [Linux programs](#linux-programs-tux)); still to do: threads, sockets, graphical Linux programs, programs of the other architecture.
+>>>>>>> b0bd637 (tux: x86_64 (Längendecoder, ud2-Falle, FS über LDT, Speicher unter 4 GiB), README)
 9. **Other CPU.** A translation layer between arm64 and x86_64 in both directions, like Rosetta 2, for all binaries; feasibility study first.
 
 Custom images (for example for the Raspberry Pi or with a custom kernel) need PureDarwin's Nix build on Linux (about 60 GB) and Apple's `MacOSX11.3.sdk`, which you have to get yourself because it may not be redistributed.
