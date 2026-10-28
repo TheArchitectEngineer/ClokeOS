@@ -1,10 +1,25 @@
 # ClokeOS
 
-A macOS-like operating system built on the Darwin kernel (XNU), with a cape as its logo.
+ClokeOS is an operating system built on the Darwin kernel (XNU), with a cape as its logo. Its default look is macOS-like, but the goal is one system with three worlds: **Mac** (apps from macOS on Darling's frameworks), **Windows** (a Windows-like interface today, `.exe` programs through Wine, in a tree of their own at `/NT`) and **Linux** (programs in a tree of their own at `/TUX`). What works today and what is still planned is listed under [One system, three worlds](#one-system-three-worlds).
 
 **Download:** the [latest release](https://github.com/cloke-tech/ClokeOS/releases/latest) has USB installers for PCs (offline and online), a ready-made SSD image and installer images for virtual machines (x86_64 and arm64). See [Installing ClokeOS](#installing-clokeos).
 
-![ClokeOS desktop in QEMU: Fundus (Thunar) and Terminal with clokefetch, the Dock below; windows with rounded corners and soft shadows](clokeos-darwin/screenshots/desktop.png)
+![ClokeOS desktop: Fundus (Thunar) and Terminal over the papercut wallpaper, the Dock below, a glass menu bar on top](clokeos-darwin/screenshots/desktop.png)
+
+## One system, three worlds
+
+ClokeOS starts as a macOS-like system and grows towards running software from other systems as well, each in its own tree so that the worlds do not mix:
+
+| World | Works today | Planned |
+|---|---|---|
+| **Mac** (default interface "ClokeOS") | macOS-like desktop (CloakServer), Mac apps on Darling's frameworks (with many gaps), Fundus, Launchpad, Spotlight, System Settings, recovery and installer | bash and Homebrew, a modern browser |
+| **Windows** | the **NT interface**: a Windows-like desktop with taskbar, Start menu, tray and desktop icons (System Settings > Appearance > Interface) | `.exe` programs through Wine (x86_64 only, started), own tree `/NT` (`/NT/Windows`, `/NT/Program Files`, drive C:) |
+| **Linux** | not started | programs in their own tree `/TUX`; needs a translation layer for Linux system calls |
+| **Other CPU** | images for x86_64 and arm64 | a translation layer between arm64 and x86_64 in both directions, like Rosetta 2; a feasibility study comes first |
+
+![The NT interface: square windows with the buttons on the right, a taskbar with the Start button, the running apps, speaker, network and clock, and icons on the desktop](clokeos-darwin/screenshots/nt-desktop.png)
+
+![The NT Start menu: all apps, System Settings, Sleep, Restart, Shut Down and Log Out](clokeos-darwin/screenshots/nt-start.png)
 
 ## What is there
 
@@ -108,7 +123,7 @@ During PCI configuration PureDarwin's `IOPCIFamily` moves the console and writes
 
 ### Desktop: CloakServer
 
-![The same desktop in dark mode: evening sky with stars, dark window frames, the Dock as lighter violet glass](clokeos-darwin/screenshots/desktop-dark.png)
+![The same desktop in dark mode: dark window frames on the plum wallpaper, the Dock as lighter violet glass](clokeos-darwin/screenshots/desktop-dark.png)
 
 The desktop variant builds on PureDarwin's preview image `puredarwin.img` (6.1 GiB, from puredarwin.org; Xorg with PureDarwin's own driver `puredarwingop`, Wayland/sway, i3, Xfce, Wine, compilers). Nothing graphical starts there by itself; ClokeOS starts Xorg with CloakServer at boot through the launchd service `com.clokeos.cloakserver` (`/usr/libexec/cloakserver-start` and `cloakserver-session`, with a D-Bus for the session):
 
@@ -144,6 +159,10 @@ CloakServer itself runs as root, like loginwindow on macOS, and starts apps as t
 
 ![Launchpad: a search field and the apps in a grid over the blurred wallpaper](clokeos-darwin/screenshots/launchpad.png)
 
+![Spotlight: the search for "calc" lists the Calculator and a web search with Search](clokeos-darwin/screenshots/spotlight.png)
+
+![Calendar: a month grid with the day list and a field for new events](clokeos-darwin/screenshots/calendar.png)
+
 Apps in ClokeOS are bundles as on macOS: a folder `Name.app` with `Contents/Info.plist` (`CFBundleName`, `CFBundleIdentifier`, `CFBundleExecutable`, `CFBundleIconFile` …), the executable in `Contents/MacOS/` and the icon in `Contents/Resources/`. CloakServer finds them in `/System/Applications` (utilities in `Utilities/`), `/Applications` and `~/Applications`; Fundus (in a theater, the room where costumes and capes hang) lives in `/System/Library/CoreServices` like the Finder. Installing works as on macOS: drag the bundle into `/Applications` or `~/Applications`, remove it with the Trash. Info.plist may be XML or binary, icons SVG, PNG or `.icns`.
 
 Launchpad ("Applications" in the Dock, the magnifier in the menu bar) shows all apps in a grid; typing searches, Return starts the first, Esc closes. The Dock is stored per user in `~/Library/Preferences/com.clokeos.dock.plist` with the keys of `com.apple.dock`, the appearance in `.GlobalPreferences.plist` (`AppleInterfaceStyle`).
@@ -174,7 +193,7 @@ Before an app starts, CloakServer reads its executable: architecture (also in un
 
 **System Settings** is a window in CloakServer: Appearance, Desktop & Dock, Language & Region, Sharing and Applications. Everything else, such as keyboard and mouse settings, stays in Xfce Settings.
 
-![System Settings: the panes Appearance, Desktop & Dock, Applications, Language & Region and Sharing; Appearance with Light, Dark and Auto](clokeos-darwin/screenshots/settings.png)
+![System Settings: the panes General, Appearance, Wallpaper, Desktop & Dock, Keyboard, Language & Region, Applications and Sharing; Appearance with Light, Dark and Auto](clokeos-darwin/screenshots/settings.png)
 
 CloakServer is built on the Mac, without Linux and without the VM: `cloakserver/build.sh` pulls headers and libraries straight out of the desktop image with `debugfs` and compiles with Apple's clang for `x86_64-apple-macos11.0`, like PureDarwin's own programs (Mach-O for macOS 11, classic dyld info). `cloakserver/resources.py` runs the icon code from `clokeos.html` in macOS' own JavaScript engine (`osascript -l JavaScript`) and writes logo and icons as SVG.
 
@@ -326,7 +345,10 @@ The kernel is the smaller problem, since XNU is open source (Apple Public Source
 3. **Window server.** CloakServer runs as an X11 window manager and compositor with menu bar, Dock, login, setup assistant and global menu bar. Next: user management, sudo, and in the long run a Wayland compositor instead of Xorg.
 4. **Port the shell.** Menu bar, Dock, Launchpad and System Settings are native in CloakServer, apps are `.app` bundles, Mac apps run through Darling's AppKit. Open: Fundus, Search and the other prototype apps as native programs.
 5. ~~**Installer.**~~ Done: installer, recovery, USB sticks and SSD image (see [Recovery and installation](#recovery-and-installation)).
-6. **Real hardware.** Started: USB installers, SATA detection, PS/2 keyboard and touchpad (ClokePS2). Next: I²C touchpads, Wi-Fi.
+6. **Real hardware.** Started: USB installers, SATA detection, PS/2 keyboard and touchpad (ClokePS2), I²C touchpads, several CPU cores. Next: Wi-Fi (Realtek RTL8821CE in development), graphics.
+7. **Windows.** The NT interface exists. Next: Wine for `.exe` programs on x86_64, with the Windows tree in `/NT`.
+8. **Linux.** Programs in `/TUX`; needs a translation layer for Linux system calls.
+9. **Other CPU.** A translation layer between arm64 and x86_64 in both directions, like Rosetta 2, for all binaries; feasibility study first.
 
 Custom images (for example for the Raspberry Pi or with a custom kernel) need PureDarwin's Nix build on Linux (about 60 GB) and Apple's `MacOSX11.3.sdk`, which you have to get yourself because it may not be redistributed.
 
