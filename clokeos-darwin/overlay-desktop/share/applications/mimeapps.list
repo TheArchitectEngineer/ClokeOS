@@ -1,3 +1,7 @@
 [Default Applications]
 application/x-ms-dos-executable=wine.desktop;
 application/x-msi=wine-msi.desktop;
+application/x-apple-diskimage=clokeos-dmg.desktop;
+
+[Added Associations]
+application/x-apple-diskimage=clokeos-dmg.desktop;

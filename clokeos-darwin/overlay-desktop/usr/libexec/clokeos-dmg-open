@@ -1,0 +1,11 @@
+#!/bin/sh
+# Doppelklick auf eine .dmg in Fundus: Image öffnen (clokeos-dmg mount) und das Volume zeigen.
+f="$1"
+[ -n "$f" ] || exit 1
+out=$(/usr/libexec/clokeos-dmg mount "$f" 2>>/var/tmp/clokeos-dmg.log)
+vol=$(printf '%s\n' "$out" | sed -n 's/^MOUNTED //p' | tail -1)
+if [ -n "$vol" ]; then
+  exec thunar "$vol"
+fi
+msg=$(printf '%s\n' "$out" | sed -n 's/^ERROR //p' | tail -1)
+exec xmessage -center -title "Disk Image" "${msg:-The disk image could not be opened.}"

@@ -279,6 +279,7 @@ static void draw_spot(void);
 static bool sp_open;
 static Window spotwin;
 static void show_settings(long section);
+static void show_disk_utility(long unused);
 static void show_app_problem(int i);
 static void update_workarea(void);
 static void save_prefs(void);
@@ -1063,6 +1064,10 @@ static void launch(int i) {
   }
   if (!strcmp(a->b.internal, "settings")) {
     show_settings(-1);
+    return;
+  }
+  if (!strcmp(a->b.internal, "diskutil")) {
+    show_disk_utility(0);
     return;
   }
   if (a->b.kind != APP_OK) {
@@ -2021,6 +2026,7 @@ static void confirm_power(long reboot) {
 }
 
 #include "recovery.c"
+#include "diskutil.c"
 
 /* ---------------------------------------------------------------------------------------- */
 /* Konten und Sitzung. Wie im Prototyp gibt es den lokalen Benutzer gast (/Users/gast), dazu   */
@@ -5321,7 +5327,7 @@ static void on_key(XKeyEvent *e) {
     return;
   }
   if (focused && focused->draw == du_paint && !(e->state & Mod1Mask)) { /* Festplattendienstprogramm */
-    du_key(focused, ks);
+    du_key(focused, e);
     return;
   }
   if (ks == XK_Tab && (e->state & Mod1Mask)) { /* Alt+Tab: nächstes Fenster */

@@ -57,6 +57,8 @@ APPS = [
      'exec /System/Library/CoreServices/ClokeApps/clokeapps calendar', '', ''),
     ('System/Applications/Utilities', 'Activity Monitor', 'Aktivitätsanzeige', 'com.clokeos.aktivitaet', 'aktivitaet',
      'exec /System/Library/CoreServices/ClokeApps/clokeapps activity', '', ''),
+    ('System/Applications/Utilities', 'Disk Utility', 'Festplattendienstprogramm', 'com.clokeos.festplatte', 'hd',
+     None, '', 'diskutil'),
     ('System/Applications', 'System Settings', 'Systemeinstellungen', 'com.clokeos.systemeinstellungen', 'einstellungen',
      None, '', 'settings'),
     # Windows-Programme (Wine, nur x86_64): Dateimanager von Wine mit C: = /NT; .exe öffnet Fundus direkt

@@ -4,6 +4,11 @@
  *   clokeos-installer disks                      Festplatten mit Größe und Partitionen
  *   clokeos-installer install <diskN> <url>      ClokeOS aus <url>/clokeos-<arch>.txt installieren
  *   clokeos-installer erase <diskN>              Festplatte löschen (leere GPT)
+ *   clokeos-installer layout <diskN>             Partitionen und freie Bereiche (für das Festplattendienstprogramm)
+ *   clokeos-installer add <diskN> <lba> <bytes> <fat32|ext4|none> <name>   Partition anlegen und formatieren
+ *   clokeos-installer delete <diskN> <slot>      Partition entfernen
+ *   clokeos-installer format <diskN> <slot> <fat32|ext4> <name>   Partition löschen (neues Dateisystem)
+ *   clokeos-installer resize <diskN> <slot> <bytes>   Partition ändern (ext4 samt Dateisystem)
  *   clokeos-installer bootnext recovery|system   nächsten Start in Wiederherstellung oder System
  *   clokeos-installer stick                      Offline-USB-Stick mit Abbildern? ("STICK <version>")
  *   clokeos-installer stick-write <name> <datei>  \ClokeOS\<name> auf dem Stick an Ort und Stelle überschreiben
@@ -169,7 +174,7 @@ typedef struct {
   uint32_t bsize;
   bool root, installer, clokeos;
   int nparts;
-  struct { uint64_t first, count; char name[40]; uint8_t type[16], guid[16]; } part[16];
+  struct { uint64_t first, count; char name[40]; uint8_t type[16], guid[16]; int slot; } part[16];
 } Disk;
 
 static const uint8_t GUID_ESP[16] = {0x28, 0x73, 0x2a, 0xc1, 0x1f, 0xf8, 0xd2, 0x11, 0xba, 0x4b, 0x00, 0xa0, 0xc9, 0x3e, 0xc9, 0x3b};
@@ -221,6 +226,7 @@ static void read_gpt(int fd, Disk *d) {
     memcpy(&first, e + 32, 8);
     memcpy(&last, e + 40, 8);
     typeof(d->part[0]) *p = &d->part[d->nparts++];
+    p->slot = (int)i;
     p->first = first;
     p->count = last - first + 1;
     memcpy(p->type, e, 16);
@@ -333,23 +339,14 @@ static void random_guid(uint8_t g[16]) {
   g[8] = (g[8] & 0x3f) | 0x80;
 }
 
-/* Schützende MBR, primäre GPT am Anfang, Sicherung am Ende */
-static void write_gpt(int fd, const Disk *d, NewPart *p, int n) {
+/* Schützende MBR, primäre GPT am Anfang, Sicherung am Ende; tab = die 128 Einträge zu je 128 Byte */
+static void gpt_commit(int fd, const Disk *d, const uint8_t *tab_in, const uint8_t disk_guid[16]) {
   uint32_t bs = d->bsize;
   uint64_t last = d->bytes / bs - 1;
   uint32_t tab_blocks = (128 * 128 + bs - 1) / bs;
   uint8_t *tab = calloc(1, (size_t)tab_blocks * bs), *hdr = calloc(1, bs), *mbr = calloc(1, bs);
   if (!tab || !hdr || !mbr) fail("Out of memory");
-  for (int i = 0; i < n; i++) {
-    uint8_t *e = tab + 128 * i;
-    memcpy(e, p[i].type, 16);
-    random_guid(p[i].guid);
-    memcpy(e + 16, p[i].guid, 16);
-    uint64_t f = p[i].first, l = p[i].first + p[i].count - 1;
-    memcpy(e + 32, &f, 8);
-    memcpy(e + 40, &l, 8);
-    put16name(e, p[i].name);
-  }
+  memcpy(tab, tab_in, 128 * 128);
   uint32_t tab_crc = crc32(tab, 128 * 128);
 
   mbr[446 + 4] = 0xee; /* eine Partition vom Typ GPT-Schutz über die ganze Platte */
@@ -374,8 +371,6 @@ static void write_gpt(int fd, const Disk *d, NewPart *p, int n) {
     memcpy(hdr + 32, &alt, 8);
     memcpy(hdr + 40, &first_use, 8);
     memcpy(hdr + 48, &last_use, 8);
-    static uint8_t disk_guid[16];
-    if (!backup) random_guid(disk_guid);
     memcpy(hdr + 56, disk_guid, 16);
     memcpy(hdr + 72, &tab_lba, 8);
     memcpy(hdr + 80, &nent, 4);
@@ -393,10 +388,40 @@ static void write_gpt(int fd, const Disk *d, NewPart *p, int n) {
   free(mbr);
 }
 
+/* Neue GPT aus einer Liste von Partitionen (Kennungen werden gewürfelt) */
+static void write_gpt(int fd, const Disk *d, NewPart *p, int n) {
+  uint8_t tab[128 * 128] = {0}, disk_guid[16];
+  for (int i = 0; i < n; i++) {
+    uint8_t *e = tab + 128 * i;
+    memcpy(e, p[i].type, 16);
+    random_guid(p[i].guid);
+    memcpy(e + 16, p[i].guid, 16);
+    uint64_t f = p[i].first, l = p[i].first + p[i].count - 1;
+    memcpy(e + 32, &f, 8);
+    memcpy(e + 40, &l, 8);
+    put16name(e, p[i].name);
+  }
+  random_guid(disk_guid);
+  gpt_commit(fd, d, tab, disk_guid);
+}
+
+/* Während eines Eingriffs bindet clokeos-automount nichts ein (sonst hängt es die Partition gleich wieder
+ * ein, und die ganze Platte lässt sich nicht mehr schreiben); die Sperre verschwindet beim Beenden */
+#define DU_LOCK "/var/run/clokeos-diskutil.lock"
+
+static void unlock_disks(void) { unlink(DU_LOCK); }
+
+static void lock_disks(void) {
+  int fd = open(DU_LOCK, O_CREAT | O_WRONLY, 0644);
+  if (fd >= 0) close(fd);
+  atexit(unlock_disks);
+}
+
 static void cmd_erase(const char *disk) {
   Disk d;
   if (!probe_disk(disk, &d)) fail("No disk %s", disk);
   if (d.root) fail("The system is running from this disk, so it can’t be erased.");
+  lock_disks();
   unmount_disk(disk, 0);
   int fd = open_raw(disk, O_RDWR);
   if (fd < 0) fail("Could not open %s: %s", disk, strerror(errno));
@@ -1360,6 +1385,446 @@ static void cmd_bootnext(const char *which) {
   out("DONE %s", which);
 }
 
+/* ---- Partitionieren (Festplattendienstprogramm) -------------------------------------------- */
+
+static const uint8_t GUID_BASIC[16] = {0xa2, 0xa0, 0xd0, 0xeb, 0xe5, 0xb9, 0x33, 0x44, 0x87, 0xc0, 0x68, 0xb6, 0xb7, 0x26, 0x99, 0xc7};
+#define MIB (1ull << 20)
+#define DU_LOG "/var/tmp/diskutil.log"
+
+typedef struct {
+  Disk d;
+  bool gpt;
+  uint8_t tab[128 * 128];
+  uint8_t disk_guid[16];
+  uint64_t first_use, last_use; /* nutzbarer Bereich in Blöcken */
+} Layout;
+
+static void load_layout(const char *disk, Layout *l) {
+  memset(l, 0, sizeof *l);
+  if (!probe_disk(disk, &l->d)) fail("No disk %s", disk);
+  int fd = open_raw(disk, O_RDONLY);
+  if (fd < 0) fail("Could not open %s: %s", disk, strerror(errno));
+  uint32_t bs = l->d.bsize;
+  uint8_t *hdr = malloc(bs);
+  if (!hdr) fail("Out of memory");
+  if (pread(fd, hdr, bs, bs) == (ssize_t)bs && !memcmp(hdr, "EFI PART", 8)) {
+    uint64_t lba;
+    uint32_t count, esize;
+    memcpy(&lba, hdr + 72, 8);
+    memcpy(&count, hdr + 80, 4);
+    memcpy(&esize, hdr + 84, 4);
+    memcpy(&l->first_use, hdr + 40, 8);
+    memcpy(&l->last_use, hdr + 48, 8);
+    memcpy(l->disk_guid, hdr + 56, 16);
+    if (esize != 128 || count > 128) fail("This partition table is not supported.");
+    size_t len = ((size_t)count * esize + bs - 1) / bs * bs;
+    uint8_t *tab = malloc(len);
+    if (!tab || pread(fd, tab, len, (off_t)(lba * bs)) != (ssize_t)len) fail("Could not read the partition table.");
+    memcpy(l->tab, tab, (size_t)count * esize);
+    free(tab);
+    l->gpt = true;
+  }
+  free(hdr);
+  close(fd);
+}
+
+static const char *detect_fs(const char *disk, uint64_t off) {
+  int fd = open_raw(disk, O_RDONLY);
+  if (fd < 0) return "-";
+  uint8_t b[8192];
+  ssize_t got = pread(fd, b, sizeof b, (off_t)off);
+  close(fd);
+  if (got < 2048) return "-";
+  if (b[1080] == 0x53 && b[1081] == 0xEF) return "ext4";
+  if (b[1024] == 'H' && (b[1025] == '+' || b[1025] == 'X')) return "hfs";
+  if (!memcmp(b + 32, "NXSB", 4)) return "apfs";
+  if (!memcmp(b + 3, "EXFAT   ", 8)) return "exfat";
+  if (!memcmp(b + 3, "NTFS    ", 8)) return "ntfs";
+  if (b[510] == 0x55 && b[511] == 0xAA) {
+    if (!memcmp(b + 82, "FAT32   ", 8)) return "fat32";
+    if (!memcmp(b + 54, "FAT", 3)) return "fat";
+  }
+  return "-";
+}
+
+static bool part_mounted(const char *disk, int slot) {
+  struct statfs *m;
+  int n = getmntinfo(&m, MNT_NOWAIT);
+  char dev[48];
+  snprintf(dev, sizeof dev, "/dev/%ss%d", disk, slot + 1);
+  for (int i = 0; i < n; i++)
+    if (!strcmp(m[i].f_mntfromname, dev)) return true;
+  return false;
+}
+
+static void unmount_slot(const char *disk, int slot) {
+  struct statfs *m;
+  int n = getmntinfo(&m, MNT_NOWAIT);
+  char dev[48];
+  snprintf(dev, sizeof dev, "/dev/%ss%d", disk, slot + 1);
+  for (int i = 0; i < n; i++)
+    if (!strcmp(m[i].f_mntfromname, dev) && unmount(m[i].f_mntonname, MNT_FORCE))
+      fail("%s is still mounted: %s", m[i].f_mntonname, strerror(errno));
+}
+
+typedef struct { uint64_t first, count; } Run;
+
+static bool slot_used(const Layout *l, int s) {
+  static const uint8_t zero[16];
+  return memcmp(l->tab + 128 * s, zero, 16) != 0;
+}
+
+static uint64_t slot_first(const Layout *l, int s) {
+  uint64_t v;
+  memcpy(&v, l->tab + 128 * s + 32, 8);
+  return v;
+}
+
+static uint64_t slot_last(const Layout *l, int s) {
+  uint64_t v;
+  memcpy(&v, l->tab + 128 * s + 40, 8);
+  return v;
+}
+
+/* Freie Bereiche, auf ganze MiB gekürzt */
+static int free_runs(const Layout *l, Run *r, int max) {
+  uint64_t unit = MIB / l->d.bsize;
+  int order[128], n = 0, nr = 0;
+  for (int s = 0; s < 128; s++)
+    if (slot_used(l, s)) order[n++] = s;
+  for (int i = 1; i < n; i++) /* nach Anfang sortieren */
+    for (int k = i; k > 0 && slot_first(l, order[k]) < slot_first(l, order[k - 1]); k--) {
+      int t = order[k];
+      order[k] = order[k - 1];
+      order[k - 1] = t;
+    }
+  uint64_t cur = l->first_use;
+  for (int i = 0; i <= n; i++) {
+    uint64_t end = i < n ? slot_first(l, order[i]) : l->last_use + 1; /* ausschließlich */
+    uint64_t a = (cur + unit - 1) / unit * unit, b = end / unit * unit;
+    if (b > a && b - a >= unit && nr < max) r[nr++] = (Run){a, b - a};
+    if (i < n && slot_last(l, order[i]) + 1 > cur) cur = slot_last(l, order[i]) + 1;
+  }
+  return nr;
+}
+
+static void cmd_layout(const char *disk) {
+  Layout l;
+  load_layout(disk, &l);
+  Disk *d = &l.d;
+  char flags[8] = "";
+  size_t f = 0;
+  if (d->root) flags[f++] = 'r';
+  if (d->installer) flags[f++] = 'i';
+  if (d->clokeos) flags[f++] = 'c';
+  if (l.gpt) flags[f++] = 'g';
+  if (!f) flags[f++] = '-';
+  out("DISKX %s %llu %u %s %s", d->name, (unsigned long long)d->bytes, d->bsize, flags,
+      L(d->installer ? "ClokeOS Installer" : d->clokeos ? "ClokeOS Disk" : "Disk"));
+  if (!l.gpt) return;
+  int rootp = d->root ? root_part(disk) : 0;
+  for (int s = 0; s < 128; s++) {
+    if (!slot_used(&l, s)) continue;
+    uint64_t first = slot_first(&l, s), last = slot_last(&l, s);
+    char name[40] = "";
+    size_t k = 0;
+    for (int c = 0; c < 36 && k + 1 < sizeof name; c++) {
+      uint16_t ch = l.tab[128 * s + 56 + 2 * c] | l.tab[128 * s + 57 + 2 * c] << 8;
+      if (!ch) break;
+      name[k++] = ch < 128 && ch >= 32 ? (char)ch : '?'; /* der Name steht am Zeilenende */
+    }
+    char pf[8] = "";
+    size_t pn = 0;
+    if (part_mounted(disk, s)) pf[pn++] = 'm';
+    if (rootp == s + 1) pf[pn++] = 'r';
+    if (!memcmp(l.tab + 128 * s, GUID_ESP, 16)) pf[pn++] = 'e';
+    if (!pn) pf[pn++] = '-';
+    out("PARTX %d %llu %llu %s %s %s", s + 1, (unsigned long long)first, (unsigned long long)(last - first + 1),
+        detect_fs(disk, first * d->bsize), pf, name[0] ? name : "-");
+  }
+  Run r[130];
+  int nr = free_runs(&l, r, 130);
+  for (int i = 0; i < nr; i++) out("FREEX %llu %llu", (unsigned long long)r[i].first, (unsigned long long)r[i].count);
+}
+
+/* ---- Dateisysteme anlegen ---- */
+
+static void zero_range(int fd, uint64_t off, uint64_t len) {
+  uint8_t *z = calloc(1, CHUNK);
+  if (!z) fail("Out of memory");
+  for (uint64_t o = 0; o < len; o += CHUNK) {
+    size_t n = len - o < CHUNK ? (size_t)(len - o) : CHUNK;
+    if (!pwrite_robust(fd, z, n, (off_t)(off + o))) fail("Could not write to the disk: %s", strerror(errno));
+  }
+  free(z);
+}
+
+static void put32(uint8_t *p, uint32_t v) { memcpy(p, &v, 4); }
+static void put16(uint8_t *p, uint16_t v) { memcpy(p, &v, 2); }
+
+/* FAT32 wie mkfs.fat: 32 reservierte Blöcke, zwei FATs, Wurzel in Cluster 2 mit Datenträgernamen */
+static void mkfs_fat32(const char *disk, uint64_t off, uint64_t bytes, uint32_t bs, const char *label) {
+  uint64_t total = bytes / bs;
+  uint32_t reserved = 32;
+  uint64_t cb = bytes <= 260 * MIB ? 512 : bytes <= 8192 * MIB ? 4096 : bytes <= 16384 * MIB ? 8192
+                : bytes <= 32768 * MIB ? 16384 : 32768;
+  uint32_t spc = cb / bs ? (uint32_t)(cb / bs) : 1;
+  uint64_t fatsz = 0, clusters = 0;
+  for (;;) {
+    fatsz = ((total / spc + 2) * 4 + bs - 1) / bs + 1;
+    clusters = (total - reserved - 2 * fatsz) / spc;
+    if (clusters >= 65525 || spc == 1) break;
+    spc /= 2;
+  }
+  if (clusters < 65525 || clusters > 0x0ffffff5) fail("This partition can’t be formatted as FAT32 (it needs 33 MB to 2 TB).");
+  int fd = open_raw(disk, O_RDWR);
+  if (fd < 0) fail("Could not write to %s: %s", disk, strerror(errno));
+  uint64_t meta = (reserved + 2 * fatsz + spc) * bs;
+  zero_range(fd, off, (meta + MIB - 1) / MIB * MIB); /* alte FATs und Wurzel */
+  uint8_t *b = calloc(1, bs), *fi = calloc(1, bs), *fat = calloc(1, bs), *root = calloc(spc, bs);
+  if (!b || !fi || !fat || !root) fail("Out of memory");
+  b[0] = 0xeb, b[1] = 0x58, b[2] = 0x90;
+  memcpy(b + 3, "CLOKEOS ", 8);
+  put16(b + 11, (uint16_t)bs);
+  b[13] = (uint8_t)spc;
+  put16(b + 14, (uint16_t)reserved);
+  b[16] = 2;
+  b[21] = 0xf8;
+  put16(b + 24, 63);
+  put16(b + 26, 255);
+  put32(b + 28, (uint32_t)(off / bs));
+  put32(b + 32, (uint32_t)total);
+  put32(b + 36, (uint32_t)fatsz);
+  put32(b + 44, 2);
+  put16(b + 48, 1);
+  put16(b + 50, 6);
+  b[64] = 0x80;
+  b[66] = 0x29;
+  put32(b + 67, arc4random());
+  char lab[12];
+  snprintf(lab, sizeof lab, "%-11.11s", label[0] ? label : "NO NAME");
+  for (int i = 0; i < 11; i++) lab[i] = lab[i] >= 'a' && lab[i] <= 'z' ? lab[i] - 32 : lab[i];
+  memcpy(b + 71, lab, 11);
+  memcpy(b + 82, "FAT32   ", 8);
+  b[510] = 0x55, b[511] = 0xaa;
+  put32(fi, 0x41615252);
+  put32(fi + 484, 0x61417272);
+  put32(fi + 488, (uint32_t)(clusters - 1));
+  put32(fi + 492, 3);
+  put32(fi + 508, 0xaa550000);
+  bool ok = pwrite_robust(fd, b, bs, off) && pwrite_robust(fd, fi, bs, off + bs) &&
+            pwrite_robust(fd, b, bs, off + 6ull * bs) && pwrite_robust(fd, fi, bs, off + 7ull * bs);
+  put32(fat, 0x0ffffff8);
+  put32(fat + 4, 0x0fffffff);
+  put32(fat + 8, 0x0fffffff);
+  for (int k = 0; k < 2 && ok; k++) ok = pwrite_robust(fd, fat, bs, off + (reserved + (uint64_t)k * fatsz) * bs);
+  memcpy(root, lab, 11);
+  root[11] = 0x08;
+  ok = ok && pwrite_robust(fd, root, (size_t)spc * bs, off + (reserved + 2 * fatsz) * bs);
+  if (!ok) fail("Could not write to the disk: %s", strerror(errno));
+  fsync(fd);
+  close(fd);
+  free(b), free(fi), free(fat), free(root);
+}
+
+/* Programm der Wiederherstellung ausführen; die letzte Zeile seiner Meldungen kommt in last */
+static int run_cmd(const char *cmd, char *last, size_t n) {
+  char full[1024], line[256];
+  snprintf(full, sizeof full, "(%s) 2>&1", cmd);
+  last[0] = 0;
+  FILE *p = popen(full, "r");
+  if (!p) return -1;
+  FILE *log = fopen(DU_LOG, "a");
+  if (log) fprintf(log, "$ %s\n", cmd);
+  while (fgets(line, sizeof line, p)) {
+    if (log) fputs(line, log);
+    line[strcspn(line, "\r\n")] = 0;
+    if (line[0]) snprintf(last, n, "%s", line);
+  }
+  if (log) fclose(log);
+  return pclose(p);
+}
+
+static void shq(char *dst, size_t n, const char *s) { /* in einfache Anführungszeichen */
+  size_t k = 0;
+  dst[k++] = '\'';
+  for (; *s && k + 5 < n; s++) {
+    if (*s == '\'') { memcpy(dst + k, "'\\''", 4); k += 4; }
+    else dst[k++] = *s;
+  }
+  dst[k++] = '\'';
+  dst[k] = 0;
+}
+
+static void mkfs_ext4(const char *disk, uint64_t off, uint64_t bytes, const char *label) {
+  if (access("/usr/sbin/mke2fs", X_OK)) fail("mke2fs is missing, ext4 can’t be created here.");
+  char q[160], cmd[640], last[256];
+  shq(q, sizeof q, label[0] ? label : "ext4");
+  /* dieselben Merkmale wie PureDarwins ext4 (ohne orphan_file), Rest wie die eingebauten Voreinstellungen */
+  snprintf(cmd, sizeof cmd, "/usr/sbin/mke2fs -q -F -t ext4 -O ^orphan_file,metadata_csum_seed -L %s -E offset=%llu '/dev/r%s' %lluk",
+           q, (unsigned long long)off, disk, (unsigned long long)(bytes / 1024));
+  if (run_cmd(cmd, last, sizeof last)) fail("mke2fs failed: %s", last);
+}
+
+static void format_fs(const char *disk, uint64_t off, uint64_t bytes, uint32_t bs, const char *fs, const char *label) {
+  /* alte Kennungen (auch von ext4 und HFS+ hinter dem ersten Block) vor dem Anlegen tilgen */
+  int fd = open_raw(disk, O_RDWR);
+  if (fd < 0) fail("Could not write to %s: %s", disk, strerror(errno));
+  zero_range(fd, off, bytes < 4 * MIB ? bytes : 4 * MIB);
+  fsync(fd);
+  close(fd);
+  out("STEP %s", L("Creating the file system"));
+  if (!strcmp(fs, "fat32")) mkfs_fat32(disk, off, bytes, bs, label);
+  else if (!strcmp(fs, "ext4")) mkfs_ext4(disk, off, bytes, label);
+}
+
+/* ---- Eingriffe ---- */
+
+static void commit_layout(const char *disk, Layout *l) {
+  int fd = open_raw(disk, O_RDWR);
+  if (fd < 0) fail("Could not open %s: %s", disk, strerror(errno));
+  gpt_commit(fd, &l->d, l->tab, l->disk_guid);
+  fsync(fd);
+  close(fd);
+}
+
+static void check_name(const char *name) {
+  if (strlen(name) > 35) fail("The name is too long (35 characters at most).");
+  for (const char *p = name; *p; p++)
+    if ((unsigned char)*p < 32 || (unsigned char)*p > 126 || *p == '\'' || *p == '\\')
+      fail("The name may only contain letters, digits and simple punctuation.");
+}
+
+static void set_entry(Layout *l, int s, const char *fs, uint64_t first, uint64_t count, const char *name, bool fresh) {
+  uint8_t *e = l->tab + 128 * s;
+  if (fresh) {
+    memset(e, 0, 128);
+    random_guid(e + 16);
+  } else {
+    memset(e + 56, 0, 72);
+  }
+  memcpy(e, !strcmp(fs, "fat32") ? GUID_BASIC : GUID_LINUX, 16);
+  uint64_t last = first + count - 1;
+  memcpy(e + 32, &first, 8);
+  memcpy(e + 40, &last, 8);
+  put16name(e, name);
+}
+
+static Layout *open_for_edit(const char *disk) {
+  static Layout l;
+  load_layout(disk, &l);
+  if (l.d.installer) fail("This is the installer disk itself.");
+  if (l.d.root) fail("The system is running from this disk, so its partitions can’t be changed.");
+  if (!l.gpt) fail("The disk has no partition table. Erase it first.");
+  lock_disks();
+  unmount_disk(disk, 0);
+  return &l;
+}
+
+static int slot_arg(Layout *l, const char *a) {
+  int s = atoi(a) - 1;
+  if (s < 0 || s >= 128 || !slot_used(l, s)) fail("No partition %s", a);
+  return s;
+}
+
+static bool known_fs(const char *fs) { return !strcmp(fs, "fat32") || !strcmp(fs, "ext4") || !strcmp(fs, "none"); }
+
+static void cmd_add(const char *disk, const char *first_s, const char *bytes_s, const char *fs, const char *name) {
+  Layout *l = open_for_edit(disk);
+  if (!known_fs(fs)) fail("Unknown format.");
+  check_name(name);
+  uint32_t bs = l->d.bsize;
+  uint64_t first = strtoull(first_s, NULL, 10), count = strtoull(bytes_s, NULL, 10) / bs;
+  Run r[130];
+  int nr = free_runs(l, r, 130);
+  bool inside = false;
+  for (int i = 0; i < nr; i++)
+    if (first >= r[i].first && first + count <= r[i].first + r[i].count) inside = true;
+  if (!inside || count < MIB / bs) fail("That space is not free.");
+  int s = 0;
+  while (s < 128 && slot_used(l, s)) s++;
+  if (s == 128) fail("The partition table is full.");
+  if (strcmp(fs, "none")) format_fs(disk, first * bs, count * bs, bs, fs, name);
+  else {
+    int fd = open_raw(disk, O_RDWR);
+    if (fd < 0) fail("Could not write to %s: %s", disk, strerror(errno));
+    zero_range(fd, first * bs, count * bs < 4 * MIB ? count * bs : 4 * MIB);
+    close(fd);
+  }
+  set_entry(l, s, fs, first, count, name, true);
+  out("STEP %s", L("Updating the partition table"));
+  commit_layout(disk, l);
+  out("DONE %d", s + 1);
+}
+
+static void cmd_delete(const char *disk, const char *slot_s) {
+  Layout *l = open_for_edit(disk);
+  int s = slot_arg(l, slot_s);
+  unmount_slot(disk, s);
+  memset(l->tab + 128 * s, 0, 128);
+  commit_layout(disk, l);
+  out("DONE %d", s + 1);
+}
+
+static void cmd_format(const char *disk, const char *slot_s, const char *fs, const char *name) {
+  Layout *l = open_for_edit(disk);
+  int s = slot_arg(l, slot_s);
+  if (!strcmp(fs, "none") || !known_fs(fs)) fail("Unknown format.");
+  check_name(name);
+  unmount_slot(disk, s);
+  uint64_t first = slot_first(l, s), count = slot_last(l, s) - first + 1;
+  format_fs(disk, first * l->d.bsize, count * l->d.bsize, l->d.bsize, fs, name);
+  set_entry(l, s, fs, first, count, name, false);
+  commit_layout(disk, l);
+  out("DONE %d", s + 1);
+}
+
+static void cmd_resize(const char *disk, const char *slot_s, const char *bytes_s) {
+  Layout *l = open_for_edit(disk);
+  int s = slot_arg(l, slot_s);
+  uint32_t bs = l->d.bsize;
+  uint64_t unit = MIB / bs, first = slot_first(l, s), old = slot_last(l, s) - first + 1;
+  uint64_t cnt = strtoull(bytes_s, NULL, 10) / bs / unit * unit;
+  if (cnt < unit) fail("The partition would be too small.");
+  if (cnt == old) fail("The size is unchanged.");
+  const char *fs = detect_fs(disk, first * bs);
+  bool ext = !strcmp(fs, "ext4");
+  if (!ext && strcmp(fs, "-"))
+    fail("Only ext4 partitions and partitions without a file system can be resized. Erase this one or delete it and add a new one.");
+  if (cnt > old) { /* nach hinten bis zur nächsten Partition oder zum Ende der Platte */
+    uint64_t limit = l->last_use + 1;
+    for (int t = 0; t < 128; t++)
+      if (t != s && slot_used(l, t) && slot_first(l, t) > first && slot_first(l, t) < limit) limit = slot_first(l, t);
+    if (first + cnt > limit) fail("There is not enough free space behind the partition.");
+  }
+  if (ext && (access("/usr/sbin/resize2fs", X_OK) || access("/usr/sbin/e2fsck", X_OK)))
+    fail("resize2fs is missing, ext4 can’t be resized here.");
+  unmount_slot(disk, s);
+  char cmd[512], last[256];
+  uint64_t sectors = cnt * bs / 512;
+  if (ext) {
+    out("STEP %s", L("Checking the file system"));
+    snprintf(cmd, sizeof cmd, "/usr/sbin/e2fsck -fp '/dev/r%s?offset=%llu'", disk, (unsigned long long)(first * bs));
+    int rc = run_cmd(cmd, last, sizeof last);
+    if (rc < 0 || (rc >> 8) >= 4) fail("The file system has errors: %s", last);
+  }
+  snprintf(cmd, sizeof cmd, "/usr/sbin/resize2fs -f '/dev/r%s?offset=%llu' %llus", disk, (unsigned long long)(first * bs),
+           (unsigned long long)sectors);
+  if (ext && cnt < old) { /* erst das Dateisystem verkleinern, dann die Partition */
+    out("STEP %s", L("Resizing the file system"));
+    if (run_cmd(cmd, last, sizeof last)) fail("The file system can’t be made that small: %s", last);
+  }
+  uint64_t lastlba = first + cnt - 1;
+  memcpy(l->tab + 128 * s + 40, &lastlba, 8);
+  out("STEP %s", L("Updating the partition table"));
+  commit_layout(disk, l);
+  if (ext && cnt > old) {
+    out("STEP %s", L("Resizing the file system"));
+    if (run_cmd(cmd, last, sizeof last)) fail("The file system could not be enlarged: %s", last);
+  }
+  out("DONE %d", s + 1);
+}
+
 int main(int argc, char **argv) {
   lang_init();
   if (argc >= 2 && !strcmp(argv[1], "disks")) cmd_disks();
@@ -1367,6 +1832,11 @@ int main(int argc, char **argv) {
   else if (argc == 3 && !strcmp(argv[1], "esp-cat")) return cmd_esp_cat(argv[2]);
   else if (argc == 4 && !strcmp(argv[1], "update-esp")) cmd_update_esp(argv[2], argv[3]);
   else if (argc == 3 && !strcmp(argv[1], "erase")) cmd_erase(argv[2]);
+  else if (argc == 3 && !strcmp(argv[1], "layout")) cmd_layout(argv[2]);
+  else if (argc == 7 && !strcmp(argv[1], "add")) cmd_add(argv[2], argv[3], argv[4], argv[5], argv[6]);
+  else if (argc == 4 && !strcmp(argv[1], "delete")) cmd_delete(argv[2], argv[3]);
+  else if (argc == 6 && !strcmp(argv[1], "format")) cmd_format(argv[2], argv[3], argv[4], argv[5]);
+  else if (argc == 5 && !strcmp(argv[1], "resize")) cmd_resize(argv[2], argv[3], argv[4]);
   else if (argc == 3 && !strcmp(argv[1], "bootnext") && (!strcmp(argv[2], "recovery") || !strcmp(argv[2], "system")))
     cmd_bootnext(argv[2]);
   else if (argc == 2 && !strcmp(argv[1], "stick")) return cmd_stick();

@@ -1,0 +1,3 @@
+#!/bin/sh
+# glibs gio-launch-desktop fehlt in PureDarwin; Thunar startet Programme darüber (Doppelklick auf eine .dmg usw.)
+exec "$@"

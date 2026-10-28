@@ -20,6 +20,7 @@
 #include <string.h>
 #include <sys/mount.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <sys/types.h>
 #include <unistd.h>
 
@@ -178,7 +179,15 @@ static int busy_system(const char *name) {
   return 0;
 }
 
+/* Das Festplattendienstprogramm (clokeos-installer) schreibt gerade Partitionen: nichts einhängen. Eine liegen
+ * gebliebene Sperre (Absturz) gilt nach zehn Minuten nicht mehr. */
+static int paused(void) {
+  struct stat st;
+  return !stat("/var/run/clokeos-diskutil.lock", &st) && time(NULL) - st.st_mtime < 600;
+}
+
 static void scan(void) {
+  if (paused()) return;
   char names[64][24];
   int nn = 0;
   DIR *d = opendir("/dev");

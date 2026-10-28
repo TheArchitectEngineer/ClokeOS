@@ -49,6 +49,7 @@ if [ "$CLOKE_FLAVOR" = desktop ]; then
   "$HERE/menubar/build.sh" "$tmp/stage"
   "$HERE/apps/build.sh" "$tmp/stage"
   "$HERE/recovery/installer-build.sh" "$tmp/stage"
+  "$HERE/dmg/build.sh" "$tmp/stage"
   python3 -I "$HERE/cloakserver/bundles.py" "$tmp/stage" "$tmp/stage/System/Library/CoreServices/CloakServer/Resources/icons" \
     "$CLOKE_VERSION" "$CLOKE_BUILD"
   [ -n "${CLOKE_NO_MACAPPS:-}" ] || "$HERE/macapps/install.sh" "$tmp/stage"   # CLOKE_NO_MACAPPS=1: ohne Mac-Frameworks (schneller)

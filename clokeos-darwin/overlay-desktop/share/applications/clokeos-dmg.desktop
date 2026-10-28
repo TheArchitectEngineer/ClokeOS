@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Disk Image Mounter
+Name[de]=Image-Verbinder
+Comment=Open macOS disk images (.dmg)
+Exec=/usr/libexec/clokeos-dmg-open %f
+Icon=drive-harddisk
+Terminal=false
+NoDisplay=true
+MimeType=application/x-apple-diskimage;
