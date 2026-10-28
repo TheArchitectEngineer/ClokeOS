@@ -33,3 +33,9 @@ clang -target "$target" -isysroot "$sysroot" -DPLATFORM_MacOSX=1 -DRELEASES_REPO
   -Wl,-platform_version,macos,11.0,11.5 -Wl,-no_fixup_chains -Wl,-dead_strip \
   -o "$stage/usr/libexec/clokeos-installer" "$HERE/recovery/installer.c" -lcurl "$sysroot/libs/liblzma.a" -lSystem
 echo "Fertig: clokeos-installer für $CLOKE_ARCH"
+
+# e2fsprogs (e2fsck, resize2fs, mke2fs, tune2fs): der Installer vergrößert damit das Dateisystem des Systems
+e2="$WORK/out/e2fsprogs-$CLOKE_ARCH"
+[ -x "$e2/resize2fs" ] || "$HERE/recovery/e2fsprogs.sh" "$CLOKE_ARCH" >/dev/null
+mkdir -p "$stage/usr/sbin"
+cp "$e2/e2fsck" "$e2/resize2fs" "$e2/mke2fs" "$e2/tune2fs" "$stage/usr/sbin/"

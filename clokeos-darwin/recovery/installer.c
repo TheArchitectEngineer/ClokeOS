@@ -688,6 +688,22 @@ static const char *machine_arch(void) {
   return strncmp(u.machine, "arm64", 5) && strncmp(u.machine, "aarch64", 7) ? "x86_64" : "arm64";
 }
 
+/* Dateisystem des Systems auf die ganze Partition vergrößern (e2fsprogs der Wiederherstellung). Das Abbild
+ * ist nur so groß wie sein Inhalt; ohne diesen Schritt bliebe der Rest der Platte unbenutzt. Schlägt es fehl,
+ * läuft das System mit dem kleinen Dateisystem weiter. */
+static void grow_ext4(const char *disk, bool keep, uint64_t off, uint64_t bytes) {
+  if (access("/usr/sbin/resize2fs", X_OK) || access("/usr/sbin/e2fsck", X_OK)) return;
+  char dev[96], cmd[512];
+  if (keep) snprintf(dev, sizeof dev, "/dev/r%ss2", disk);
+  else snprintf(dev, sizeof dev, "/dev/r%s?offset=%llu", disk, (unsigned long long)off);
+  out("STEP %s", L("Using the whole disk"));
+  snprintf(cmd, sizeof cmd,
+           "/usr/sbin/e2fsck -fp '%s' >>/var/tmp/installer.log 2>&1; [ $? -lt 4 ] && "
+           "/usr/sbin/resize2fs -f '%s' %llus >>/var/tmp/installer.log 2>&1",
+           dev, dev, (unsigned long long)(bytes / 512));
+  if (system(cmd) != 0) fprintf(stderr, "could not grow the file system on %s\n", dev);
+}
+
 static void cmd_install(const char *disk, const char *base) {
   Disk d;
   if (!probe_disk(disk, &d)) fail("No disk %s", disk);
@@ -721,6 +737,13 @@ static void cmd_install(const char *disk, const char *base) {
     if (d.bytes < need)
       fail("The disk is too small: ClokeOS %s needs %.1f GB, it has %.1f GB.", m.version, need / 1e9,
            d.bytes / 1e9);
+    /* Das System bekommt den Rest der Platte (Wiederherstellung dahinter, 1 MiB Luft für die Sicherungs-GPT);
+     * sein Dateisystem wird nach dem Schreiben darauf vergrößert (grow_ext4) */
+    uint64_t mibs = mib / bs, end = (d.bytes / bs - mibs) / mibs * mibs;
+    if (end > p[1].first + p[2].count) {
+      uint64_t sys = (end - p[1].first - p[2].count) / mibs * mibs;
+      if (sys > p[1].count) p[1].count = sys, p[2].first = p[1].first + sys;
+    }
   }
   unmount_disk(disk, keep ? 3 : 0);
   /* fd[i]/off[i]: wohin Partition i geschrieben wird. Sonst die ganze Platte; beim Neuinstallieren
@@ -776,6 +799,7 @@ static void cmd_install(const char *disk, const char *base) {
   out("STEP %s", L("Setting up the startup volume"));
   install_asset(base, &m.esp, fd[0], off[0], p[0].count * bs, done, total);
   fsync(fd[1]);
+  grow_ext4(disk, keep, off[1], p[1].count * bs);
   if (keep) { /* Kennungen der vorhandenen Partitionen */
     memcpy(p[1].guid, d.part[1].guid, 16);
     memcpy(p[2].guid, d.part[2].guid, 16);
