@@ -79,10 +79,13 @@ void freeifaddrs(struct ifaddrs *);
 #define UI_FONT_FILE "/Library/Fonts/ClokeSans/ClokeSans-Regular.otf"
 #define GM_TOP_MAX 16 /* höchstens so viele Programm-Menüs in der Leiste */
 static bool recovery; /* läuft als Wiederherstellung (recovery.c, /etc/clokeos-recovery) */
-#define TITLE_H   38
+/* Oberfläche: ClokeOS (wie macOS) oder NT (Windows-Stil, ab der nächsten Anmeldung); nt_sel ist die Einstellung */
+static bool nt, nt_sel;
+#define TITLE_H   (nt ? 30 : 38)
+#define NT_START_W 48 /* Breite der Start-Schaltfläche in der NT-Taskleiste */
 #define UNI_CUT   146  /* Breite des Ausschnitts links oben bei Fundus und Search: Ampelknöpfe und Zurück/Vor */   /* wie die Titelleiste im Prototyp (clokeos.html: .titlebar) */
 #define BORDER    1
-#define RADIUS    12   /* Prototyp: .win border-radius */
+#define RADIUS    (nt ? 0 : 12) /* Prototyp: .win border-radius */
 #define DOCK_PAD_X 8   /* entlang des Docks */
 #define DOCK_PAD_Y 6   /* quer dazu */
 #define DOCK_GAP  5
@@ -320,7 +323,7 @@ static void set(cairo_t *cr, RGBA c) { cairo_set_source_rgba(cr, c.r, c.g, c.b, 
 static void seta(cairo_t *cr, RGBA c, double a) { cairo_set_source_rgba(cr, c.r, c.g, c.b, c.a * a); }
 
 void rrect(cairo_t *cr, double x, double y, double w, double h, double r) {
-  r = fmin(r, fmin(w, h) / 2);
+  r = fmax(0, fmin(r, fmin(w, h) / 2));
   cairo_new_sub_path(cr);
   cairo_arc(cr, x + w - r, y + r, r, -M_PI / 2, 0);
   cairo_arc(cr, x + w - r, y + h - r, r, 0, M_PI / 2);
@@ -1156,7 +1159,7 @@ static void send_configure(Client *c) {
 
 /* Platz für Fenster: ohne Menüleiste und Dock (unten, links oder rechts) */
 static void work_area(int *x0, int *y0, int *x1, int *y1) {
-  int r = DOCK_H + DOCK_MARGIN + 6;
+  int r = nt ? DOCK_H : DOCK_H + DOCK_MARGIN + 6;
   *x0 = 0, *y0 = MENUBAR_H, *x1 = SW, *y1 = SH;
   if (dock_pos == POS_LEFT) *x0 = r;
   else if (dock_pos == POS_RIGHT) *x1 = SW - r;
@@ -1526,7 +1529,17 @@ static void light_centers(Client *c, double *cx, double *cy) {
   *cy = c->bw + c->th / 2.0;
 }
 
+/* NT: Minimieren, Maximieren, Schließen rechts, je 46 Pixel breit; i = 1 schließen, 2 ins Dock, 3 zoomen */
+static int nt_btn_x(Client *c, int i, int w) { return w - c->bw - 46 * (i == 1 ? 1 : i == 3 ? 2 : 3); }
+
 static int light_at(Client *c, int x, int y) {
+  if (nt) {
+    if (y < c->bw || y >= c->bw + c->th) return 0;
+    int w = c->w + 2 * c->bw;
+    for (int i = 1; i <= 3; i++)
+      if (x >= nt_btn_x(c, i, w) && x < nt_btn_x(c, i, w) + 46) return i;
+    return 0;
+  }
   double cx[3], cy;
   light_centers(c, cx, &cy);
   for (int i = 0; i < 3; i++)
@@ -1546,11 +1559,12 @@ static bool has_nav(Client *c) {
 }
 
 /* Titelleiste und Werkzeugleiste des Programms bilden eine Fläche (macOS): auch Aktivitätsanzeige */
-static bool has_uni(Client *c) { return has_nav(c) || app_is(c, "com.clokeos.aktivitaet"); }
+static bool has_uni(Client *c) { return !nt && (has_nav(c) || app_is(c, "com.clokeos.aktivitaet")); }
 
 static void nav_rect(Client *c, double *x, double *y, double *w, double *h) {
   double cx[3], cy;
   light_centers(c, cx, &cy);
+  if (nt) cx[2] = c->bw - 14; /* NT: Zurück/Vor ganz links */
   *x = cx[2] + 22;
   *y = cy - 12;
   *w = 62;
@@ -1582,9 +1596,54 @@ static void send_nav_key(Client *c, int which) {
   XFlush(dpy);
 }
 
+/* Fensterrahmen der NT-Oberfläche: eckig, Titel links, rechts Minimieren, Maximieren, Schließen */
+static void paint_frame_nt(cairo_t *cr, int w, int h, Client *c, bool active) {
+  if (active) cairo_set_source_rgb(cr, ACCENT.r, ACCENT.g, ACCENT.b);
+  else cairo_set_source_rgb(cr, dark ? .24 : .72, dark ? .24 : .72, dark ? .27 : .75);
+  cairo_paint(cr);
+  set(cr, T->win);
+  cairo_rectangle(cr, c->bw, c->bw, w - 2 * c->bw, h - 2 * c->bw);
+  cairo_fill(cr);
+  set(cr, T->line);
+  cairo_rectangle(cr, c->bw, c->bw + c->th - 1, w - 2 * c->bw, 1);
+  cairo_fill(cr);
+  double cy = c->bw + c->th / 2.0;
+  for (int i = 1; i <= 3; i++) { /* Schaltflächen */
+    double bx = nt_btn_x(c, i, w), s = 5;
+    bool hov = c->hover == i;
+    if (hov) {
+      if (i == 1) cairo_set_source_rgb(cr, .77, .17, .11);
+      else set(cr, T->hover);
+      cairo_rectangle(cr, bx, c->bw, 46, c->th - 1);
+      cairo_fill(cr);
+    }
+    if (i == 1 && hov) cairo_set_source_rgb(cr, 1, 1, 1);
+    else set(cr, active ? T->fg : T->fg2);
+    cairo_set_line_width(cr, 1);
+    double mx = bx + 23;
+    if (i == 1) {
+      cairo_move_to(cr, mx - s, cy - s); cairo_line_to(cr, mx + s, cy + s);
+      cairo_move_to(cr, mx + s, cy - s); cairo_line_to(cr, mx - s, cy + s);
+    } else if (i == 2) {
+      cairo_move_to(cr, mx - s, cy + .5); cairo_line_to(cr, mx + s, cy + .5);
+    } else {
+      cairo_rectangle(cr, mx - s + .5, cy - s + .5, 2 * s - 1, 2 * s - 1);
+    }
+    cairo_stroke(cr);
+  }
+  double tx = c->bw + 12; /* NT: Zurück/Vor liegen in der Werkzeugleiste des Programms selbst */
+  const char *title = c->title[0] ? c->title : (c->app >= 0 ? apps[c->app].b.name : c->cls);
+  int room = nt_btn_x(c, 2, w) - tx - 8;
+  if (!c->uni && room > 24) text(cr, tx, cy, title, 12, false, active ? T->fg : T->fg2, room, 0);
+}
+
 static void paint_frame(cairo_t *cr, int w, int h, void *arg) {
   Client *c = arg;
   bool active = c == focused;
+  if (nt) {
+    paint_frame_nt(cr, w, h, c, active);
+    return;
+  }
   /* Kante (--edge) als 1-Pixel-Rand, darin der Fenstergrund */
   cairo_set_source_rgb(cr, dark ? .06 : .78, dark ? .055 : .76, dark ? .075 : .83);
   cairo_paint(cr);
@@ -2048,6 +2107,7 @@ static void start_session(const Account *a) {
   render_icons();
   if (want_dark() != dark || wall_sel) apply_theme();
   update_workarea();
+  if (nt) draw_dock(); /* Taskleiste statt Dock */
   gm_start(); /* als der Benutzer, auf dessen Sitzungsbus */
   automount_start();
 }
@@ -3268,7 +3328,7 @@ static void layout_dock(void) {
   DOCK_ADD(DOCK_SEP);
   DOCK_ADD(DOCK_TRASH);
 #undef DOCK_ADD
-  int p = DOCK_PAD_X;
+  int p = nt ? NT_START_W : DOCK_PAD_X;
   for (int k = 0; k < nditems; k++) {
     if (k) p += DOCK_GAP;
     ditems[k].pos = p;
@@ -3286,7 +3346,10 @@ static void layout_dock(void) {
     layout_dock();
     return;
   }
-  if (dock_pos == POS_BOTTOM) {
+  if (nt) { /* Taskleiste über die ganze Breite */
+    dock_w = SW, dock_h = DOCK_H;
+    dock_x = 0, dock_y = SH - DOCK_H;
+  } else if (dock_pos == POS_BOTTOM) {
     dock_w = len, dock_h = DOCK_H;
     dock_x = (SW - len) / 2, dock_y = SH - DOCK_MARGIN - DOCK_H;
   } else {
@@ -3329,11 +3392,33 @@ static double bounce_offset(int i) {
   return 18 * sin(M_PI * fmod(t, BOUNCE_S / 2) / (BOUNCE_S / 2));
 }
 
+/* NT: flache Taskleiste mit Start-Schaltfläche links und Uhr rechts */
+static void paint_taskbar(cairo_t *cr, int w, int h) {
+  cairo_set_source_rgba(cr, dark ? .13 : .95, dark ? .13 : .95, dark ? .15 : .96, .96);
+  cairo_rectangle(cr, 0, 0, w, h); /* nicht den ganzen Fensterinhalt: oben liegt der Streifen dock_lift */
+  cairo_fill(cr);
+  set(cr, T->line);
+  cairo_rectangle(cr, 0, 0, w, 1);
+  cairo_fill(cr);
+  double s = 7, g = 2, x = (NT_START_W - 2 * s - g) / 2.0, y = (h - 2 * s - g) / 2.0; /* vier Felder */
+  for (int k = 0; k < 4; k++) {
+    set(cr, ACCENT);
+    cairo_rectangle(cr, x + (k % 2) * (s + g), y + (k / 2) * (s + g), s, s);
+    cairo_fill(cr);
+  }
+  char clk[64];
+  clock_text(clk, sizeof clk);
+  text(cr, w - 12 - text_width(clk, 12, false), h / 2.0, clk, 12, false, T->fg, 0, 0);
+}
+
 static void paint_dock(cairo_t *cr, int w, int h, void *arg) {
   (void)arg, (void)w, (void)h;
   cairo_translate(cr, glass_ox(), glass_oy());
   w = dock_w, h = dock_h;
   double r = ds * .42 + 6;
+  if (nt) {
+    paint_taskbar(cr, w, h);
+  } else {
   rrect(cr, 0, 0, w, h, r);
   cairo_clip(cr);
   glass(cr, dock_x, dock_y, T->dock, w, h, r);
@@ -3355,6 +3440,7 @@ static void paint_dock(cairo_t *cr, int w, int h, void *arg) {
   set(cr, T->edge);
   cairo_set_line_width(cr, .5);
   cairo_stroke(cr);
+  }
 
   bool full = trash_full();
   for (int k = 0; k < nditems; k++) {
@@ -3368,12 +3454,21 @@ static void paint_dock(cairo_t *cr, int w, int h, void *arg) {
     }
     cairo_surface_t *ic = i == DOCK_TRASH ? (full ? icon_trash_full : icon_trash) : apps[i].icon;
     double x, y;
-    item_xy(k, (k == dock_hover ? 2 : 0) + bounce_offset(i), &x, &y);
+    item_xy(k, (k == dock_hover && !nt ? 2 : 0) + bounce_offset(i), &x, &y);
+    if (nt && k == dock_hover) { /* NT: Taste unter dem Zeiger */
+      set(cr, T->hover);
+      cairo_rectangle(cr, p - 4, 2, ds + 8, h - 4);
+      cairo_fill(cr);
+    }
     if (ic) {
       cairo_set_source_surface(cr, ic, x, y);
       cairo_paint(cr);
     }
-    if (i >= 0 && app_running(i)) { /* Punkt außen neben dem Symbol */
+    if (nt && i >= 0 && app_running(i)) { /* NT: Balken unter dem Symbol */
+      set(cr, ACCENT);
+      cairo_rectangle(cr, p + ds / 2.0 - 8, h - 4, 16, 3);
+      cairo_fill(cr);
+    } else if (i >= 0 && app_running(i)) { /* Punkt außen neben dem Symbol */
       double dx = dock_pos == POS_BOTTOM ? p + ds / 2.0 : dock_pos == POS_LEFT ? DOCK_PAD_Y - 3 : DOCK_PAD_Y + ds + 3;
       double dy = dock_pos == POS_BOTTOM ? DOCK_PAD_Y + ds + 3 : p + ds / 2.0;
       cairo_new_path(cr);
@@ -3391,7 +3486,7 @@ static void draw_dock(void) {
   dock_window_rect(&x, &y, &w, &h);
   if (x != lx || y != ly || w != lw || h != lh) { /* Programme kamen dazu, andere Lage, andere Größe */
     XMoveResizeWindow(dpy, dock, x, y, w, h);
-    if (!comp_on) shape_round(dock, w, h, ds * .42 + 6, false);
+    if (!comp_on && !nt) shape_round(dock, w, h, ds * .42 + 6, false);
     lx = x, ly = y, lw = w, lh = h;
   }
   paint_window(dock, w, h, paint_dock, NULL);
@@ -3565,12 +3660,15 @@ static void load_prefs(void) {
   d = read_bytes(p, &n);
   theme_mode = 0; /* wie im Prototyp: automatisch */
   wall_sel = 0;
+  nt = nt_sel = false;
   if (d && plist_get(d, n, "ClokeWallpaper", v, sizeof v)) wall_sel = wall_find(v);
   if (d) {
+    if (plist_get(d, n, "ClokeUI", v, sizeof v)) nt = nt_sel = !strcmp(v, "NT");
     if (plist_get(d, n, "AppleInterfaceStyle", v, sizeof v) && !strcmp(v, "Dark")) theme_mode = 2;
     else if (!plist_get(d, n, "AppleInterfaceStyleSwitchesAutomatically", v, sizeof v) || !strcmp(v, "0")) theme_mode = 1;
   }
   free(d);
+  if (nt) ds = ds_pref = 32, dock_pos = POS_BOTTOM; /* Taskleiste: unten, 44 Pixel hoch */
 }
 
 static void save_prefs(void) {
@@ -3589,8 +3687,9 @@ static void save_prefs(void) {
   pref_path(p, sizeof p, "com.clokeos.dock.plist");
   if (plist_write(p, dk, 3)) own_by_session(p);
   else warn("kann %s nicht schreiben", p);
-  PlistItem g[3];
+  PlistItem g[4];
   int ng = 0;
+  if (nt_sel) g[ng++] = (PlistItem){.key = "ClokeUI", .s = "NT"};
   g[ng++] = (PlistItem){.key = "ClokeWallpaper", .s = wall_key(wall_sel)};
   if (theme_mode == 2) g[ng++] = (PlistItem){.key = "AppleInterfaceStyle", .s = "Dark"};
   g[ng++] = (PlistItem){.key = "AppleInterfaceStyleSwitchesAutomatically", .i = theme_mode == 0};
@@ -4357,7 +4456,7 @@ static void sp_key(XKeyEvent *e) {
 /* Erscheinungsbild (Hell, Dunkel, Automatisch), Schreibtisch & Dock (Lage, Größe), Programme   */
 /* (wie man installiert). Alles Übrige bleibt in den Xfce-Einstellungen.                        */
 
-enum { ST_SECTION, ST_THEME, ST_DOCKPOS, ST_DOCKSIZE, ST_OPENAPPS, ST_LANG, ST_SSH, ST_WALL, ST_KBD };
+enum { ST_UI, ST_SECTION, ST_THEME, ST_DOCKPOS, ST_DOCKSIZE, ST_OPENAPPS, ST_LANG, ST_SSH, ST_WALL, ST_KBD };
 static struct { int x, y, w, h, act; long arg; } st_hit[48];
 static int nst_hit;
 enum { SC_GENERAL, SC_APPEAR, SC_WALL, SC_DOCK, SC_KEYB, SC_LANG, SC_APPS, SC_SHARE };
@@ -4595,6 +4694,13 @@ static void paint_settings(Client *c, cairo_t *cr) {
     static const int mode[3] = {1, 2, 0};
     for (int i = 0; i < 3; i++)
       option(cr, x0 + i * 140, 70, L(names[i]), theme_mode == mode[i], i, POS_BOTTOM, ST_THEME, mode[i]);
+    text(cr, x0, 262, L("Interface"), 12.5, true, T->fg, 0, 0);
+    for (int i = 0; i < 2; i++) {
+      double bx = x0 + i * 100, by = 278;
+      button(cr, bx, by, 90, i ? "NT" : "ClokeOS", nt_sel == (i == 1));
+      st_add(bx, by, 90, 28, ST_UI, i);
+    }
+    if (nt_sel != nt) text_block(cr, x0, 316, L("The new interface appears at the next login."), 11.5, false, T->fg2, w - x0 - 24);
     text_block(cr, x0, 192, L("Auto: light during the day, dark from 7 PM to 7 AM. Windows, the Dock and menus switch "
                               "right away, and so do Fundus, Terminal and the other GTK apps."),
                11.5, false, T->fg2, w - x0 - 24);
@@ -4721,6 +4827,7 @@ static void click_settings(Client *c, int x, int y) {
     long arg = st_hit[k].arg;
     switch (st_hit[k].act) {
     case ST_SECTION: c->data = arg; break;
+    case ST_UI: nt_sel = arg == 1; save_prefs(); break;
     case ST_THEME: set_theme_mode(arg); break;
     case ST_WALL: set_wallpaper(arg); break;
     case ST_DOCKPOS: set_dock_pos(arg); break;
@@ -4832,6 +4939,11 @@ static void on_button_press(XButtonEvent *e) {
     return;
   }
   if (e->window == dock) {
+    if (nt && e->button == Button1 && e->x < NT_START_W) { /* Start: Programmübersicht */
+      show_tip(-1);
+      show_launchpad();
+      return;
+    }
     int i = dock_item_at(e->x, e->y);
     show_tip(-1);
     if (i < 0) return;
@@ -4976,8 +5088,8 @@ static void on_motion(XMotionEvent *e) {
   }
   Client *c = find_client(e->window);
   if (c && e->window == c->frame) {
-    bool h = e->y < c->th && e->x < 80;
-    if (h != (c->hover != 0)) {
+    int h = nt ? light_at(c, e->x, e->y) : (e->y < c->th && e->x < 80);
+    if (h != c->hover) {
       c->hover = h;
       draw_frame(c);
     }
@@ -5193,6 +5305,8 @@ static void tick(void) {
   if (tm.tm_mday != cal_day) {
     render_icons();
     draw_dock();
+  } else if (nt) {
+    draw_dock(); /* Uhr der Taskleiste */
   }
   draw_menubar();
 }

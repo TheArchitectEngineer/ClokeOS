@@ -224,6 +224,8 @@
 {"Setting up the recovery", "Wiederherstellung wird eingerichtet"},
 {"Setting up the startup volume", "Startvolume wird eingerichtet"},
 {"Using the whole disk", "Ganze Festplatte wird genutzt"},
+{"Interface", "Oberfläche"},
+{"The new interface appears at the next login.", "Die neue Oberfläche erscheint bei der nächsten Anmeldung."},
 {"Choose the disk that ClokeOS is installed on, and start from the installer.", "Wähle die Festplatte, auf der ClokeOS installiert ist, und starte vom Installationsmedium."},
 {"The EFI partition is too small for this version.", "Die EFI-Partition ist für diese Version zu klein."},
 {"There is no ClokeOS on this disk.", "Auf dieser Festplatte ist kein ClokeOS."},
