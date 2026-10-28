@@ -437,7 +437,7 @@ static long do_ioctl(int fd, unsigned long req, void *arg)
 	case 0x5410: return E(tcsetpgrp(fd, *(int *)arg));
 	case 0x540E: return E(ioctl(fd, TIOCSCTTY, 0));
 	case 0x5422: return E(ioctl(fd, TIOCNOTTY, 0));
-	case 0x5429: { pid_t s = tcgetsid(fd); if (s < 0) return ERR(); *(int *)arg = s; return 0; }
+	case 0x5429: { return -ENOTTY;   /* tcgetsid fehlt in PureDarwins libSystem */ }
 	case 0x541B: return E(ioctl(fd, FIONREAD, arg));
 	case 0x5421: return E(ioctl(fd, FIONBIO, arg));
 	case 0x5450: return E(fcntl(fd, F_SETFD, 0));            // FIONCLEX
@@ -1030,7 +1030,7 @@ long tux_syscall(tux_regs *r)
 		int c = clock_l2d(a0);
 		if (c < 0) return -EINVAL;
 		if (!a1) return 0;
-		return E(clock_getres((clockid_t)c, (struct timespec *)a1));
+		{ struct timespec *t = (void *)a1; t->tv_sec = 0; t->tv_nsec = 1000; return 0; }   /* PureDarwins libSystem hat kein clock_getres */
 	}
 	case N_gettimeofday: {
 		struct timeval tv;
@@ -1063,7 +1063,7 @@ long tux_syscall(tux_regs *r)
 	case N_setitimer: case N_getitimer: {
 		struct itimerval nv, ov;
 		if (nr == N_getitimer) {
-			if (getitimer((int)a0, &ov)) return ERR();
+			return -ENOSYS;   /* getitimer fehlt in PureDarwins libSystem */
 			int64_t *o = (int64_t *)a1;
 			tv_to_l(&ov.it_interval, o);
 			tv_to_l(&ov.it_value, o + 2);

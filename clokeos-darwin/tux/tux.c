@@ -328,7 +328,6 @@ int tux_exec(const char *guest_path, char **argv, char **envp, int depth)
 	struct stat st;
 	if (stat(host, &st) != 0) return -tux_errno(errno);
 	if (S_ISDIR(st.st_mode)) return -21;
-	if (access(host, X_OK) != 0 && getuid() != 0) return -13;
 	// Skripte mit #!
 	char head[256];
 	int fd = open(host, O_RDONLY);

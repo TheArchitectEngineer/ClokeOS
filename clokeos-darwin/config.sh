@@ -228,3 +228,12 @@ BASH_VERSION_CLOKE="5.3"
 BASH_URL="https://ftp.gnu.org/gnu/bash/bash-$BASH_VERSION_CLOKE.tar.gz"
 BASH_SHA256="0d5cd86965f869a26cf64f4b71be7b96f90a3ba8b3d74e27e8e9d9d5550f31ba"
 BASH_TARBALL="$WORK/download/bash/bash-$BASH_VERSION_CLOKE.tar.gz"
+
+# Alpine Linux minirootfs (musl, busybox; MIT und GPL) als Linux-Baum /TUX (siehe tux/)
+ALPINE_VERSION="3.24.3"
+case "$CLOKE_ARCH" in
+  arm64) ALPINE_ARCH=aarch64; ALPINE_SHA256="4d3f80afaebd447c5591a63a73bde380a149fe8b2d85488cafabb2ff97551f50" ;;
+  *) ALPINE_ARCH=x86_64; ALPINE_SHA256="f8e1cafba9b1b283b5d30d06f9885c8d2bc161ffe9083ade8e2e157813a53407" ;;
+esac
+ALPINE_URL="https://dl-cdn.alpinelinux.org/alpine/v${ALPINE_VERSION%.*}/releases/$ALPINE_ARCH/alpine-minirootfs-$ALPINE_VERSION-$ALPINE_ARCH.tar.gz"
+ALPINE_TGZ="$WORK/download/alpine/alpine-minirootfs-$ALPINE_VERSION-$ALPINE_ARCH.tar.gz"

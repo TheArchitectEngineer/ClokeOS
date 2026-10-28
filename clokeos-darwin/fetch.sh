@@ -9,6 +9,7 @@ if [ -n "$LOADER_EFI" ]; then
 fi
 
 [ "$CLOKE_FLAVOR" = desktop ] && fetch_file "$APPMENU_URL" "$APPMENU_SHA256" "$APPMENU_TGZ"
+[ "$CLOKE_FLAVOR" = desktop ] && fetch_file "$ALPINE_URL" "$ALPINE_SHA256" "$ALPINE_TGZ"
 
 mkdir -p "$(dirname "$PD_IMG")"
 if [ -f "$PD_IMG" ] && [ "$(shasum -a 256 "$PD_IMG" | cut -d' ' -f1)" = "$PD_SHA256" ]; then
