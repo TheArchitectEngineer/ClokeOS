@@ -21,6 +21,8 @@ if [ ! -e "$WINEPREFIX/system.reg" ] && [ -d /NT ] && [ -w /NT ]; then
   mkdir -p "$WINEPREFIX/dosdevices"
   [ -e "$WINEPREFIX/drive_c" ] || [ -h "$WINEPREFIX/drive_c" ] || ln -s /NT "$WINEPREFIX/drive_c"
   [ -e "$WINEPREFIX/dosdevices/c:" ] || [ -h "$WINEPREFIX/dosdevices/c:" ] || ln -s ../drive_c "$WINEPREFIX/dosdevices/c:"
+  # mountmgr.sys fehlt in PureDarwins Wine, ohne ihn legt Wine das Laufwerk Z: (= /) nicht selbst an
+  [ -e "$WINEPREFIX/dosdevices/z:" ] || [ -h "$WINEPREFIX/dosdevices/z:" ] || ln -s / "$WINEPREFIX/dosdevices/z:"
   echo "wine: richte die Windows-Umgebung ein (nur beim ersten Start, das dauert)" >&2
 fi
 exec "$real" "$@"
