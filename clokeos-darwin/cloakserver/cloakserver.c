@@ -257,6 +257,9 @@ static bool has_uni(Client *c);
 static void focus_client(Client *c);
 static void raise_client(Client *c);
 static void close_menu(void);
+static int app_by_ident(const char *id);
+static const char *const *cal_subst(void);
+static cairo_surface_t *bundle_icon(const Bundle *b, int size, const char *const *subst);
 static void gm_focus(Client *c);
 static void gm_start(void);
 static void automount_start(void);
@@ -665,6 +668,53 @@ static void xsettings_init(void) {
   XSendEvent(dpy, root, False, StructureNotifyMask, (XEvent *)&ev);
 }
 
+/* NT: Symbole links auf dem Desktop; Doppelklick startet sie. Gemalt wird in das Hintergrundbild der
+ * Wurzel (nicht in das Bild, aus dem das Glas entsteht). */
+#define NT_DESK_N 4
+#define NT_DESK_X 16
+#define NT_DESK_CELL 96
+static int nt_desk_app(int k) {
+  switch (k) {
+  case 0: return app_fundus;
+  case 1: return app_by_ident("com.clokeos.systemeinstellungen");
+  case 2: return app_by_ident("com.clokeos.search");
+  default: return -1; /* Papierkorb */
+  }
+}
+static int nt_desk_at(int x, int y) {
+  int k = (y - (MENUBAR_H + 12)) / NT_DESK_CELL;
+  if (x < NT_DESK_X || x >= NT_DESK_X + NT_DESK_CELL || y < MENUBAR_H + 12 || k < 0 || k >= NT_DESK_N) return -1;
+  return k;
+}
+static void paint_desktop_icons(cairo_t *cr) {
+  for (int k = 0; k < NT_DESK_N; k++) {
+    int i = nt_desk_app(k);
+    static cairo_surface_t *nt_trash;
+    cairo_surface_t *ic = NULL;
+    if (k == NT_DESK_N - 1) {
+      if (!nt_trash) nt_trash = svg_render("icons/papierkorb.svg", 48, 48, NULL);
+      ic = nt_trash;
+    } else if (i >= 0) {
+      if (!apps[i].icon_lp) apps[i].icon_lp = bundle_icon(&apps[i].b, 76, cal_subst());
+      ic = apps[i].icon_lp;
+    }
+    const char *name = k == NT_DESK_N - 1 ? L("Trash") : (i >= 0 ? apps[i].b.name : "");
+    double cx = NT_DESK_X + NT_DESK_CELL / 2.0, y = MENUBAR_H + 12 + k * NT_DESK_CELL;
+    if (ic) {
+      double iw = cairo_image_surface_get_width(ic), s = 48 / iw;
+      cairo_save(cr);
+      cairo_translate(cr, cx - 24, y + 4);
+      cairo_scale(cr, s, s);
+      cairo_set_source_surface(cr, ic, 0, 0);
+      cairo_paint(cr);
+      cairo_restore(cr);
+    }
+    cairo_set_source_rgba(cr, 0, 0, 0, .55); /* Schatten für die Beschriftung */
+    text(cr, cx + 1, y + 70 + 1, name, 12, false, (RGBA){0, 0, 0, .55}, NT_DESK_CELL - 8, 1);
+    text(cr, cx, y + 70, name, 12, false, (RGBA){1, 1, 1, 1}, NT_DESK_CELL - 8, 1);
+  }
+}
+
 static void apply_theme(void) {
   dark = want_dark();
   T = dark ? &DARK : &LIGHT;
@@ -701,6 +751,7 @@ static void apply_theme(void) {
   cr = cairo_create(ps);
   cairo_set_source_surface(cr, wall_img, 0, 0);
   cairo_paint(cr);
+  if (nt && !recovery) paint_desktop_icons(cr);
   cairo_destroy(cr);
   cairo_surface_destroy(ps);
   XSetWindowBackgroundPixmap(dpy, root, wall_pm);
@@ -2105,7 +2156,7 @@ static void start_session(const Account *a) {
   scan_apps();
   load_prefs();
   render_icons();
-  if (want_dark() != dark || wall_sel) apply_theme();
+  if (want_dark() != dark || wall_sel || nt) apply_theme();
   update_workarea();
   if (nt) draw_dock(); /* Taskleiste statt Dock */
   gm_start(); /* als der Benutzer, auf dessen Sitzungsbus */
@@ -3408,7 +3459,24 @@ static void paint_taskbar(cairo_t *cr, int w, int h) {
   }
   char clk[64];
   clock_text(clk, sizeof clk);
-  text(cr, w - 12 - text_width(clk, 12, false), h / 2.0, clk, 12, false, T->fg, 0, 0);
+  double cw = text_width(clk, 12, false), tx = w - 12 - cw;
+  text(cr, tx, h / 2.0, clk, 12, false, T->fg, 0, 0);
+  /* Tray links der Uhr: Lautsprecher und Netzwerk */
+  double sx = tx - 30, cy = h / 2.0;
+  set(cr, T->fg2);
+  cairo_move_to(cr, sx - 6, cy - 2); cairo_line_to(cr, sx - 3, cy - 2); cairo_line_to(cr, sx + 1, cy - 6);
+  cairo_line_to(cr, sx + 1, cy + 6); cairo_line_to(cr, sx - 3, cy + 2); cairo_line_to(cr, sx - 6, cy + 2);
+  cairo_close_path(cr);
+  cairo_fill(cr);
+  cairo_set_line_width(cr, 1.2);
+  cairo_arc(cr, sx + 1, cy, 4, -M_PI / 3, M_PI / 3);
+  cairo_stroke(cr);
+  cairo_arc(cr, sx + 1, cy, 7, -M_PI / 3, M_PI / 3);
+  cairo_stroke(cr);
+  if (mb_icons[1]) {
+    cairo_set_source_surface(cr, mb_icons[1], sx - 34, cy - 8);
+    cairo_paint(cr);
+  }
 }
 
 static void paint_dock(cairo_t *cr, int w, int h, void *arg) {
@@ -3627,6 +3695,24 @@ static void dock_menu(int k) {
   if (dock_pos == POS_BOTTOM) open_menu((int)cx - ds / 2, dock_y - 8, -1, true);
   else if (dock_pos == POS_LEFT) open_menu(dock_x + dock_w + 8, (int)cy - ds / 2, -1, false);
   else open_menu(dock_x - 8 - menu_width(), (int)cy - ds / 2, -1, false);
+}
+
+/* NT: Start-Menü über der Start-Schaltfläche: alle Programme, Einstellungen, Ausschalten */
+static void nt_start_menu(void) {
+  nmenu = 0;
+  add_head(L("Apps"));
+  for (int i = 0; i < napps; i++)
+    if (!apps[i].gone && !apps[i].b.hidden && !apps[i].b.internal[0] && nmenu < MENU_MAX - 12) add_item(apps[i].b.name, launch_app, i, false);
+  add_sep();
+  add_item(L("System Settings…"), show_settings, -1, false);
+  add_sep();
+  add_item(L("Sleep"), cmd_sleep, 0, false);
+  add_item(L("Restart…"), confirm_power, 1, false);
+  add_item(L("Shut Down…"), confirm_power, 0, false);
+  char buf[160];
+  snprintf(buf, sizeof buf, L("Log Out “%s”…"), session_name());
+  add_item(buf, cmd_logout, 0, false);
+  open_menu(0, dock_y - 2, -1, true);
 }
 
 /* ---------------------------------------------------------------------------------------- */
@@ -4939,9 +5025,9 @@ static void on_button_press(XButtonEvent *e) {
     return;
   }
   if (e->window == dock) {
-    if (nt && e->button == Button1 && e->x < NT_START_W) { /* Start: Programmübersicht */
+    if (nt && e->button == Button1 && e->x < NT_START_W) { /* Start: Menü */
       show_tip(-1);
-      show_launchpad();
+      nt_start_menu();
       return;
     }
     int i = dock_item_at(e->x, e->y);
@@ -4952,6 +5038,20 @@ static void on_button_press(XButtonEvent *e) {
     return;
   }
   if (e->window == root) {
+    if (nt && e->button == Button1) { /* Desktop-Symbole: Doppelklick startet */
+      static int last_k = -1;
+      static double last_t;
+      int k = nt_desk_at(e->x, e->y);
+      double t = now_s();
+      if (k >= 0 && k == last_k && t - last_t < .5) {
+        int i = nt_desk_app(k);
+        if (i >= 0) launch(i);
+        else open_trash();
+        last_k = -1;
+      } else {
+        last_k = k, last_t = t;
+      }
+    }
     focus_client(NULL);
     return;
   }
