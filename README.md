@@ -13,13 +13,8 @@ ClokeOS starts as a macOS-like system and grows towards running software from ot
 | World | Works today | Planned |
 |---|---|---|
 | **Mac** (default interface "ClokeOS") | macOS-like desktop (CloakServer), Mac apps on Darling's frameworks (with many gaps), Fundus, Launchpad, Spotlight, System Settings, recovery and installer | bash and Homebrew, a modern browser |
-<<<<<<< HEAD
 | **Windows** | the **NT interface**: a Windows-like desktop with taskbar, Start menu, tray and desktop icons (System Settings > Appearance > Interface) | `.exe` programs through Wine 11.0 (x86_64 only): own tree `/NT` as drive C:, `wine` on the PATH, double-click in Fundus, "Wine" app; 64-bit and 32-bit console programs and notepad run in the VM | Windows programs on arm64 (needs the translation layer), more tested programs |
-| **Linux** | first version (arm64) | programs in their own tree `/TUX` (Alpine: musl, BusyBox) run through `tux`, a user-space loader that translates Linux system calls; BusyBox `sh`, `ls`, `cat` work on arm64; x86_64, threads and sockets are still missing (see [Linux programs](#linux-programs-tux)) |
-=======
-| **Windows** | the **NT interface**: a Windows-like desktop with taskbar, Start menu, tray and desktop icons (System Settings > Appearance > Interface) | `.exe` programs through Wine (x86_64 only, started), own tree `/NT` (`/NT/Windows`, `/NT/Program Files`, drive C:) |
 | **Linux** | first version (arm64 and x86_64) | programs in their own tree `/TUX` (Alpine: musl, BusyBox) run through `tux`, a user-space loader that translates Linux system calls; BusyBox `sh`, `ls`, `cat` work on both; threads and sockets are still missing (see [Linux programs](#linux-programs-tux)) |
->>>>>>> b0bd637 (tux: x86_64 (Längendecoder, ud2-Falle, FS über LDT, Speicher unter 4 GiB), README)
 | **Other CPU** | images for x86_64 and arm64 | a translation layer between arm64 and x86_64 in both directions, like Rosetta 2; a feasibility study comes first |
 
 ![The NT interface: square windows with the buttons on the right, a taskbar with the Start button, the running apps, speaker, network and clock, and icons on the desktop](clokeos-darwin/screenshots/nt-desktop.png)
@@ -371,13 +366,8 @@ The kernel is the smaller problem, since XNU is open source (Apple Public Source
 4. **Port the shell.** Menu bar, Dock, Launchpad and System Settings are native in CloakServer, apps are `.app` bundles, Mac apps run through Darling's AppKit. Open: Fundus, Search and the other prototype apps as native programs.
 5. ~~**Installer.**~~ Done: installer, recovery, USB sticks and SSD image (see [Recovery and installation](#recovery-and-installation)).
 6. **Real hardware.** Started: USB installers, SATA detection, PS/2 keyboard and touchpad (ClokePS2), I²C touchpads, several CPU cores. Next: Wi-Fi (Realtek RTL8821CE in development), graphics.
-<<<<<<< HEAD
 7. **Windows.** The NT interface and Wine for `.exe` programs on x86_64 exist (Windows tree in `/NT`). Next: a baked prefix so the first start is fast, more programs tested, arm64 through the translation layer.
-8. **Linux.** First version done on arm64 (`tux`, see [Linux programs](#linux-programs-tux)); still to do: x86_64, threads, sockets, graphical Linux programs.
-=======
-7. **Windows.** The NT interface exists. Next: Wine for `.exe` programs on x86_64, with the Windows tree in `/NT`.
 8. **Linux.** First version done on arm64 and x86_64 (`tux`, see [Linux programs](#linux-programs-tux)); still to do: threads, sockets, graphical Linux programs, programs of the other architecture.
->>>>>>> b0bd637 (tux: x86_64 (Längendecoder, ud2-Falle, FS über LDT, Speicher unter 4 GiB), README)
 9. **Other CPU.** A translation layer between arm64 and x86_64 in both directions, like Rosetta 2, for all binaries; feasibility study first.
 
 Custom images (for example for the Raspberry Pi or with a custom kernel) need PureDarwin's Nix build on Linux (about 60 GB) and Apple's `MacOSX11.3.sdk`, which you have to get yourself because it may not be redistributed.
