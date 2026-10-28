@@ -1,0 +1,68 @@
+--- a/subst.c	2025-05-18 21:00:13
++++ b/subst.c	2026-10-28 18:54:20
+@@ -6114,11 +6114,17 @@
+   char *tname;
+ 
+   tname = sh_mktmpname ("sh-np", MT_USERANDOM|MT_USETMPDIR);
+-  if (mkfifo (tname, 0600) < 0)
+-    {
+-      free (tname);
+-      return ((char *)NULL);
+-    }
++  /* ClokeOS: PureDarwin has neither /dev/fd nor FIFOs.  Use a regular file; <(cmd) runs cmd to
++     completion first (see process_substitute). */
++  {
++    int tfd = open (tname, O_WRONLY|O_CREAT|O_EXCL, 0600);
++    if (tfd < 0)
++      {
++        free (tname);
++        return ((char *)NULL);
++      }
++    close (tfd);
++  }
+ 
+   add_fifo_list (tname);
+   return (tname);
+@@ -6481,6 +6487,13 @@
+       dev_fd_list[parent_pipe_fd] = pid;
+ #else
+       fifo_list[nfifo-1].proc = pid;
++      /* ClokeOS: the "FIFO" is a plain file, so wait until the producer has written everything */
++      if (open_for_read_in_child == 0)
++	{
++	  int tries;
++	  for (tries = 0; tries < 60000 && kill (pid, 0) == 0; tries++)
++	    usleep (1000);
++	}
+ #endif
+ 
+       last_made_pid = old_pid;
+--- a/locale.c	2024-05-06 22:10:36
++++ b/locale.c	2026-10-28 19:10:33
+@@ -222,10 +222,7 @@
+       r = *lc_all ? ((x = setlocale (LC_ALL, lc_all)) != 0) : reset_locale_vars ();
+       if (x == 0)
+ 	{
+-	  if (errno == 0)
+-	    internal_warning ("setlocale: LC_ALL: %s (%s)", _("cannot change locale"), lc_all);
+-	  else
+-	    internal_warning ("setlocale: LC_ALL: %s (%s): %s", _("cannot change locale"), lc_all, strerror (errno));
++	  /* ClokeOS: PureDarwin has no locale files; stay quiet (see tools/bash-clokeos.patch) */
+ 	}
+       locale_mb_cur_max = MB_CUR_MAX;
+       /* if LC_ALL == "", reset_locale_vars has already called this */
+@@ -295,13 +292,7 @@
+     }
+ #endif /* HAVE_SETLOCALE */
+   
+-  if (x == 0)
+-    {
+-      if (errno == 0)
+-	internal_warning("setlocale: %s: %s (%s)", var, _("cannot change locale"), get_locale_var (var));
+-      else
+-	internal_warning("setlocale: %s: %s (%s): %s", var, _("cannot change locale"), get_locale_var (var), strerror (errno));
+-    }
++  /* ClokeOS: no warning when the locale does not exist (see tools/bash-clokeos.patch) */
+ 
+   return (x != 0);
+ }

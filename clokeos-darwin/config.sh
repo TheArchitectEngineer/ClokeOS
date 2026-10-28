@@ -109,6 +109,9 @@ CLOKE_BOOT_ARGS=""
 # ClokeOS-Version, passend zur Oberfläche in clokeos.html (OS-Objekt).
 CLOKE_NAME="ClokeOS"
 CLOKE_VERSION="2.5"
+# ProductVersion in SystemVersion.plist: die macOS-Version, die Darwin 20.5 entspricht (Big Sur). Homebrew und
+# Mac-Programme lesen sie dort; ClokeOS' eigene Version steht in ProductUserVisibleVersion.
+CLOKE_MACOS_COMPAT="11.7"
 CLOKE_CODENAME="Presidio"
 CLOKE_BUILD="2E1"
 CLOKE_HOST="clokeos"
@@ -121,6 +124,13 @@ CLOKE_LOGIN="ja"
 # Sprache von ClokeOS: en (Standard, wie bei macOS) oder de; landet in /etc/clokeos-language.
 # Installierte Systeme fragen im Einrichtungsassistenten danach.
 CLOKE_LANGUAGE="${CLOKEOS_LANGUAGE:-en}"
+# Anmelde-Shell des Kontos und von root auf der Konsole: zsh (Standard) oder bash (CLOKEOS_SHELL=bash).
+# Beide liegen immer im Image (/bin/zsh von PureDarwin, /bin/bash von tools/bash-build.sh).
+CLOKE_SHELL="${CLOKEOS_SHELL:-zsh}"
+case "$CLOKE_SHELL" in
+  zsh|bash) ;;
+  *) echo "Unbekannte Shell: $CLOKE_SHELL (zsh oder bash)" >&2; exit 1 ;;
+esac
 CLOKE_USER="guest"
 CLOKE_USER_NAME="Guest"   # CloakServer zeigt ihn auf Deutsch als „Gast“
 CLOKE_USER_UID=501
@@ -212,3 +222,9 @@ CJK_FONT_URL="https://github.com/notofonts/noto-cjk/raw/main/Sans/OTC/NotoSansCJ
 CJK_FONT_SHA256="b76b0433203017ca80401b2ee0dd69350349871c4b19d504c34dbdd80541690a"
 CJK_FONT="$WORK/download/fonts/NotoSansCJK-Regular.ttc"
 CJK_LICENCE_URL="https://raw.githubusercontent.com/notofonts/noto-cjk/main/Sans/LICENSE"
+
+# GNU bash für /bin/bash (tools/bash-build.sh)
+BASH_VERSION_CLOKE="5.3"
+BASH_URL="https://ftp.gnu.org/gnu/bash/bash-$BASH_VERSION_CLOKE.tar.gz"
+BASH_SHA256="0d5cd86965f869a26cf64f4b71be7b96f90a3ba8b3d74e27e8e9d9d5550f31ba"
+BASH_TARBALL="$WORK/download/bash/bash-$BASH_VERSION_CLOKE.tar.gz"

@@ -1,0 +1,21 @@
+# ClokeOS: Einstellungen für interaktive bash (von /etc/profile und ~/.bashrc geladen)
+[ -n "$PS1" ] || return
+case "$-" in *i*) ;; *) return ;; esac
+
+PS1='\u@\h \W \$ '
+[ -r /etc/clokeos-release ] && export TZ="$(. /etc/clokeos-release; printf %s "$TIMEZONE")"
+shopt -s checkwinsize histappend
+HISTFILE=${HISTFILE:-$HOME/.bash_history}
+# Die Konsole startet oft, bevor com.clokeos.hostname den Namen gesetzt hat.
+_clokeos_host() { case $HOSTNAME in localhost*) HOSTNAME=$(/bin/hostname) ;; esac; }
+PROMPT_COMMAND=_clokeos_host
+# Eine interaktive bash ignoriert SIGTERM; so beendet sie sich beim Herunterfahren sofort.
+trap 'exit 143' TERM
+# Vor dem Ausschalten alles auf die Platte schreiben (siehe /etc/zshrc)
+poweroff() { sync; command poweroff "$@"; }
+reboot() { sync; command reboot "$@"; }
+alias ll='ls -la'
+if [ -z "$CLOKEOS_GREETED" ] && [ -r /etc/motd ]; then
+  export CLOKEOS_GREETED=1
+  cat /etc/motd
+fi

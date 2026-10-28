@@ -1,6 +1,7 @@
 #!/bin/zsh
 # sw_vers für ClokeOS: liest wie bei macOS /System/Library/CoreServices/SystemVersion.plist
-# (PureDarwins eigenes sw_vers hat die Werte fest einkompiliert).
+# (PureDarwins eigenes sw_vers hat die Werte fest einkompiliert). ProductVersion ist die macOS-
+# Version (11.7, config.sh), ClokeOS' eigene Version steht in ProductUserVisibleVersion.
 
 typeset -A v
 local key= line
@@ -17,7 +18,8 @@ case $1 in
   -productName) print -r -- $v[ProductName] ;;
   -productVersion) print -r -- $v[ProductVersion] ;;
   -buildVersion) print -r -- $v[ProductBuildVersion] ;;
-  '') printf 'ProductName:\t\t%s\nProductVersion:\t\t%s\nBuildVersion:\t\t%s\n' \
-        $v[ProductName] $v[ProductVersion] $v[ProductBuildVersion] ;;
-  *) print -u2 'usage: sw_vers [-productName|-productVersion|-buildVersion]'; exit 1 ;;
+  -clokeosVersion) print -r -- $v[ProductUserVisibleVersion] ;;
+  '') printf 'ProductName:\t\t%s\nProductVersion:\t\t%s\nClokeOSVersion:\t\t%s\nBuildVersion:\t\t%s\n' \
+        $v[ProductName] $v[ProductVersion] $v[ProductUserVisibleVersion] $v[ProductBuildVersion] ;;
+  *) print -u2 'usage: sw_vers [-productName|-productVersion|-clokeosVersion|-buildVersion]'; exit 1 ;;
 esac

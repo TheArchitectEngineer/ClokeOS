@@ -110,7 +110,7 @@ cat > "$tmp/stage/System/Library/CoreServices/SystemVersion.plist" <<EOF
 	<key>ProductUserVisibleVersion</key>
 	<string>$CLOKE_VERSION</string>
 	<key>ProductVersion</key>
-	<string>$CLOKE_VERSION</string>
+	<string>$CLOKE_MACOS_COMPAT</string>
 </dict>
 </plist>
 EOF
@@ -123,9 +123,53 @@ BUILD="$CLOKE_BUILD"
 HOSTNAME="$CLOKE_HOST"
 TIMEZONE="$CLOKE_TZ"
 LOGIN="$CLOKE_LOGIN"
+SHELL_DEFAULT="/bin/$CLOKE_SHELL"
 BASE="PureDarwin $PD_VERSION"
 EOF
 printf '%s\n' "$CLOKE_LANGUAGE" > "$tmp/stage/etc/clokeos-language"
+
+# bash: /bin/bash, die Shell-Liste und /etc/profile lädt /etc/bashrc für interaktive bash
+"$HERE/tools/bash-build.sh" "$tmp/stage"
+{ "$DEBUGFS" -R 'cat /etc/shells' "$root" 2>/dev/null; echo /bin/bash; } | awk '!seen[$0]++' > "$tmp/stage/etc/shells"
+"$DEBUGFS" -R 'cat /etc/profile' "$root" 2>/dev/null > "$tmp/stage/etc/profile"
+grep -q PATH "$tmp/stage/etc/profile" || { echo "/etc/profile im Basisimage nicht gefunden" >&2; exit 1; }
+printf '\n# ClokeOS\n[ -n "$BASH_VERSION" ] && [ -r /etc/bashrc ] && . /etc/bashrc\n' >> "$tmp/stage/etc/profile"
+
+# --- Desktop: Homebrew (siehe README, "Homebrew") ------------------------------------------
+# libcompat: fehlende libSystem-Symbole und libffi.dylib; Absolute /usr/bin-Pfade, die Homebrew
+# erwartet (PureDarwin legt die Werkzeuge nach /bin); Präfix für den Benutzer anlegen (kein sudo)
+hb_cmds=
+if [ "$CLOKE_FLAVOR" = desktop ]; then
+  "$HERE/libcompat/build.sh" "$tmp/stage"
+  for n in curl date false find grep openssl printf readlink sed stat sw_vers tail true whoami xargs tar gzip \
+           gunzip xz uname id ls mkdir rm cp mv ln chmod chown touch cat head sort uniq tr wc cut tee basename \
+           dirname mktemp diff cmp awk file hostname which ps sysctl expr dd df du ssh ssh-keygen sleep kill \
+           rmdir test bash zsh sh; do
+    if "$DEBUGFS" -R "stat /bin/$n" "$root" 2>/dev/null | grep -q '^Inode' &&
+       ! "$DEBUGFS" -R "stat /usr/bin/$n" "$root" 2>/dev/null | grep -q '^Inode' && [ ! -e "$tmp/stage/usr/bin/$n" ]; then
+      ln -s "../../bin/$n" "$tmp/stage/usr/bin/$n"
+    fi
+  done
+  if [ "$CLOKE_ARCH" = arm64 ]; then
+    hb_prefix=/opt/homebrew
+    mkdir -p "$tmp/stage$hb_prefix"
+    hb_cmds="$(printf 'set_inode_field %s mode 040775\nset_inode_field %s uid %s\nset_inode_field %s gid 20\n' \
+      "$hb_prefix" "$hb_prefix" "${CLOKE_USER_UID}" "$hb_prefix")"
+  else
+    hb_cmds="$(printf 'set_inode_field /usr/local mode 040775\nset_inode_field /usr/local gid 20\n')"
+  fi
+  # Homebrew im PATH, sobald es eingerichtet ist (clokeos-install-homebrew)
+  cat >> "$tmp/stage/etc/profile" <<'EOF2'
+if [ -x /opt/homebrew/bin/brew ]; then
+  export HOMEBREW_PREFIX=/opt/homebrew HOMEBREW_CELLAR=/opt/homebrew/Cellar HOMEBREW_REPOSITORY=/opt/homebrew
+  PATH=/opt/homebrew/bin:/opt/homebrew/sbin:$PATH
+elif [ -x /usr/local/bin/brew ]; then
+  export HOMEBREW_PREFIX=/usr/local HOMEBREW_CELLAR=/usr/local/Cellar HOMEBREW_REPOSITORY=/usr/local/Homebrew
+  PATH=/usr/local/bin:/usr/local/sbin:$PATH
+fi
+export PATH
+EOF2
+fi
 
 "$DEBUGFS" -R 'cat /etc/zshrc' "$root" 2>/dev/null > "$tmp/stage/etc/zshrc"
 grep -q 'interactive' "$tmp/stage/etc/zshrc" || { echo "/etc/zshrc im Basisimage nicht gefunden" >&2; exit 1; }
@@ -154,6 +198,7 @@ EOF
 # Ohne Passwort (leeres Feld, die Eingabetaste meldet an), Gruppe staff, Ordner wie in clokeos.html.
 # PureDarwin hat kein su und kein sudo; für Verwaltung gibt es auf der Anmeldung root.
 : > "$tmp/extra.cmds"
+[ -z "$hb_cmds" ] || printf '%s\n' "$hb_cmds" >> "$tmp/extra.cmds"
 if [ "$CLOKE_FLAVOR" = desktop ]; then
   # /Applications wie bei macOS für Administratoren beschreibbar; hier die Gruppe staff, damit
   # der Benutzer Programme durch Hineinziehen installieren kann
@@ -165,9 +210,9 @@ if [ "$CLOKE_FLAVOR" = desktop ] && [ -n "$CLOKE_USER" ]; then
     "$DEBUGFS" -R "cat /etc/${f%:*}" "$root" 2>/dev/null > "$tmp/stage/etc/${f%:*}"
     grep -q "^${f#*:}:" "$tmp/stage/etc/${f%:*}" || { echo "/etc/${f%:*} im Basisimage nicht gefunden" >&2; exit 1; }
   done
-  printf '%s::%s:20::0:0:%s:%s:/bin/zsh\n' "$CLOKE_USER" "$CLOKE_USER_UID" "$CLOKE_USER_NAME" "$home" \
+  printf '%s::%s:20::0:0:%s:%s:/bin/%s\n' "$CLOKE_USER" "$CLOKE_USER_UID" "$CLOKE_USER_NAME" "$home" "$CLOKE_SHELL" \
     >> "$tmp/stage/etc/master.passwd"
-  printf '%s:*:%s:20:%s:%s:/bin/zsh\n' "$CLOKE_USER" "$CLOKE_USER_UID" "$CLOKE_USER_NAME" "$home" \
+  printf '%s:*:%s:20:%s:%s:/bin/%s\n' "$CLOKE_USER" "$CLOKE_USER_UID" "$CLOKE_USER_NAME" "$home" "$CLOKE_SHELL" \
     >> "$tmp/stage/etc/passwd"
   sed -i '' "s/^staff:\(.*\)$/staff:\1,$CLOKE_USER/" "$tmp/stage/etc/group"
   # wie bei macOS nur für root lesbar; die übrigen Programme lesen /etc/passwd
@@ -182,6 +227,8 @@ if [ "$CLOKE_FLAVOR" = desktop ] && [ -n "$CLOKE_USER" ]; then
   echo 'file:///Volumes Volumes' >> "$h/.config/gtk-3.0/bookmarks"
   for f in profile zprofile zshrc; do printf 'test -r /etc/%s && . /etc/%s\n' $f $f > "$h/.$f"; done
   printf "alias ll='ls -la'\n" >> "$h/.zshrc"
+  printf 'test -r /etc/profile && . /etc/profile\ntest -r ~/.bashrc && . ~/.bashrc\n' > "$h/.bash_profile"
+  printf 'test -r /etc/bashrc && . /etc/bashrc\n' > "$h/.bashrc"
   cat > "$h/Desktop/Welcome.txt" <<EOF
 Welcome to ClokeOS $CLOKE_VERSION "$CLOKE_CODENAME"
 

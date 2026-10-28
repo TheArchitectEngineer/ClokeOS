@@ -1,0 +1,4 @@
+#!/bin/sh
+# codesign für ClokeOS: PureDarwin prüft keine Code-Signaturen, und der Linker legt auf arm64 schon
+# eine Ad-hoc-Signatur an. Homebrew ruft es nach dem Umschreiben von Bibliotheks-Pfaden auf.
+exit 0

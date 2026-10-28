@@ -1,0 +1,48 @@
+#!/bin/bash
+# Richtet Homebrew auf ClokeOS ein: holt das Repository von GitHub (flacher Klon) in den Präfix und
+# lädt Homebrews Portable Ruby (Bottle für Big Sur). Danach geht `brew install <Paket>` für alles,
+# was Homebrew als Big-Sur-Bottle anbietet; Compiler und Bauen aus dem Quelltext sind nicht vorgesehen.
+#
+#   clokeos-install-homebrew         als normaler Benutzer (nicht root, Homebrew lehnt root ab)
+#
+# Präfix wie Homebrew: /opt/homebrew auf arm64, /usr/local auf x86_64. Das Image legt ihn
+# für die Gruppe staff beschreibbar an, ein sudo gibt es auf ClokeOS nicht.
+set -eu
+
+case "$(uname -m)" in
+  arm64) prefix=/opt/homebrew repo=/opt/homebrew ;;
+  *) prefix=/usr/local repo=/usr/local/Homebrew ;;
+esac
+
+if [ "$(id -u)" = 0 ]; then
+  echo "Als root lehnt Homebrew die Arbeit ab. Melde dich als normaler Benutzer an." >&2
+  exit 1
+fi
+if [ ! -w "$prefix" ]; then
+  echo "$prefix ist fuer $(id -un) nicht beschreibbar (Gruppe staff noetig)." >&2
+  exit 1
+fi
+
+if [ ! -e "$repo/.git" ]; then
+  echo "==> Hole Homebrew nach $repo"
+  tmp="$prefix/.clone.$$"
+  git clone --depth 1 https://github.com/Homebrew/brew "$tmp"
+  if [ "$repo" = "$prefix" ]; then
+    # Praefix ist das Repository: Inhalt des Klons hineinschieben
+    (cd "$tmp" && tar cf - .) | (cd "$repo" && tar xf -)
+    rm -rf "$tmp"
+  else
+    mv "$tmp" "$repo"
+    mkdir -p "$prefix/bin"
+    ln -sf ../Homebrew/bin/brew "$prefix/bin/brew"
+  fi
+fi
+
+export PATH="$prefix/bin:$PATH"
+echo "==> Lade Portable Ruby"
+brew vendor-install ruby
+brew --version
+
+echo
+echo "Fertig. Neue Shell oeffnen (oder . /etc/profile) und zum Beispiel ausprobieren:"
+echo "  brew install figlet"

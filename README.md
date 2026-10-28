@@ -200,6 +200,24 @@ The base is PureDarwin's preview image `puredarwin-arm64-virt.img` (3.1 GiB). Wi
 
 Darling's Mac frameworks also run on arm64: `macapps/cfarm64.S` and `cfarm64.m` implement Apple's arm64 calling convention for message forwarding and `NSInvocation`, checked against clang itself with 3200 random signatures (`macapps/arm64abi.py`) and in the VM.
 
+### bash and Homebrew
+
+The desktop image has **GNU bash 5.3** as `/bin/bash` next to PureDarwin's zsh (`tools/bash-build.sh` builds it on the Mac: PureDarwin's libSystem lacks `___chkstk_darwin`, `strchrnul`, `iconv`, `/dev/fd` and FIFOs, so `tools/bash-clokeos.patch` runs `<(cmd)` through a temporary file, and the build script checks every imported symbol against the image's libSystem). zsh stays the default login shell; `CLOKEOS_SHELL=bash ./brand.sh` makes bash the login shell of the guest account instead (`/etc/shells`, `/etc/profile` and `/etc/bashrc` are set up for both; the console login that `launchd` starts is still zsh, run `bash -l`).
+
+**Homebrew** works with Big Sur bottles on arm64 (tested: `brew install figlet`; Homebrew itself needs git, curl and its own Portable Ruby, nothing is compiled). One command as a normal user sets it up:
+
+```bash
+clokeos-install-homebrew     # git clone of Homebrew/brew into /opt/homebrew, downloads Portable Ruby
+brew install figlet          # after opening a new login shell
+```
+
+The prefix is `/opt/homebrew` on arm64 (owned by the guest account, group `staff` may write because there is no sudo) and `/usr/local` on x86_64 (the only prefix Intel bottles are built for; **not tested**, the x86_64 desktop image was not built here). What it took:
+
+- **macOS version.** Homebrew reads `ProductVersion` straight from `SystemVersion.plist`, so that key is now the macOS version Darwin 20.5 corresponds to (`CLOKE_MACOS_COMPAT=11.7`, Big Sur) and ClokeOS's own version lives in `ProductUserVisibleVersion` (`sw_vers -clokeosVersion`, plain `sw_vers` shows both).
+- **`libcompat/`.** `libclokeos_compat.dylib` exports what Apple-SDK binaries import from libSystem and PureDarwin lacks: CommonCrypto MD5/SHA-1/SHA-384/SHA-512 and `___chkstk_darwin` (Portable Ruby), `clock_getres`, `lchmod`, `lgamma_r`, `setruid`, fenv and a few more (stubs for ucontext, libunwind and Mach exception ports), and two stubs that make `git clone https://` work (`git-remote-http` binds `SCDynamicStoreCopyProxies` flat). `libcompat/build.sh` adds it as an extra `LC_REEXPORT_DYLIB` to PureDarwin's `/usr/lib/libSystem.B.dylib` (`reexport.py`), so two-level-bound programs find the symbols; the same script wraps PureDarwin's `libffi.a` into `/usr/lib/libffi.dylib` for Ruby's fiddle.
+- **Absolute paths Homebrew uses.** `/usr/bin/{curl,tar,sed,stat,...}` link to `/bin`, `/usr/bin/python`, `/private/{tmp,var,etc}`, and small shims `shasum` (openssl), `codesign` (no-op, PureDarwin does not check signatures) and `locale`.
+- **Limits.** Only formulae with a Big Sur bottle work (`brew install` of anything else would build from source and stops at "No developer tools"); the sandbox is unavailable; `brew update` is slow in the VM.
+
 ### Architectures
 
 | Target | State | Base |

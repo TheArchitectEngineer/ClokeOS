@@ -1,0 +1,8 @@
+#!/bin/sh
+# locale für ClokeOS (PureDarwin hat keins): Homebrew fragt "locale charmap" und setzt sonst LC_ALL
+# auf ein Gebietsschema, das es hier nicht gibt.
+case $1 in
+  charmap) echo UTF-8 ;;
+  -a) echo C; echo en_US.UTF-8 ;;
+  *) echo "LANG=${LANG:-}"; echo "LC_ALL=${LC_ALL:-}" ;;
+esac

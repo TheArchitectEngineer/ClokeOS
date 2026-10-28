@@ -1,0 +1,26 @@
+#!/bin/sh
+# shasum für ClokeOS (Apples ist ein Perl-Skript, Perl gibt es nicht): -a 1|256|384|512 und -c/--check
+# auf Basis von openssl dgst. Homebrew ruft es als /usr/bin/shasum -a 256 <datei> auf.
+alg=sha1 check=0
+while [ $# -gt 0 ]; do
+  case $1 in
+    -a) case $2 in 1) alg=sha1 ;; 256) alg=sha256 ;; 384) alg=sha384 ;; 512) alg=sha512 ;;
+          *) echo "shasum: Unbekannter Algorithmus $2" >&2; exit 1 ;; esac; shift 2 ;;
+    -c|--check) check=1; shift ;;
+    -b|-t|-p|-q|--quiet|--status|--binary|--text) shift ;;
+    --) shift; break ;;
+    -*) echo "shasum: Unbekannte Option $1" >&2; exit 1 ;;
+    *) break ;;
+  esac
+done
+sum() { /usr/bin/openssl dgst -"$alg" -r "$1" | { read -r h _; printf '%s' "$h"; }; }
+if [ $check = 1 ]; then
+  rc=0
+  cat "$@" | while read -r h f; do
+    f=${f#\*}
+    if [ "$(sum "$f")" = "$h" ]; then echo "$f: OK"; else echo "$f: FAILED"; exit 1; fi
+  done || rc=1
+  exit $rc
+fi
+if [ $# -eq 0 ]; then set -- /dev/stdin; fi
+for f; do printf '%s  %s\n' "$(sum "$f")" "$f"; done
