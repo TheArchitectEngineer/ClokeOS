@@ -20,17 +20,18 @@ if [ ! -d swift ]; then
   cmake -P swift/Runtimes/Resync.cmake >/dev/null
 fi
 sdk="$(xcrun --show-sdk-path)"
-dep="${SWIFT_DEPLOY:-15.0}"   # Logic Pro verlangt 15.6; die Rückportierungs-Bibliotheken (libswiftCompatibility*.a) der Toolchain haben keine x86_64-Scheibe mehr, ab 15 braucht man sie nicht
+dep="${SWIFT_DEPLOY:-11.0}"   # nicht höher: ab macOS 12 ruft der Compiler objc_claimAutoreleasedReturnValue auf, das PureDarwins libobjc (781) nicht hat
 for a in arm64 x86_64; do
   extra=()
   [ $a = arm64 ] && extra=(-DCMAKE_CXX_FLAGS=-DCLOKEOS_OLD_OBJC_ISA=1)
+  # TRY_COMPILE STATIC: die Rückportierungs-Archive (libswiftCompatibility*.a) der Toolchain haben keine x86_64-Scheibe mehr, ein Link-Test scheiterte
   # CMP0195 NEW: verschachtelte .swiftmodule-Ordner, sonst kollidiert der Modulpfad mit dem .swiftinterface.
   # CMAKE_Swift_COMPILER_TARGET: sonst übersetzt swiftc den Swift-Teil immer für den Host (arm64, macOS 27).
   cmake -G Ninja -S swift/Runtimes/Core -B "b-$a" -DCMAKE_POLICY_DEFAULT_CMP0195=NEW -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_OSX_SYSROOT="$sdk" -DCMAKE_OSX_ARCHITECTURES=$a -DCMAKE_OSX_DEPLOYMENT_TARGET=$dep \
     -DCMAKE_Swift_COMPILER_TARGET=$a-apple-macos$dep \
     -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_Swift_COMPILER="$(xcrun -f swiftc)" \
-    -DBUILD_SHARED_LIBS=ON -DSwiftCore_ENABLE_BACKTRACING=OFF "${extra[@]}" >/dev/null
+    -DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY -DBUILD_SHARED_LIBS=ON -DSwiftCore_ENABLE_BACKTRACING=OFF ${extra[@]+"${extra[@]}"} >/dev/null
   ninja -C "b-$a" swiftCore >/dev/null
   r="run-$a"; mkdir -p "$r"; cp "b-$a/Core/libswiftCore.dylib" "$r/"
   clang -arch $a -mmacosx-version-min=$dep -c "$here/overlay-stubs.c" -o "$r/stubs.o"
