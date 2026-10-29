@@ -115,21 +115,34 @@ void FN(vpoly)(const T *A, vDSP_Stride IA, const T *B, vDSP_Stride IB, T *C, vDS
 
 // Summen und Extrema
 void FN(sve)(const T *A, vDSP_Stride IA, T *C, vDSP_Length N) {
+  #pragma clang fp reassociate(on)
   T s = 0;
   if (IA == 1) { for (vDSP_Length n = 0; n < N; n++) s += A[n]; } else LOOP s += A[n * IA];
   *C = s;
 }
-void FN(svemg)(const T *A, vDSP_Stride IA, T *C, vDSP_Length N) { T s = 0; LOOP s += FABS(A[n * IA]); *C = s; }
-void FN(svesq)(const T *A, vDSP_Stride IA, T *C, vDSP_Length N) { T s = 0; LOOP s += A[n * IA] * A[n * IA]; *C = s; }
-void FN(meanv)(const T *A, vDSP_Stride IA, T *C, vDSP_Length N) { T s = 0; LOOP s += A[n * IA]; *C = N ? s / (T)N : 0; }
-void FN(measqv)(const T *A, vDSP_Stride IA, T *C, vDSP_Length N) { T s = 0; LOOP s += A[n * IA] * A[n * IA]; *C = N ? s / (T)N : 0; }
-void FN(rmsqv)(const T *A, vDSP_Stride IA, T *C, vDSP_Length N) { T s = 0; LOOP s += A[n * IA] * A[n * IA]; *C = N ? SQRT(s / (T)N) : 0; }
+void FN(svemg)(const T *A, vDSP_Stride IA, T *C, vDSP_Length N) {
+  #pragma clang fp reassociate(on)
+ T s = 0; LOOP s += FABS(A[n * IA]); *C = s; }
+void FN(svesq)(const T *A, vDSP_Stride IA, T *C, vDSP_Length N) {
+  #pragma clang fp reassociate(on)
+ T s = 0; LOOP s += A[n * IA] * A[n * IA]; *C = s; }
+void FN(meanv)(const T *A, vDSP_Stride IA, T *C, vDSP_Length N) {
+  #pragma clang fp reassociate(on)
+ T s = 0; LOOP s += A[n * IA]; *C = N ? s / (T)N : 0; }
+void FN(measqv)(const T *A, vDSP_Stride IA, T *C, vDSP_Length N) {
+  #pragma clang fp reassociate(on)
+ T s = 0; LOOP s += A[n * IA] * A[n * IA]; *C = N ? s / (T)N : 0; }
+void FN(rmsqv)(const T *A, vDSP_Stride IA, T *C, vDSP_Length N) {
+  #pragma clang fp reassociate(on)
+ T s = 0; LOOP s += A[n * IA] * A[n * IA]; *C = N ? SQRT(s / (T)N) : 0; }
 void FN(dotpr)(const T *A, vDSP_Stride IA, const T *B, vDSP_Stride IB, T *C, vDSP_Length N) {
+  #pragma clang fp reassociate(on)
   T s = 0;
   if (IA == 1 && IB == 1) { for (vDSP_Length n = 0; n < N; n++) s += A[n] * B[n]; } else LOOP s += A[n * IA] * B[n * IB];
   *C = s;
 }
 void FN(distancesq)(const T *A, vDSP_Stride IA, const T *B, vDSP_Stride IB, T *C, vDSP_Length N) {
+  #pragma clang fp reassociate(on)
   T s = 0; LOOP { T d = A[n * IA] - B[n * IB]; s += d * d; } *C = s;
 }
 void FN(maxv)(const T *A, vDSP_Stride IA, T *C, vDSP_Length N) {
@@ -172,12 +185,12 @@ void FN(normalize)(const T *A, vDSP_Stride IA, T *C, vDSP_Stride IC, T *Mean, T 
 
 // Matrizen (zeilenweise)
 void FN(mmul)(const T *A, vDSP_Stride IA, const T *B, vDSP_Stride IB, T *C, vDSP_Stride IC, vDSP_Length M, vDSP_Length N, vDSP_Length P) {
-  // C (M x P) = A (M x N) * B (N x P)
+  // C (M x N) = A (M x P) * B (P x N), zeilenweise
   for (vDSP_Length m = 0; m < M; m++)
-    for (vDSP_Length p = 0; p < P; p++) {
+    for (vDSP_Length n = 0; n < N; n++) {
       T s = 0;
-      for (vDSP_Length k = 0; k < N; k++) s += A[(m * N + k) * IA] * B[(k * P + p) * IB];
-      C[(m * P + p) * IC] = s;
+      for (vDSP_Length k = 0; k < P; k++) s += A[(m * P + k) * IA] * B[(k * N + n) * IB];
+      C[(m * N + n) * IC] = s;
     }
 }
 void FN(mtrans)(const T *A, vDSP_Stride IA, T *C, vDSP_Stride IC, vDSP_Length M, vDSP_Length N) {
@@ -191,6 +204,7 @@ void FN(mmov)(const T *A, T *C, vDSP_Length M, vDSP_Length N, vDSP_Length TA, vD
 
 // Faltung bzw. Korrelation: C[n] = sum_p A[(n+p)*IA] * F[p*IF]; bei negativem IF (Faltung) wird F rückwärts gelesen
 void FN(conv)(const T *A, vDSP_Stride IA, const T *F, vDSP_Stride IF, T *C, vDSP_Stride IC, vDSP_Length N, vDSP_Length P) {
+  #pragma clang fp reassociate(on)
   vDSP_Stride fs = IF;
   const T *Fb = F;   // bei negativem IF zeigt F auf das letzte Filterelement
   if (IA == 1 && IC == 1 && (fs == 1 || fs == -1)) {

@@ -28,7 +28,7 @@ clang -target "$TARGET" -isysroot "$SDK" -O3 -g0 -w ${ARCHCC[@]+"${ARCHCC[@]}"} 
   $([ "$CLOKE_ARCH" = arm64 ] && echo -Wl,-no_fixup_chains) \
   -install_name /System/Library/Frameworks/Accelerate.framework/Versions/A/Accelerate \
   -compatibility_version 1 -current_version 1 \
-  -o "$d/Versions/A/Accelerate" "$M"/accelerate/{vdsp,vforce,blas,lapack,vimage}.c \
+  -o "$d/Versions/A/Accelerate" "$M"/accelerate/{vdsp,vforce,blas,lapack,vimage,ccompat}.c \
   "$pd/usr/lib/libSystem.B.dylib" 2>&1 | grep -v '^ld: warning' || true
 [ -f "$d/Versions/A/Accelerate" ] || exit 1
 cat > "$d/Versions/A/Resources/Info.plist" <<'PL'
@@ -47,6 +47,6 @@ ln -s A "$d/Versions/Current"; ln -s Versions/Current/Accelerate "$d/Accelerate"
 # Prüfprogramm gegen Apples SDK gelinkt (wie ein Mac-Programm), zur Laufzeit gilt unser Framework
 mkdir -p "$root/Library/ClokeOS/Probe"
 clang -target "$TARGET" -isysroot "$SDK" -O2 ${ARCHCC[@]+"${ARCHCC[@]}"} -framework Accelerate \
-  -o "$root/Library/ClokeOS/Probe/acctest" "$M/accelerate/acctest.c"
+  -o "$root/Library/ClokeOS/Probe/acctest" "$M/accelerate/acctest.c" "$M/accelerate/acctest_lapack.c"
 echo "Fertig: $d"
 nm -gU "$d/Versions/A/Accelerate" | wc -l

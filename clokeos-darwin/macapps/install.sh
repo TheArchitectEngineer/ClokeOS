@@ -37,6 +37,7 @@ done
 "$M/foundation.sh" | tail -1
 "$M/appkit.sh" | tail -1
 "$M/coreaudio.sh" | tail -2 | head -1 || echo "CoreAudio-Shim nicht gebaut"
+"$M/accelerate.sh" | tail -2 | head -1 || echo "Accelerate-Teilmenge nicht gebaut"
 
 mkdir -p "$stage/Library/ClokeOS"
 rm -rf "$stage/Library/ClokeOS/MacFrameworks"

@@ -84,8 +84,8 @@ CAT(FFTSetup, SUF) CAT(vDSP_create_fftsetup, SUF)(vDSP_Length log2n, FFTRadix ra
   if (!s) return NULL;
   s->log2n = log2n; s->wr = (T *)(s + 1); s->wi = s->wr + h;
   for (size_t k = 0; k < h; k++) {
-    long double a = -2.0L * 3.14159265358979323846264338327950288L * (long double)k / (long double)((size_t)1 << log2n);
-    s->wr[k] = (T)cosl(a); s->wi[k] = (T)sinl(a);
+    double a = -2.0 * 3.14159265358979323846264338327950288 * (double)k / (double)((size_t)1 << log2n);
+    s->wr[k] = (T)cos(a); s->wi[k] = (T)sin(a);
   }
   return (CAT(FFTSetup, SUF))s;
 }

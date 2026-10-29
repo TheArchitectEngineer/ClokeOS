@@ -38,6 +38,7 @@ dd if="$tmp/image.img" of="$root" bs=512 skip="$root_start" count="$root_count" 
 
 # --- Dateien zusammenstellen ---------------------------------------------------------------
 cp -R "$HERE/overlay/." "$tmp/stage/"
+[ -z "${CLOKE_EXTRA_STAGE:-}" ] || cp -R "$CLOKE_EXTRA_STAGE/." "$tmp/stage/"   # z. B. macapps/accelerate.sh-Ausgabe für einen Test in der VM
 if [ "$CLOKE_FLAVOR" = desktop ]; then
   cp -R "$HERE/overlay-desktop/." "$tmp/stage/"
   # Noto Sans CJK für Schriftzeichen, die Cloke Sans nicht hat (fontconfig weicht automatisch darauf aus)

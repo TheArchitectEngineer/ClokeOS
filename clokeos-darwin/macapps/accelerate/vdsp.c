@@ -110,11 +110,12 @@ void vDSP_vrampmul2(const float *I0, const float *I1, vDSP_Stride IS, float *A, 
 void vDSP_vlint(const float *A, const float *B, vDSP_Stride IB, float *C, vDSP_Stride IC, vDSP_Length N, vDSP_Length M) {
   LOOP { float p = B[n * IB]; long j = (long)p; float f = p - (float)j; C[n * IC] = A[j] + f * (A[j + 1] - A[j]); }
 }
+// quadratische Interpolation durch drei Stützstellen j-1, j, j+1 (bei j = 0: 0, 1, 2), ausgewertet bei B
 void vDSP_vqint(const float *A, const float *B, vDSP_Stride IB, float *C, vDSP_Stride IC, vDSP_Length N, vDSP_Length M) {
   LOOP {
-    float p = B[n * IB]; long j = (long)p; float b = p - (float)j;
-    float c = A[j], d = A[j + 1], e = A[j + 2];
-    C[n * IC] = d + 0.5f * b * ((e - c) + b * (e - 2 * d + c));
+    float p = B[n * IB]; long j = (long)p, st = j > 0 ? j - 1 : 0; float x = p - (float)st;
+    float y0 = A[st], y1 = A[st + 1], y2 = A[st + 2];
+    C[n * IC] = y0 + (y1 - y0) * x + 0.5f * (y2 - 2 * y1 + y0) * x * (x - 1);
   }
 }
 // Tabelle C (M Werte), Position = A*S1 + S2, auf [0, M-1] begrenzt, linear interpoliert
@@ -163,29 +164,24 @@ static void isort(const float *C, vDSP_Length *I, vDSP_Length *tmp, vDSP_Length 
 }
 void vDSP_vsorti(const float *C, vDSP_Length *I, vDSP_Length *Temporary, vDSP_Length N, int Order) { isort(C, I, Temporary, N, Order >= 0); }
 
-// ---- Nulldurchgänge: B = höchste gesuchte Anzahl; C = Index des letzten gefundenen, D = Anzahl ----
+// ---- Nulldurchgänge: B = gesuchte Anzahl; C = Index des B-ten Durchgangs (0, wenn weniger gefunden), D = Anzahl ----
 void vDSP_nzcros(const float *A, vDSP_Stride IA, vDSP_Length B, vDSP_Length *C, vDSP_Length *D, vDSP_Length N) {
   vDSP_Length cnt = 0, last = 0;
   for (vDSP_Length n = 1; n < N && cnt < B; n++) {
     float p = A[(n - 1) * IA], q = A[n * IA];
     if ((p < 0 && q >= 0) || (p > 0 && q <= 0)) { cnt++; last = n; }
   }
-  *C = last; *D = cnt;
+  *C = cnt == B ? last : 0; *D = cnt;
 }
 
-// ---- Bild-FIR (double): Korrelation mit P x Q Filter, Rand mit Nullen aufgefüllt ----
+// ---- Bild-FIR (double): Korrelation mit P x Q Filter; nur der Innenbereich wird berechnet, der Rand (P/2, Q/2) bleibt 0 ----
 void vDSP_imgfirD(const double *A, vDSP_Length NR, vDSP_Length NC, const double *F, double *C, vDSP_Length P, vDSP_Length Q) {
   long hp = (long)P / 2, hq = (long)Q / 2;
   for (long r = 0; r < (long)NR; r++)
     for (long c = 0; c < (long)NC; c++) {
       double s = 0;
-      for (long p = 0; p < (long)P; p++) {
-        long rr = r + p - hp; if (rr < 0 || rr >= (long)NR) continue;
-        for (long q = 0; q < (long)Q; q++) {
-          long cc = c + q - hq; if (cc < 0 || cc >= (long)NC) continue;
-          s += A[rr * NC + cc] * F[p * Q + q];
-        }
-      }
+      if (r >= hp && r + (long)P - 1 - hp < (long)NR && c >= hq && c + (long)Q - 1 - hq < (long)NC)
+        for (long p = 0; p < (long)P; p++) for (long q = 0; q < (long)Q; q++) s += A[(r + p - hp) * NC + c + q - hq] * F[p * Q + q];
       C[r * NC + c] = s;
     }
 }

@@ -13,6 +13,10 @@
 
 typedef long I;
 typedef double _Complex Z;
+double acc_cabs(Z);
+Z acc_csqrt(Z);
+#define cabs acc_cabs
+#define csqrt acc_csqrt
 
 void cblas_dgemv(const enum CBLAS_ORDER order, const enum CBLAS_TRANSPOSE ta, const I M, const I N, const double alpha,
                  const double *A, const I lda, const double *X, const I incX, const double beta, double *Y, const I incY) {
