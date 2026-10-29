@@ -15,6 +15,7 @@ static int fails;
 static unsigned rnd(unsigned *s) { *s = *s * 1664525u + 1013904223u; return *s >> 8; }
 
 // --- Teil 1: Einzel-Thread-Verhalten (try-Varianten, Rekursion, EDEADLK) ---
+static void *other_try(void *p) { return (void *)(long)((pthread_rwlock_tryrdlock(p) == EBUSY) + 2 * (pthread_rwlock_trywrlock(p) == EBUSY)); }
 static void basics(void) {
 	pthread_rwlock_t l = PTHREAD_RWLOCK_INITIALIZER;
 	CHECK(pthread_rwlock_rdlock(&l) == 0, "rdlock");
@@ -23,9 +24,9 @@ static void basics(void) {
 	CHECK(pthread_rwlock_trywrlock(&l) == EBUSY, "trywrlock bei Lesern: EBUSY");
 	CHECK(pthread_rwlock_unlock(&l) == 0 && pthread_rwlock_unlock(&l) == 0 && pthread_rwlock_unlock(&l) == 0, "unlock x3");
 	CHECK(pthread_rwlock_trywrlock(&l) == 0, "trywrlock frei");
-	int e1 = pthread_rwlock_tryrdlock(&l); printf("e1=%d\n", e1); if (e1 == 0) pthread_rwlock_unlock(&l);
-	CHECK(pthread_rwlock_tryrdlock(&l) == EBUSY, "tryrdlock beim Schreiber: EBUSY");
-	CHECK(pthread_rwlock_trywrlock(&l) == EBUSY, "trywrlock beim Schreiber: EBUSY");
+	CHECK(pthread_rwlock_tryrdlock(&l) == EDEADLK, "tryrdlock im eigenen wrlock: EDEADLK");
+	CHECK(pthread_rwlock_trywrlock(&l) == EDEADLK, "trywrlock im eigenen wrlock: EDEADLK");
+	{ pthread_t t; void *r; pthread_create(&t, 0, other_try, &l); pthread_join(t, &r); CHECK((long)r == 3, "anderer Thread: tryrd/trywr beim Schreiber EBUSY"); }
 	CHECK(pthread_rwlock_wrlock(&l) == EDEADLK, "wrlock im eigenen wrlock: EDEADLK");
 	CHECK(pthread_rwlock_unlock(&l) == 0, "unlock Schreiber");
 	CHECK(pthread_rwlock_destroy(&l) == 0, "destroy");
@@ -78,12 +79,15 @@ static void contended(void) {
 	pthread_t t[12]; int n = 0;
 	for (long i = 0; i < 6; i++) pthread_create(&t[n++], 0, rd, (void *)i);
 	for (long i = 0; i < 3; i++) pthread_create(&t[n++], 0, wr, (void *)i);
+	for (int i = 0; i < n; i++) pthread_join(t[i], 0);
+	n = 0;  // try-Varianten gegen einen einzelnen Leser und Schreiber: dazwischen ist die Sperre auch frei
+	pthread_create(&t[n++], 0, rd, (void *)7L); pthread_create(&t[n++], 0, wr, (void *)7L);
 	for (long i = 0; i < 3; i++) pthread_create(&t[n++], 0, tr, (void *)i);
 	for (int i = 0; i < n; i++) pthread_join(t[i], 0);
 	CHECK(viol == 0, "Ausschluss/Teilen verletzt");
 	CHECK(max_readers > 1, "Leser haben sich nie überlappt");
-	CHECK(reads_done == 360 && writes_done == 75, "nicht alle Läufe fertig");
-	CHECK(a_val == b_val, "a != b");
+	CHECK(reads_done == 420 && writes_done == 100, "nicht alle Läufe fertig");
+	CHECK(a_val == b_val, "a != b"); CHECK(try_ok > 0 && try_busy > 0, "try-Varianten: nie Erfolg oder nie EBUSY");
 	CHECK(pthread_rwlock_trywrlock(&rw) == 0, "danach frei"); pthread_rwlock_unlock(&rw);
 	printf("rwlock umkaempft: leser max %d, schreiber %d, try ok/busy %d/%d\n", max_readers, writes_done, try_ok, try_busy);
 }

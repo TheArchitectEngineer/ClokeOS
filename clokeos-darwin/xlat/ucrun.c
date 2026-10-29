@@ -349,10 +349,15 @@ static int kwq_check_init(Kwq *k, uint32_t lgen) {  // _ksyn_check_init
 	if (res && !(k->kflags & KWF_INITCLEARED)) { kwq_clear_reinit(k); k->kflags |= KWF_INITCLEARED; }
 	return res;
 }
-static int kq_insert(Kwq *k, int qi, Kwe *e, uint32_t mgen) {  // ksyn_queue_insert (SEQFIT, ohne Abbruch-Sonderfall)
+static int kq_insert(Kwq *k, int qi, Kwe *e, uint32_t mgen, int firstfit) {  // ksyn_queue_insert (SEQFIT oder FIRSTFIT, ohne Abbruch-Sonderfall)
 	Kq *q = &k->q[qi]; uint32_t seq = mgen & RW_COUNT_MASK; int res = 0;
 	e->lockseq = seq; e->next = e->prev = 0;
 	if (q->count == 0) { q->head = q->tail = e; q->firstnum = q->lastnum = seq; }
+	else if (firstfit) {  // Ankunftsreihenfolge
+		e->prev = q->tail; q->tail->next = e; q->tail = e;
+		if (seq_lower(seq, q->firstnum)) q->firstnum = seq;
+		if (seq_higher(seq, q->lastnum)) q->lastnum = seq;
+	}
 	else if (seq == q->firstnum || seq == q->lastnum) res = EBUSY;
 	else if (seq_lower(q->lastnum, seq)) { e->prev = q->tail; q->tail->next = e; q->tail = e; q->lastnum = seq; }
 	else if (seq_lower(seq, q->firstnum)) { e->next = q->head; q->head->prev = e; q->head = e; q->firstnum = seq; }
@@ -461,7 +466,7 @@ static int rw_lock(int type, uint64_t addr, uint32_t lgen, uint32_t ugen, uint32
 		}
 	}
 	Kwe w; memset(&w, 0, sizeof w);
-	int r = kq_insert(k, qi, &w, lgen);
+	int r = kq_insert(k, qi, &w, lgen, 0);
 	if (r) { pthread_mutex_unlock(&wmx); return r; }
 	BLOCKING_BEGIN;
 	while (!w.woke) {
@@ -471,6 +476,36 @@ static int rw_lock(int type, uint64_t addr, uint32_t lgen, uint32_t ugen, uint32
 	}
 	if (!r) *retval = w.retval;
 	pthread_mutex_unlock(&wmx); BLOCKING_END; return r;
+}
+// Mutex-Warten/Entsperren, nur Richtlinie FIRSTFIT (die Voreinstellung; rekursive und Fehlerprüf-Mutexe brauchen es, normale gehen über ulock): _psynch_mutexwait/_mutexdrop.
+// Ohne Besitzerhinweis (tid) und Turnstile; die Wartenden liegen in der Schreiberliste der kwq, ein Entsperren ohne Wartende wird vorgemerkt.
+static int mtx_wait(uint64_t addr, uint32_t mgen, uint32_t ugen, uint32_t *retval) {
+	uint32_t lseq = mgen & RW_COUNT_MASK; int r = 0;
+	pthread_mutex_lock(&wmx);
+	Kwq *k = kwq_find(addr, mgen, ugen, 0);
+	if (k->prepost.count) {  // vorgemerktes Entsperren: Sperre sofort übernehmen
+		k->prepost.count--;
+		*retval = ((k->inqueue == 0 ? lseq : (k->q[KQ_WRITE].lastnum & RW_COUNT_MASK)) | RWL_KBIT | RWL_EBIT) & ~0x20u;
+		pthread_mutex_unlock(&wmx); return 0;
+	}
+	Kwe w; memset(&w, 0, sizeof w);
+	if ((r = kq_insert(k, KQ_WRITE, &w, mgen, 1))) { pthread_mutex_unlock(&wmx); return r; }
+	BLOCKING_BEGIN;
+	while (!w.woke) {
+		if (__atomic_load_n(&sig_pending, __ATOMIC_SEQ_CST) & ~(gmask << 1)) { kq_remove(k, &k->q[KQ_WRITE], &w); r = EINTR; break; }
+		struct timespec slice; clock_gettime(CLOCK_REALTIME, &slice); slice.tv_nsec += 20000000; if (slice.tv_nsec >= 1000000000) { slice.tv_sec++; slice.tv_nsec -= 1000000000; }
+		pthread_cond_timedwait(&wcv, &wmx, &slice);
+	}
+	if (!r) *retval = w.retval & ~0x20u;
+	pthread_mutex_unlock(&wmx); BLOCKING_END; return r;
+}
+static void mtx_drop(uint64_t addr, uint32_t mgen, uint32_t ugen) {
+	pthread_mutex_lock(&wmx);
+	Kwq *k = kwq_find(addr, mgen, ugen, 0);
+	k->lastunlockseq = ugen & RW_COUNT_MASK;
+	if (k->inqueue == 0) { if (k->prepost.count == 0) { k->prepost.lseq = mgen & RW_COUNT_MASK; } k->prepost.count++; }
+	else kwq_signal(k, KQ_WRITE, (k->q[KQ_WRITE].lastnum & RW_COUNT_MASK) | RWL_EBIT | RWL_KBIT);
+	pthread_cond_broadcast(&wcv); pthread_mutex_unlock(&wmx);
 }
 static int rw_unlock(uint64_t addr, uint32_t lgen, uint32_t ugen, uint32_t rw_wc, uint32_t *retval) {  // _psynch_rw_unlock
 	uint32_t curgen = lgen & RW_COUNT_MASK, updatebits = 0, count = 0; int error = 0, clearedkflags = 0;
@@ -712,7 +747,11 @@ static void do_syscall(uc_engine *u, void *ud) {
 				pthread_mutex_lock(&wmx); if (nsems < 256) { port = 0x5003 + 4 * nsems; sems[nsems].port = port; sems[nsems].value = val; nsems++; } pthread_mutex_unlock(&wmx);
 				mig_reply_port(u, a[0], 3518, port);
 			} else if (id == 3419) { mig_reply(u, a[0], 3519, 0, 0, 0);  // semaphore_destroy
-			} else if (id == 206) { mig_reply_port(u, a[0], 306, 0x1004); // host_get_clock_service
+			} else if (id == 206) { mig_reply_port(u, a[0], 306, *(uint32_t *)(m + 32) == 1 ? 0x1005 : 0x1004); // host_get_clock_service (0 = System-, 1 = Kalenderuhr)
+			} else if (id == 1000) {  // clock_get_time(clock): mach_timespec_t; Port 0x1005 = Kalenderuhr (Echtzeit), sonst Systemuhr (monoton)
+				struct timespec ts; clock_gettime(*(uint32_t *)(m + 8) == 0x1005 ? CLOCK_REALTIME : CLOCK_MONOTONIC, &ts);
+				uint32_t mts[2] = {(uint32_t)ts.tv_sec, (uint32_t)ts.tv_nsec}; mig_reply(u, a[0], 1100, 0, mts, 8);
+
 			} else { if (trace || warn) fprintf(stderr, "ucrun: mach_msg id %u nicht umgesetzt\n", id); mig_reply(u, a[0], id + 100, 5, 0, 0); }
 			break; }
 		default: if (trace || warn) fprintf(stderr, "ucrun: Mach-Falle %llu nicht umgesetzt\n", (unsigned long long)tn); res = 5;
@@ -760,8 +799,8 @@ static void do_syscall(uc_engine *u, void *ud) {
 		else { clock_gettime(CLOCK_REALTIME, &ts); struct timespec target = {(time_t)a[4], (long)a[5]}; ts.tv_sec = target.tv_sec - ts.tv_sec; ts.tv_nsec = target.tv_nsec - ts.tv_nsec; if (ts.tv_nsec < 0) { ts.tv_sec--; ts.tv_nsec += 1000000000; } if (ts.tv_sec < 0) ts.tv_sec = ts.tv_nsec = 0; }
 		BLOCKING_BEGIN;
 		struct timespec rem = ts; int intr = 0;
-		while (rem.tv_sec > 0 || rem.tv_nsec > 0) {  // in 10-ms-Stücken, damit Signale das Schlafen unterbrechen
-			struct timespec step = {0, 10000000}; if (rem.tv_sec == 0 && rem.tv_nsec < step.tv_nsec) step.tv_nsec = rem.tv_nsec;
+		while (rem.tv_sec > 0 || rem.tv_nsec > 0) {  // in 1-ms-Stücken, damit Signale das Schlafen unterbrechen
+			struct timespec step = {0, 1000000}; if (rem.tv_sec == 0 && rem.tv_nsec < step.tv_nsec) step.tv_nsec = rem.tv_nsec;
 			nanosleep(&step, 0);
 			rem.tv_nsec -= step.tv_nsec; if (rem.tv_nsec < 0) { if (rem.tv_sec > 0) { rem.tv_sec--; rem.tv_nsec += 1000000000; } else rem.tv_nsec = 0; }
 			if (rem.tv_sec > 0 && rem.tv_nsec >= 1000000000) { rem.tv_sec++; rem.tv_nsec -= 1000000000; }
@@ -783,6 +822,8 @@ static void do_syscall(uc_engine *u, void *ud) {
 		if (r) { err = r; res = r; } else res = rv;
 		goto done;
 	}
+	if (nr == 301) { uint32_t rv = 0; int r = mtx_wait(a[0], (uint32_t)a[1], (uint32_t)a[2], &rv); if (r) { err = r; res = r; } else res = rv; goto done; }  // __psynch_mutexwait(mutex, mgen, ugen, tid, flags)
+	if (nr == 302) { mtx_drop(a[0], (uint32_t)a[1], (uint32_t)a[2]); res = 0; goto done; }                                                           // __psynch_mutexdrop
 	if (nr == 297 || nr == 298 || nr == 299 || nr == 300 || nr == 309) { err = ESRCH; res = ESRCH; goto done; }  // longrdlock, yieldwrlock, downgrade, upgrade, unlock2: auch im PureDarwin-Kern nicht umgesetzt
 	if (nr == 515 || nr == 544) {  // __ulock_wait(op, addr, value, timeout_us) / __ulock_wait2(op, addr, value, timeout_ns, value2)
 		int op = (int)(a[0] & 0xff), noerr = (a[0] & 0x01000000) != 0, rem = 0;

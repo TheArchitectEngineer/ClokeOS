@@ -4,7 +4,7 @@
 #include <unistd.h>
 static pthread_mutex_t m = PTHREAD_MUTEX_INITIALIZER, rm;
 static long counter, rcount;
-static int inside, overlap;
+static int inside, overlap, rinside, roverlap;
 static void *work(void *a) {
 	for (int i = 0; i < 300; i++) {
 		pthread_mutex_lock(&m);
@@ -16,7 +16,7 @@ static void *work(void *a) {
 	return a;
 }
 static void *rwork(void *a) {
-	for (int i = 0; i < 100; i++) { pthread_mutex_lock(&rm); pthread_mutex_lock(&rm); rcount++; if (i % 5 == 0) usleep(100); pthread_mutex_unlock(&rm); pthread_mutex_unlock(&rm); }
+	for (int i = 0; i < 100; i++) { pthread_mutex_lock(&rm); pthread_mutex_lock(&rm); if (++rinside != 1) roverlap++; rcount++; if (i % 5 == 0) usleep(100); rinside--; pthread_mutex_unlock(&rm); pthread_mutex_unlock(&rm); }
 	return a;
 }
 int main(void) {
@@ -27,7 +27,7 @@ int main(void) {
 	pthread_mutexattr_t at; pthread_mutexattr_init(&at); pthread_mutexattr_settype(&at, PTHREAD_MUTEX_RECURSIVE); pthread_mutex_init(&rm, &at);
 	for (int i = 0; i < 4; i++) pthread_create(&t[i], 0, rwork, 0);
 	for (int i = 0; i < 4; i++) pthread_join(t[i], 0);
-	if (rcount != 400) { printf("FEHLER: rcount=%ld\n", rcount); fails++; }
+	if (rcount != 400 || roverlap) { printf("FEHLER: rcount=%ld\n", rcount); fails++; }
 	pthread_mutex_lock(&m); int tl = pthread_mutex_trylock(&m); pthread_mutex_unlock(&m);
 	if (tl == 0) { printf("FEHLER: trylock auf gehaltenem Mutex\n"); fails++; }
 	printf("hello-mtx: %s (counter=%ld rcount=%ld)\n", fails ? "FEHLER" : "ok", counter, rcount);
