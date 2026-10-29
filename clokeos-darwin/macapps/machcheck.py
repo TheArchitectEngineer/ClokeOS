@@ -135,7 +135,7 @@ class Image:
         if self._imports is None:
             imp = []
             for l in run("dyld_info", "-arch", ARCH, "-imports", self.path).splitlines():
-                m = re.match(r"\s+(\S+)\s+(\[weak-import\]\s+)?\(from ([^)]+)\)", l)
+                m = re.match(r"\s+(?:0x[0-9A-Fa-f]+\s+)?(\S+)\s+(\[weak-import\]\s+)?\(from ([^)]+)\)", l)   # neuere dyld_info setzt die Adresse davor
                 if m:
                     imp.append((m.group(1), m.group(3), bool(m.group(2)) or "weak" in l))
             self._imports = imp
@@ -149,9 +149,12 @@ def main():
     ap.add_argument("--overlay", action="append", default=[], help="Ordner, der wie das Gastsystem aufgebaut ist")
     ap.add_argument("--frameworks", action="append", default=[],
                     help="Ordner mit Frameworks, wie DYLD_FRAMEWORK_PATH im Gast")
+    ap.add_argument("--arch", default="x86_64", choices=["x86_64", "arm64"], help="Teil des Mach-O (Standard x86_64)")
     ap.add_argument("--deep", action="store_true", help="auch die Importe der geladenen Bibliotheken prüfen")
     ap.add_argument("--alle", action="store_true", help="alle fehlenden Symbole zeigen, nicht nur 25 je Bibliothek")
     a = ap.parse_args()
+    global ARCH
+    ARCH = a.arch
 
     img = a.image or os.path.join(WORK, "download/pd-20.5/puredarwin.img")
     if not os.path.isfile(img):

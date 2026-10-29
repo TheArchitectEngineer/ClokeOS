@@ -1,6 +1,6 @@
 #!/bin/bash
 # Baut libclokeos_compat (Symbole, die Mac-Programme an libSystem binden und PureDarwins libSystem
-# 20.5 nicht hat: compat.c, chkstk.S, system.c; dazu libffi.dylib aus PureDarwins libffi.a) und legt sie samt einer libSystem.B.dylib, die sie
+# 20.5 nicht hat: compat.c, chkstk.S, system.c, wide.c; dazu libffi.dylib aus PureDarwins libffi.a) und legt sie samt einer libSystem.B.dylib, die sie
 # zusätzlich re-exportiert, in <stage>. Zweistufig gebundene Programme (Homebrews Ruby, Bottles)
 # finden die Symbole so über libSystem.
 #
@@ -26,7 +26,7 @@ inst=/usr/lib/system/libclokeos_compat.dylib
 clang -target "$target" -dynamiclib -nostdlib -O2 -fno-stack-check -D_FORTIFY_SOURCE=0 -std=gnu11 -Wall \
   -Wno-unused-function -Wl,-no_fixup_chains -Wl,-platform_version,macos,11.0,11.5 \
   -install_name /usr/lib/libclokeos_compat.dylib -o "$out/libclokeos_compat.dylib" \
-  "$HERE/libcompat/compat.c" "$HERE/libcompat/chkstk.S" "$HERE/libcompat/system.c" "$out/libSystem.B.dylib"
+  "$HERE/libcompat/compat.c" "$HERE/libcompat/chkstk.S" "$HERE/libcompat/system.c" "$HERE/libcompat/wide.c" "$out/libSystem.B.dylib"
 # Der Linker des Macs (x86_64) sucht bei einem Install-Namen unter /usr/lib/system die Teilbibliotheken von
 # libSystem ("library 'system_pthread' not found"); deshalb erst ein anderer Name, dann umsetzen
 install_name_tool -id "$inst" "$out/libclokeos_compat.dylib"
