@@ -14,7 +14,7 @@ clang -target arm64-apple-macos11.0 -isysroot "$sdk" -O2 -c "$here/compat/pdcomp
 clang -target arm64-apple-macos11.0 -isysroot "$sdk" -c "$here/../libcompat/chkstk.S" -o /tmp/pdchkstk.$$.o
 rm -f "$u/libpdcompat.a"; ar rcs "$u/libpdcompat.a" /tmp/pdcompat.$$.o /tmp/pdchkstk.$$.o; rm -f /tmp/pdcompat.$$.o /tmp/pdchkstk.$$.o
 rm -rf "$bld"; mkdir -p "$bld"; cd "$bld"
-cmake -G Ninja -DCMAKE_TOOLCHAIN_FILE="$here/toolchain-pd-arm64.cmake" -DPORT="$port" -DCMAKE_BUILD_TYPE=Release \
-  -DDEVELOPER_MODE=OFF -DUSE_HEADER_MAPS=OFF -DPYTHON_EXECUTABLE="$(command -v python3)" \
+cmake -G Ninja -DCMAKE_MAKE_PROGRAM="$(command -v ninja)" -DCMAKE_TOOLCHAIN_FILE="$here/toolchain-pd-arm64.cmake" -DPORT="$port" -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_OSX_SYSROOT="$sdk" -DDEVELOPER_MODE=OFF -DUSE_HEADER_MAPS=OFF -DPYTHON_EXECUTABLE="$(command -v python3)" \
   -DICU_UC_LIBRARY_RELEASE="$u/libicuuc.dylib" -DICU_I18N_LIBRARY_RELEASE="$u/libicui18n.dylib" \
   -DICU_DATA_LIBRARY_RELEASE="$u/libicudata.dylib" -DICU_INCLUDE_DIR="$WEBKIT_SYSROOT/include" "$@" "$src"

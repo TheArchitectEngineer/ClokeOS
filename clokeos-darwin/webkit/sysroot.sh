@@ -21,3 +21,15 @@ cp -f "$sr/usr/lib/libSystem.B.dylib" "$sr/usr/lib/libSystem.dylib" 2>/dev/null 
 mkdir -p "$sr/usr/lib/system"; "$DEBUGFS" -R "dump /usr/lib/system/libdyld.dylib $sr/usr/lib/system/libdyld.dylib" "$fs" >/dev/null 2>&1 || true
 "$DEBUGFS" -R "dump /usr/lib/libSystem.B.dylib $sr/usr/lib/libSystem.B.dylib" "$fs" >/dev/null 2>&1 || true
 touch "$sr/.fertig"; du -sh "$sr"
+# Die .pc-Dateien nennen /nix/store/<hash>-<paket>; im Sysroot liegt alles flach unter include/ und lib/.
+for f in "$sr"/lib/pkgconfig/*.pc; do sed -i '' -E 's#/nix/store/[^/ ]+##g' "$f"; done
+# EGL/GL-Header: PDs usr/include selbst darf nicht in den Suchpfad (seine C-Header verdecken die des SDK), nur diese Unterordner
+mkdir -p "$sr/glinc"; for d in EGL GL GLES2 GLES3 KHR; do ln -sfn "../usr/include/$d" "$sr/glinc/$d"; done
+# Platzhalter-.pc für Pakete, die in den .pc-Dateien des Images verlangt werden, aber nicht im Image liegen (pixman-1, xproto, ...)
+export PKG_CONFIG_LIBDIR="$sr/lib/pkgconfig" PKG_CONFIG_SYSROOT_DIR="$sr"
+for _ in 1 2 3 4 5; do
+  miss=$(for f in "$sr"/lib/pkgconfig/*.pc; do pkg-config --cflags "$(basename "$f" .pc)" 2>&1 | grep -o "Package '[^']*', required" | sed "s/Package '//;s/', required//"; done | sort -u)
+  [ -z "$miss" ] && break
+  for m in $miss; do printf 'Name: %s\nDescription: Platzhalter (Paket nicht im Image)\nVersion: 99.0\n' "$m" > "$sr/lib/pkgconfig/$m.pc"; done
+done
+# libgpg-error fehlt im Image (libgcrypt braucht es): selbst bauen, siehe README

@@ -1,4 +1,17 @@
 File webkitgtk-2.54.2/Source/ThirdParty/skia/src/ports/fontations/Cargo.toml is a unknown type while file webkitgtk-2.54.2/Source/ThirdParty/skia/src/ports/fontations/Cargo.toml is a unknown type
+diff -ruN webkitgtk-2.54.2/Source/WTF/wtf/PlatformGTK.cmake webkitgtk-2.54.2/Source/WTF/wtf/PlatformGTK.cmake
+--- webkitgtk-2.54.2/Source/WTF/wtf/PlatformGTK.cmake	2026-10-02 10:27:01
++++ webkitgtk-2.54.2/Source/WTF/wtf/PlatformGTK.cmake	2026-10-29 10:03:01
+@@ -81,6 +81,9 @@
+         generic/MemoryFootprintGeneric.cpp
+         generic/MemoryPressureHandlerGeneric.cpp
+     )
++    if (PD_DARWIN)
++        list(APPEND WTF_SOURCES ${CLOKEOS_COMPAT_DIR}/OSLogPrintStreamPD.cpp)
++    endif ()
+ endif ()
+ 
+ list(APPEND WTF_LIBRARIES
 diff -ruN webkitgtk-2.54.2/Source/WTF/wtf/PlatformHave.h webkitgtk-2.54.2/Source/WTF/wtf/PlatformHave.h
 --- webkitgtk-2.54.2/Source/WTF/wtf/PlatformHave.h	2026-07-27 10:28:18
 +++ webkitgtk-2.54.2/Source/WTF/wtf/PlatformHave.h	2026-10-29 09:12:13
