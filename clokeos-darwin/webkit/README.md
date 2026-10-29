@@ -1,8 +1,12 @@
 # WebKit for ClokeOS (cross-build on the Mac, target PureDarwin 20.5 arm64)
 
 Status 2026-10-29: **JavaScriptCore (`jsc`) builds and runs in the arm64 VM** (C-loop interpreter, no JIT, no WebAssembly yet).
-The GTK port (`gtk-options.sh`: GTK3, no JIT/WASM, no GStreamer/GBM/WebGL) **builds and links** (`MiniBrowser`, libwebkit2gtk, libjavascriptcoregtk);
-first run in the VM is the next step. Needs `libgpg-error`
+The GTK port (`gtk-options.sh`: GTK3, no JIT/WASM, no GStreamer/GBM/WebGL) builds, links and **MiniBrowser opens its window in the arm64 VM**
+(first light 2026-10-29); the first page load (https://example.com) was still stuck at the start, cause not yet found (suspects: no GIO TLS
+backend / glib-networking in the image, network process). Run: `stage.sh` -> tgz -> unpack to /opt/webkit in the VM, helpers must be linked
+into /usr/local/libexec/webkit2gtk-4.1/, start with `runmb.sh` (ignores SIGSYS for SysV shm, adds `compat/crashbt.c` for backtraces, SIGINFO dumps all
+threads). Fixes found on the way (all in the patch): Darwin IPC uses `SOCK_DGRAM` (needs `sysctl net.local.dgram.maxdgram=16384`),
+WebKit-layer `OS(DARWIN)` -> `PLATFORM(COCOA)`, SQLite init no longer waits for the main thread (deadlock with IconDatabase). Needs `libgpg-error`
 (built from source into the sysroot, not in the image) and stub `.pc` files for packages the image lacks (see `stubpc` note in sysroot.sh). See `../docs/browser-study.md`.
 
 ```

@@ -99,6 +99,18 @@ diff -ruN webkitgtk-2.54.2/Source/WebCore/PlatformGTK.cmake webkitgtk-2.54.2/Sou
  list(APPEND WebCore_SOURCES
      platform/graphics/cairo/IntRectCairo.cpp
      platform/graphics/cairo/RefPtrCairo.cpp
+diff -ruN webkitgtk-2.54.2/Source/WebCore/platform/sql/SQLiteDatabase.cpp webkitgtk-2.54.2/Source/WebCore/platform/sql/SQLiteDatabase.cpp
+--- webkitgtk-2.54.2/Source/WebCore/platform/sql/SQLiteDatabase.cpp	2026-07-24 10:02:55
++++ webkitgtk-2.54.2/Source/WebCore/platform/sql/SQLiteDatabase.cpp	2026-10-29 20:59:09
+@@ -67,7 +67,7 @@
+         // aren't confident that it really is, and we still support ancient versions of SQLite. So
+         // std::call_once is used to stay on the safe side. See bug #143245.
+ 
+-#if OS(DARWIN)
++#if PLATFORM(COCOA)
+         int ret;
+         callOnMainThreadAndWait([&] {
+             // In the Network process, this function can be called on a background thread when
 diff -ruN webkitgtk-2.54.2/Source/WebKit/NetworkProcess/NetworkConnectionToWebProcess.cpp webkitgtk-2.54.2/Source/WebKit/NetworkProcess/NetworkConnectionToWebProcess.cpp
 --- webkitgtk-2.54.2/Source/WebKit/NetworkProcess/NetworkConnectionToWebProcess.cpp	2026-10-02 10:27:01
 +++ webkitgtk-2.54.2/Source/WebKit/NetworkProcess/NetworkConnectionToWebProcess.cpp	2026-10-29 14:22:14
@@ -309,6 +321,35 @@ diff -ruN webkitgtk-2.54.2/Source/WebKit/Platform/IPC/Encoder.h webkitgtk-2.54.2
      using OutOfLineBufferSpan = MmapSpan<uint8_t>;
  #else
      using OutOfLineBufferSpan = MallocSpan<uint8_t>;
+diff -ruN webkitgtk-2.54.2/Source/WebKit/Platform/IPC/IPCUtilities.h webkitgtk-2.54.2/Source/WebKit/Platform/IPC/IPCUtilities.h
+--- webkitgtk-2.54.2/Source/WebKit/Platform/IPC/IPCUtilities.h	2026-07-24 10:02:55
++++ webkitgtk-2.54.2/Source/WebKit/Platform/IPC/IPCUtilities.h	2026-10-29 14:39:54
+@@ -62,6 +62,13 @@
+     SetCloexecOnServer = 1 << 1,
+ };
+ 
++// ClokeOS: Darwins SOCK_SEQPACKET funktioniert bei AF_UNIX nicht (EPROTONOSUPPORT); wie ConnectionUnix.cpp auf SOCK_DGRAM ausweichen
++#if OS(DARWIN)
++#define IPC_GLIB_SOCKET_TYPE SOCK_DGRAM
++#else
++#define IPC_GLIB_SOCKET_TYPE SOCK_SEQPACKET
++#endif
++
+ SocketPair createPlatformConnection(int socketType, unsigned options = SetCloexecOnClient | SetCloexecOnServer);
+ 
+ #endif
+diff -ruN webkitgtk-2.54.2/Source/WebKit/Platform/IPC/glib/ConnectionGLib.cpp webkitgtk-2.54.2/Source/WebKit/Platform/IPC/glib/ConnectionGLib.cpp
+--- webkitgtk-2.54.2/Source/WebKit/Platform/IPC/glib/ConnectionGLib.cpp	2026-07-24 10:02:55
++++ webkitgtk-2.54.2/Source/WebKit/Platform/IPC/glib/ConnectionGLib.cpp	2026-10-29 14:39:54
+@@ -513,7 +513,7 @@
+ 
+ std::optional<Connection::ConnectionIdentifierPair> Connection::createConnectionIdentifierPair()
+ {
+-    SocketPair socketPair = createPlatformConnection(SOCK_SEQPACKET);
++    SocketPair socketPair = createPlatformConnection(IPC_GLIB_SOCKET_TYPE);
+     return { { Identifier { WTF::move(socketPair.server) }, ConnectionHandle { WTF::move(socketPair.client) } } };
+ }
+ 
 diff -ruN webkitgtk-2.54.2/Source/WebKit/Shared/API/c/WKBase.h webkitgtk-2.54.2/Source/WebKit/Shared/API/c/WKBase.h
 --- webkitgtk-2.54.2/Source/WebKit/Shared/API/c/WKBase.h	2026-07-24 10:02:55
 +++ webkitgtk-2.54.2/Source/WebKit/Shared/API/c/WKBase.h	2026-10-29 14:25:57
@@ -442,6 +483,18 @@ diff -ruN webkitgtk-2.54.2/Source/WebKit/UIProcess/Launcher/ProcessLauncher.cpp 
          // FIXME: Release port rights/connections in the Connection::Identifier destructor.
          if (identifier.port)
              mach_port_mod_refs(mach_task_self(), identifier.port, MACH_PORT_RIGHT_RECEIVE, -1);
+diff -ruN webkitgtk-2.54.2/Source/WebKit/UIProcess/Launcher/glib/ProcessLauncherGLib.cpp webkitgtk-2.54.2/Source/WebKit/UIProcess/Launcher/glib/ProcessLauncherGLib.cpp
+--- webkitgtk-2.54.2/Source/WebKit/UIProcess/Launcher/glib/ProcessLauncherGLib.cpp	2026-10-02 10:27:01
++++ webkitgtk-2.54.2/Source/WebKit/UIProcess/Launcher/glib/ProcessLauncherGLib.cpp	2026-10-29 14:39:54
+@@ -109,7 +109,7 @@
+ 
+     GUniquePtr<gchar> processIdentifier(g_strdup_printf("%" PRIu64, m_launchOptions.processIdentifier.toUInt64()));
+ 
+-    IPC::SocketPair webkitSocketPair = IPC::createPlatformConnection(SOCK_SEQPACKET, connectionOptions());
++    IPC::SocketPair webkitSocketPair = IPC::createPlatformConnection(IPC_GLIB_SOCKET_TYPE, connectionOptions());
+     GUniquePtr<gchar> webkitSocket(g_strdup_printf("%d", webkitSocketPair.client.value()));
+ 
+ #if OS(ANDROID)
 diff -ruN webkitgtk-2.54.2/Source/WebKit/UIProcess/Network/NetworkProcessProxy.cpp webkitgtk-2.54.2/Source/WebKit/UIProcess/Network/NetworkProcessProxy.cpp
 --- webkitgtk-2.54.2/Source/WebKit/UIProcess/Network/NetworkProcessProxy.cpp	2026-10-02 10:27:01
 +++ webkitgtk-2.54.2/Source/WebKit/UIProcess/Network/NetworkProcessProxy.cpp	2026-10-29 14:22:14
