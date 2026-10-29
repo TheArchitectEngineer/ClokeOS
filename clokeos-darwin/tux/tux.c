@@ -122,7 +122,8 @@ static void keep_mask(ucontext_t *uc)
 }
 
 #ifdef TUX_X86_64
-// `syscall` mit Linux-Nummer tut in PureDarwins Kern nichts; darum wird jeder Systemaufruf-Befehl (0f 05) zu ud2 (0f 0b).
+// `syscall` mit Linux-Nummer tut in PureDarwins Kern nichts; darum wird jeder Systemaufruf-Befehl (0f 05) zu int3 + nop (cc 90).
+// (ud2 ginge auch, aber PureDarwins Kern schreibt bei jedem #UD einen langen Diagnoseblock auf die Konsole: unter Emulation sehr langsam.)
 // Befehlsgrenzen kommen aus einem Längendecoder, weil 0f 05 auch in Konstanten vorkommt.
 void tux_patch_range(void *addr, size_t len)
 {
@@ -131,7 +132,7 @@ void tux_patch_range(void *addr, size_t len)
 	while (i < len) {
 		size_t l = x86_len(p + i, len - i);
 		if (!l) l = 1;
-		if (l == 2 && p[i] == 0x0f && p[i + 1] == 0x05) p[i + 1] = 0x0b;
+		if (l == 2 && p[i] == 0x0f && p[i + 1] == 0x05) { p[i] = 0xcc; p[i + 1] = 0x90; }
 		i += l;
 	}
 }
@@ -141,7 +142,8 @@ static void on_trap(int sig, siginfo_t *si, void *ucv)
 	ucontext_t *uc = ucv;
 	_STRUCT_X86_THREAD_STATE64 *ss = &uc->uc_mcontext->__ss;
 	uint8_t *ip = (uint8_t *)ss->__rip;
-	if (sig != SIGILL || ip[0] != 0x0f || ip[1] != 0x0b) {
+	// nach int3 zeigt rip auf das Füll-Nop dahinter
+	if (sig != SIGTRAP || ip[-1] != 0xcc || ip[0] != 0x90) {
 		fprintf(stderr, "tux: Signal %d bei rip=%llx\n", sig, ss->__rip);
 		_exit(128 + sig);
 	}
@@ -157,9 +159,9 @@ static void on_trap(int sig, siginfo_t *si, void *ucv)
 	long v = tux_syscall(&r);
 	ss->__rax = (uint64_t)v;
 	keep_mask(uc);
-	ss->__rcx = ss->__rip + 2;   // wie der echte Befehl
+	ss->__rcx = ss->__rip + 1;   // wie der echte Befehl
 	ss->__r11 = ss->__rflags;
-	ss->__rip += 2;
+	ss->__rip += 1;
 }
 
 #define ENTER_ASM \
@@ -257,9 +259,9 @@ __asm__(".text\n.globl _tux_resume\n_tux_resume:\n"
 static void capture(gregs *g, ucontext_t *uc, uint64_t sp)
 {
 	_STRUCT_X86_THREAD_STATE64 *s = &uc->uc_mcontext->__ss;
-	g->rax = 0; g->rbx = s->__rbx; g->rcx = s->__rip + 2; g->rdx = s->__rdx; g->rsi = s->__rsi; g->rdi = s->__rdi;
+	g->rax = 0; g->rbx = s->__rbx; g->rcx = s->__rip + 1; g->rdx = s->__rdx; g->rsi = s->__rsi; g->rdi = s->__rdi;
 	g->rbp = s->__rbp; g->rsp = sp ? sp : s->__rsp; g->r8 = s->__r8; g->r9 = s->__r9; g->r10 = s->__r10; g->r11 = s->__rflags;
-	g->r12 = s->__r12; g->r13 = s->__r13; g->r14 = s->__r14; g->r15 = s->__r15; g->rip = s->__rip + 2;
+	g->r12 = s->__r12; g->r13 = s->__r13; g->r14 = s->__r14; g->r15 = s->__r15; g->rip = s->__rip + 1;
 }
 #else
 typedef struct { uint64_t x[31], sp, pc; } gregs;

@@ -517,6 +517,19 @@ static void nl_answer(int fd, const uint8_t *req, size_t rn)
 	memcpy(&type, req + 4, 2);
 	memcpy(&seq, req + 8, 4);
 	nlbuf o = {0};
+	if (type == 16 || type == 17 || type == 19 || type == 20 || type == 21 || type == 24 || type == 25) {
+		// Änderungen (Verbindungen, Adressen, Routen) gehen nicht: Linux antwortet ohne Rechte mit EPERM
+		size_t st0 = o.n;
+		uint8_t z16[16] = {0};
+		nl_put(&o, z16, 16);
+		int e = -1;   // -EPERM
+		nl_put(&o, &e, 4);
+		nl_put(&o, req, 16);
+		nl_hdr(&o, st0, 2, 0, seq);   // NLMSG_ERROR
+		send(nlpeer[fd], o.b, o.n, 0);
+		free(o.b);
+		return;
+	}
 	struct ifaddrs *ifa, *p;
 	if (getifaddrs(&ifa) != 0) ifa = NULL;
 	if (type == 18) {   // RTM_GETLINK
@@ -605,6 +618,7 @@ static void nl_answer(int fd, const uint8_t *req, size_t rn)
 // --- Sockets ---------------------------------------------------------------------------------
 long tux_socket(long domain, long type, long proto)
 {
+	if (domain == 17) return -tux_errno(EPERM);   // AF_PACKET: Linux verlangt dafür Rechte, hier gibt es keine
 	if (domain == 16) {   // AF_NETLINK
 		if (proto != 0) return -tux_errno(EPROTONOSUPPORT);
 		int sp[2];
