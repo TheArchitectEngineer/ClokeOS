@@ -34,6 +34,8 @@ if [ -f "$xr/libSystem.B.dylib" ]; then
     -o "$out/hello-cv" hello-cv.c "$xr/libSystem.B.dylib" "$xr/libc++abi.dylib"
   clang -target x86_64-apple-macos11.0 -isysroot "$(xcrun --show-sdk-path)" -O1 -nostdlib -Wl,-platform_version,macos,11.0,11.5 -Wl,-e,_main \
     -o "$out/hello-mtx" hello-mtx.c "$xr/libSystem.B.dylib" "$xr/libc++abi.dylib"
+  clang -target x86_64-apple-macos11.0 -isysroot "$(xcrun --show-sdk-path)" -O1 -nostdlib -Wl,-platform_version,macos,11.0,11.5 -Wl,-e,_main \
+    -o "$out/hello-spawn" hello-spawn.c "$xr/libSystem.B.dylib" "$xr/libc++abi.dylib"
 fi
 file "$out"/*
 
