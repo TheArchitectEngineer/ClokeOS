@@ -31,7 +31,7 @@
 
 extern char **environ;
 static uc_engine *uc;
-static int trace;
+static int trace, warn;  // trace: UCRUN_TRACE; warn: UCRUN_WARN (nicht umgesetzte Systemaufrufe melden)
 
 // --- Gastspeicher: Host-Speicher, in jede Unicorn-Maschine (ein Gast-Thread = eine Maschine) per uc_mem_map_ptr eingeblendet ---
 typedef struct { uint64_t g, n; uint8_t *h; } Reg;
@@ -480,16 +480,16 @@ static void do_syscall(uc_engine *u, void *ud) {
 				mig_reply_port(u, a[0], 3518, port);
 			} else if (id == 3419) { mig_reply(u, a[0], 3519, 0, 0, 0);  // semaphore_destroy
 			} else if (id == 206) { mig_reply_port(u, a[0], 306, 0x1004); // host_get_clock_service
-			} else { fprintf(stderr, "ucrun: mach_msg id %u nicht umgesetzt\n", id); mig_reply(u, a[0], id + 100, 5, 0, 0); }
+			} else { if (trace || warn) fprintf(stderr, "ucrun: mach_msg id %u nicht umgesetzt\n", id); mig_reply(u, a[0], id + 100, 5, 0, 0); }
 			break; }
-		default: fprintf(stderr, "ucrun: Mach-Falle %llu nicht umgesetzt\n", (unsigned long long)tn); res = 5;
+		default: if (trace || warn) fprintf(stderr, "ucrun: Mach-Falle %llu nicht umgesetzt\n", (unsigned long long)tn); res = 5;
 		}
 		goto mach_done;
 	}
 	if ((rax >> 24) == 3) {  // machdep: thread_set_tsd_base(3) = %gs-Basis
 		if ((rax & 0xffffff) == 3) { uc_reg_write(u, UC_X86_REG_GS_BASE, &a[0]); res = 0; goto mach_done; }
 	}
-	if ((rax >> 24) != 2) { fprintf(stderr, "ucrun: Systemaufruf-Klasse %llu (Mach-Falle?) nicht umgesetzt: %#llx\n", (unsigned long long)(rax >> 24), (unsigned long long)rax); err = ENOSYS; res = ENOSYS; goto done; }
+	if ((rax >> 24) != 2) { if (trace || warn) fprintf(stderr, "ucrun: Systemaufruf-Klasse %llu (Mach-Falle?) nicht umgesetzt: %#llx\n", (unsigned long long)(rax >> 24), (unsigned long long)rax); err = ENOSYS; res = ENOSYS; goto done; }
 	uint64_t nr = rax & 0xffffff;
 	{ static const struct { int from, to; } nc[] = {{423, 334}, {396, 3}, {397, 4}, {398, 5}, {399, 6}, {400, 7}, {406, 92}, {410, 111}, {414, 153}, {415, 154}};  // *_nocancel-Varianten (libc-Abbruchpunkte)
 	  for (unsigned q = 0; q < sizeof nc / sizeof *nc; q++) if (nc[q].from == (int)nr) { nr = nc[q].to; break; } }
@@ -643,7 +643,7 @@ static void do_syscall(uc_engine *u, void *ud) {
 	if (nr == 74) { res = 0; goto done; }  // mprotect: Gastspeicher bleibt RWX (Eigenschaft von ucrun, siehe Studie)
 	const Sc *s = 0;
 	for (unsigned i = 0; i < sizeof tab / sizeof *tab; i++) if (tab[i].nr == (int)nr) s = &tab[i];
-	if (!s) { fprintf(stderr, "ucrun: Systemaufruf %llu nicht umgesetzt\n", (unsigned long long)nr); err = ENOSYS; res = ENOSYS; goto done; }
+	if (!s) { if (trace || warn) fprintf(stderr, "ucrun: Systemaufruf %llu nicht umgesetzt\n", (unsigned long long)nr); err = ENOSYS; res = ENOSYS; goto done; }
 	uint64_t h[6]; memcpy(h, a, sizeof h);
 	char *bufs[3] = {0, 0, 0}; size_t sz[3] = {0, 0, 0}; char pathb[3][1024];
 	for (int k = 0; k < 3; k++) {
@@ -688,7 +688,7 @@ done:;
 
 int main(int argc, char **argv) {
 	if (argc < 2) { fprintf(stderr, "usage: ucrun <x86_64 Mach-O> [args]\n"); return 2; }
-	trace = getenv("UCRUN_TRACE") != 0;
+	trace = getenv("UCRUN_TRACE") != 0; warn = getenv("UCRUN_WARN") != 0;
 	if (getenv("UCRUN_SLICE_MS")) { slice_us = atoll(getenv("UCRUN_SLICE_MS")) * 1000; sig_wake = 0; }
 	{ uint32_t sz = sizeof self_exe; if (_NSGetExecutablePath(self_exe, &sz)) strcpy(self_exe, argv[0]); }
 	if (getenv("XLAT_ROOT")) xroot = getenv("XLAT_ROOT");
