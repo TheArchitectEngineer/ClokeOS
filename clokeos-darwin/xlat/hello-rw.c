@@ -4,6 +4,7 @@
 #include <mach/mach.h>
 #include <mach/semaphore.h>
 #include <pthread.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
@@ -106,6 +107,23 @@ static void order(void) {
 	pthread_rwlock_unlock(&rw2); pthread_join(r, 0); pthread_join(w, 0); CHECK(w_got && r2_got, "Wartende nach Schreiber");
 }
 
+// Signal, während Threads im Kernel auf die Sperre warten (EINTR-Pfad: Wartender trägt sich aus und libpthread wiederholt)
+static pthread_rwlock_t rw3 = PTHREAD_RWLOCK_INITIALIZER; static volatile int got_sig, w3_got, r3_got;
+static void on_usr1(int s) { got_sig++; }
+static void *w3(void *p) { pthread_rwlock_wrlock(&rw3); w3_got = 1; usleep(1000); pthread_rwlock_unlock(&rw3); return p; }
+static void *r3(void *p) { pthread_rwlock_rdlock(&rw3); r3_got = 1; pthread_rwlock_unlock(&rw3); return p; }
+static void eintr(void) {
+	signal(SIGUSR1, on_usr1); pthread_t w, r;
+	pthread_rwlock_wrlock(&rw3);
+	pthread_create(&w, 0, w3, 0); pthread_create(&r, 0, r3, 0); usleep(30000);
+	for (int i = 0; i < 5; i++) { kill(getpid(), SIGUSR1); usleep(20000); }
+	CHECK(got_sig >= 5, "Signal nicht zugestellt");
+	CHECK(!w3_got && !r3_got, "Wartende kamen trotz Signal durch");
+	pthread_rwlock_unlock(&rw3); pthread_join(w, 0); pthread_join(r, 0);
+	CHECK(w3_got && r3_got, "Wartende nach Signal nicht freigegeben");
+	CHECK(pthread_rwlock_trywrlock(&rw3) == 0, "Sperre danach frei"); pthread_rwlock_unlock(&rw3);
+}
+
 // --- Teil 3: Stresstest, gemischt ---
 #define NT 12
 static pthread_mutex_t qm = PTHREAD_MUTEX_INITIALIZER, cm = PTHREAD_MUTEX_INITIALIZER;
@@ -160,7 +178,7 @@ static void stress_test(int secs) {
 	printf("stress %d Threads, %.1f s: rwlock lesen %d schreiben %d, mutex %d, erzeugt %d, kurzlebige Threads %d\n", NT, (b.tv_sec - a.tv_sec) + (b.tv_nsec - a.tv_nsec) / 1e9, rwr, rww, cnt, produced, spawned);
 }
 int main(int argc, char **argv) {
-	basics(); contended(); order();
+	basics(); contended(); order(); eintr();
 	stress_test(argc > 1 ? atoi(argv[1]) : 2);
 	printf("hello-rw: %s\n", fails ? "FEHLER" : "ok");
 	return fails;
