@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=x86_64 Program
+Comment=Run an x86_64 program with the translator ucrun
+Exec=xlat-open %f
+MimeType=application/x-x86-macho;
+NoDisplay=true
+Terminal=false

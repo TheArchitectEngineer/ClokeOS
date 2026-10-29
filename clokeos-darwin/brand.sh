@@ -138,6 +138,8 @@ printf '\n# ClokeOS\n[ -n "$BASH_VERSION" ] && [ -r /etc/bashrc ] && . /etc/bash
 
 # tux: Linux-Programme und der Linux-Baum /TUX (Desktop)
 [ "$CLOKE_FLAVOR" = desktop ] && : > "$tmp/tux.cmds" && "$HERE/tux/image.sh" "$tmp/stage" "$tmp/tux.cmds"
+# xlat: x86_64-Programme auf arm64 (Übersetzer ucrun + exec-Haken, siehe docs/translation-study.md)
+[ "$CLOKE_FLAVOR" = desktop ] && [ "$CLOKE_ARCH" = arm64 ] && "$HERE/xlat/image.sh" "$tmp/stage" "$tmp/tux.cmds" || true
 
 # --- Desktop: Homebrew (siehe README, "Homebrew") ------------------------------------------
 # libcompat: fehlende libSystem-Symbole und libffi.dylib; Absolute /usr/bin-Pfade, die Homebrew
@@ -192,6 +194,8 @@ TRAPTERM() { exit 143 }
 # des Herunterfahrens (Halt/Restart Timed Out), run.sh schaltet die VM dann aus.
 poweroff() { sync; command poweroff "$@" }
 reboot() { sync; command reboot "$@" }
+# x86_64-Programme auf arm64 (xlat/image.sh): die Shell braucht den exec-Haken schon beim Start, deshalb einmal neu starten
+[[ -r /etc/clokeos-xlat.zsh ]] && . /etc/clokeos-xlat.zsh
 if [[ -z $CLOKEOS_GREETED && -r /etc/motd ]]; then
   export CLOKEOS_GREETED=1
   cat /etc/motd

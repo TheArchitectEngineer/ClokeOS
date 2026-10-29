@@ -1,0 +1,3 @@
+#!/bin/sh
+# Doppelklick auf ein x86_64-Mach-O in Fundus: mit dem Übersetzer ucrun in einem Terminalfenster ausführen
+exec xfce4-terminal --disable-server --role=com.clokeos.x86 --title="$(basename "$1")" --hold -x ucrun "$@"

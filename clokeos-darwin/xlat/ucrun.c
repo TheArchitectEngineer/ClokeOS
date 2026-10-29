@@ -692,6 +692,7 @@ int main(int argc, char **argv) {
 	if (getenv("UCRUN_SLICE_MS")) { slice_us = atoll(getenv("UCRUN_SLICE_MS")) * 1000; sig_wake = 0; }
 	{ uint32_t sz = sizeof self_exe; if (_NSGetExecutablePath(self_exe, &sz)) strcpy(self_exe, argv[0]); }
 	if (getenv("XLAT_ROOT")) xroot = getenv("XLAT_ROOT");
+	else if (access("/Library/ClokeOS/x86/usr/lib/dyld", F_OK) == 0) xroot = "/Library/ClokeOS/x86";  // Standard im ClokeOS-Image
 	FILE *f = fopen(argv[1], "rb"); if (!f) { perror(argv[1]); return 127; }
 	fseek(f, 0, SEEK_END); long fl = ftell(f); fseek(f, 0, SEEK_SET);
 	uint8_t *file = malloc(fl); if (fread(file, 1, fl, f) != (size_t)fl) return 2;
