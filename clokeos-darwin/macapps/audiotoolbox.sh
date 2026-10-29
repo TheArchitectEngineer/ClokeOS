@@ -49,7 +49,7 @@ ln -s A "$d/Versions/Current"; ln -s Versions/Current/AudioToolbox "$d/AudioTool
 
 # Prüfprogramm und Test-Plug-in gegen Apples SDK gelinkt (wie Mac-Programme), zur Laufzeit gilt unser Framework
 p="$root/Library/ClokeOS/Probe"; mkdir -p "$p/Components/ctgain.component/Contents/MacOS"
-clang -target "$TARGET" -isysroot "$SDK" -O2 -Wno-deprecated-declarations ${ARCHCC[@]+"${ARCHCC[@]}"} -framework AudioToolbox -framework CoreFoundation \
+clang -target "$TARGET" -isysroot "$SDK" -O2 -Wno-deprecated-declarations ${ARCHCC[@]+"${ARCHCC[@]}"} -framework AudioToolbox -framework CoreFoundation -framework Foundation \
   -o "$p/attest" "$M/audiotoolbox/attest.c" -lm
 clang -target "$TARGET" -isysroot "$SDK" -O2 -w ${ARCHCC[@]+"${ARCHCC[@]}"} -bundle -framework AudioToolbox \
   -o "$p/Components/ctgain.component/Contents/MacOS/ctgain" "$M/audiotoolbox/ctgain.c"

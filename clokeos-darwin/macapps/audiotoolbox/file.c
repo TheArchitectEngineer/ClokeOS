@@ -438,7 +438,7 @@ OSStatus AudioFormatGetProperty(AudioFormatPropertyID id, UInt32 specSize, const
       const AudioStreamBasicDescription *d = spec;
       if (d->mFormatID != kAudioFormatLinearPCM) return kAudioFormatUnknownFormatError;
       char b[96]; snprintf(b, sizeof b, "%u-bit %s Linear PCM", (unsigned)d->mBitsPerChannel, (d->mFormatFlags & kAudioFormatFlagIsFloat) ? "Floating Point" : "Integer");
-      *(CFStringRef *)out = CFStringCreateWithCString(NULL, b, kCFStringEncodingUTF8); break; }
+      *(CFStringRef *)out = CFStringCreateWithCString(kCFAllocatorDefault, b, kCFStringEncodingUTF8); break; }
   }
   *ioSize = need;
   return 0;

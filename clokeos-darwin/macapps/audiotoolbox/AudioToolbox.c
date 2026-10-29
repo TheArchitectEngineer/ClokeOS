@@ -74,8 +74,8 @@ static CFPropertyListRef read_plist(const char *path) {
   UInt8 *b = malloc(n);
   if (!b || fread(b, 1, n, f) != (size_t)n) { free(b); fclose(f); return NULL; }
   fclose(f);
-  CFDataRef data = CFDataCreate(NULL, b, n); free(b);
-  CFPropertyListRef pl = CFPropertyListCreateWithData(NULL, data, kCFPropertyListImmutable, NULL, NULL);
+  CFDataRef data = CFDataCreate(kCFAllocatorDefault, b, n); free(b);
+  CFPropertyListRef pl = CFPropertyListCreateWithData(kCFAllocatorDefault, data, kCFPropertyListImmutable, NULL, NULL);
   CFRelease(data);
   return pl;
 }
@@ -157,7 +157,7 @@ OSStatus AudioComponentGetVersion(AudioComponent c, UInt32 *v) {
 }
 OSStatus AudioComponentCopyName(AudioComponent c, CFStringRef *name) {
   if (!c || !name) return kAudio_ParamError;
-  *name = CFStringCreateWithCString(NULL, c->name, kCFStringEncodingUTF8);
+  *name = CFStringCreateWithCString(kCFAllocatorDefault, c->name, kCFStringEncodingUTF8);
   return *name ? 0 : kAudio_MemFullError;
 }
 OSStatus AudioComponentCopyConfigurationInfo(AudioComponent c, CFDictionaryRef *info) {

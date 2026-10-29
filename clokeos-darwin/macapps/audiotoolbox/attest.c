@@ -18,7 +18,7 @@ static AudioStreamBasicDescription pcm(double r, UInt32 ch, UInt32 bits, int flt
   d.mBytesPerFrame = d.mBytesPerPacket = (bits / 8) * (ni ? 1 : ch);
   return d;
 }
-static CFURLRef url(const char *p) { return CFURLCreateFromFileSystemRepresentation(NULL, (const UInt8 *)p, strlen(p), false); }
+static CFURLRef url(const char *p) { return CFURLCreateFromFileSystemRepresentation(kCFAllocatorDefault, (const UInt8 *)p, strlen(p), false); }
 
 // 440 Hz Sinus in Float32 interleaved stereo, L = 0.5 sin, R = 0.25 sin
 static void gen(float *b, UInt32 n, UInt64 start, double rate) {
@@ -182,6 +182,7 @@ static void play(const char *path, AudioStreamBasicDescription cf, double secs, 
 }
 
 int main(int argc, char **argv) {
+  setvbuf(stdout, NULL, _IOLBF, 0);
   const char *mode = argc > 1 ? argv[1] : "self"; double secs = argc > 2 ? atof(argv[2]) : 2;
   if (!strcmp(mode, "self")) {
     test_files(); test_components();
