@@ -23,14 +23,16 @@ cp "$here/xlat/xlat.desktop" "$stage/share/applications/"
 # Haken: execve/posix_spawn der Shell und der Desktop-Programme starten x86_64-Programme durch ucrun
 cat >> "$stage/etc/profile" <<'EOF2'
 if [ -x /usr/bin/ucrun ] && [ -f /usr/lib/libxlat-exec.dylib ]; then
-  export XLAT_ROOT=/Library/ClokeOS/x86 DYLD_INSERT_LIBRARIES=/usr/lib/libxlat-exec.dylib
+  export XLAT_ROOT=/Library/ClokeOS/x86
+  case ":$DYLD_INSERT_LIBRARIES:" in *:/usr/lib/libxlat-exec.dylib:*) ;; *) export DYLD_INSERT_LIBRARIES="${DYLD_INSERT_LIBRARIES:+$DYLD_INSERT_LIBRARIES:}/usr/lib/libxlat-exec.dylib" ;; esac
 fi
 EOF2
 # Eine schon laufende Shell kann den Haken nicht nachträglich laden (dyld wertet DYLD_INSERT_LIBRARIES nur beim Start aus):
 # interaktive zsh (siehe /etc/zshrc) startet sich einmal neu, danach erben alle Kindprozesse den Haken.
 cat > "$stage/etc/clokeos-xlat.zsh" <<'EOF3'
 if [[ -o interactive && -z $XLAT_HOOKED && -x /usr/bin/ucrun && -f /usr/lib/libxlat-exec.dylib ]]; then
-  export XLAT_HOOKED=1 XLAT_ROOT=/Library/ClokeOS/x86 DYLD_INSERT_LIBRARIES=/usr/lib/libxlat-exec.dylib
+  export XLAT_HOOKED=1 XLAT_ROOT=/Library/ClokeOS/x86
+  case ":$DYLD_INSERT_LIBRARIES:" in *:/usr/lib/libxlat-exec.dylib:*) ;; *) export DYLD_INSERT_LIBRARIES="${DYLD_INSERT_LIBRARIES:+$DYLD_INSERT_LIBRARIES:}/usr/lib/libxlat-exec.dylib" ;; esac
   exec zsh
 fi
 EOF3

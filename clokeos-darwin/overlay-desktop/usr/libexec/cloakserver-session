@@ -10,7 +10,7 @@ export XUSERFILESEARCHPATH=$HOME/%N%C:$HOME/%N
 print '*customization: -color' | /bin/xrdb -nocpp -merge
 # arm64: PureDarwins GTK sucht die Xcursor-Funktionen in den geladenen Bibliotheken, lädt aber
 # keine libXcursor (siehe cloakserver/build.sh). Für CloakServer und alle Programme der Sitzung:
-[[ $(uname -m) == arm64 && -r /lib/libXcursor.1.dylib ]] && export DYLD_INSERT_LIBRARIES=/lib/libXcursor.1.dylib
+[[ $(uname -m) == arm64 && -r /lib/libXcursor.1.dylib ]] && export DYLD_INSERT_LIBRARIES=/lib/libXcursor.1.dylib${DYLD_INSERT_LIBRARIES:+:$DYLD_INSERT_LIBRARIES}  # dahinter bleiben die Haken aus /etc/profile (libclokeos-mime, libxlat-exec)
 # arm64 hat keine Echtzeituhr; com.clokeos.network stellt die Uhr erst nach dem Netzwerkstart,
 # ungefähr wenn Xorg bereit ist. Damit die Anmeldung nicht kurz 1970 und das Nachtbild zeigt,
 # wartet CloakServer höchstens 5 Sekunden darauf (Xorg startet unterdessen schon).
