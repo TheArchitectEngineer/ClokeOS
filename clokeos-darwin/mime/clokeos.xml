@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- ClokeOS: eigene Dateitypen für Programme anderer Systeme. Höhere Priorität (90) als die ELF-Typen der Standarddatenbank (50),
+     und bewusst keine Unterklasse von application/x-executable, damit Fundus (Thunar) sie nicht selbst auszuführen versucht,
+     sondern an tux bzw. ucrun übergibt (Zuordnung in share/applications/mimeapps.list). -->
+<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
+  <mime-type type="application/x-linux-elf">
+    <comment>Linux program</comment>
+    <magic priority="90"><match type="string" value="\x7fELF" offset="0"/></magic>
+  </mime-type>
+  <mime-type type="application/x-x86-macho">
+    <comment>x86_64 Mac program</comment>
+    <magic priority="90"><match type="string" value="\xcf\xfa\xed\xfe\x07\x00\x00\x01" offset="0"/></magic>
+  </mime-type>
+</mime-info>

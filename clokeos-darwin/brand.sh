@@ -141,6 +141,9 @@ printf '\n# ClokeOS\n[ -n "$BASH_VERSION" ] && [ -r /etc/bashrc ] && . /etc/bash
 # xlat: x86_64-Programme auf arm64 (Übersetzer ucrun + exec-Haken, siehe docs/translation-study.md)
 [ "$CLOKE_FLAVOR" = desktop ] && [ "$CLOKE_ARCH" = arm64 ] && "$HERE/xlat/image.sh" "$tmp/stage" "$tmp/tux.cmds" || true
 
+# MIME-Datenbank (mime.cache), damit Fundus Programme anderer Systeme (ELF, x86_64-Mach-O) erkennt
+[ "$CLOKE_FLAVOR" = desktop ] && "$HERE/mime/build.sh" "$tmp/stage" || true
+
 # --- Desktop: Homebrew (siehe README, "Homebrew") ------------------------------------------
 # libcompat: fehlende libSystem-Symbole und libffi.dylib; Absolute /usr/bin-Pfade, die Homebrew
 # erwartet (PureDarwin legt die Werkzeuge nach /bin); Präfix für den Benutzer anlegen (kein sudo)
