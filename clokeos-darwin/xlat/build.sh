@@ -21,6 +21,12 @@ for t in jitprobe x64run; do
 done
 clang -target x86_64-apple-macos11.0 -nostdlib -static -Wl,-e,_start -o "$out/hello-x64" hello-x64.s
 clang -target x86_64-apple-macos11.0 -O2 -ffreestanding -fno-builtin -fno-stack-protector -nostdlib -static -Wl,-e,_start -o "$out/t-sys" t-sys.c
+# dynamisches Testprogramm gegen die x86_64-libSystem aus dem Image (xlat/xroot.sh holt sie)
+xr="$WORK/x86root/usr/lib"
+if [ -f "$xr/libSystem.B.dylib" ]; then
+  clang -target x86_64-apple-macos11.0 -isysroot "$(xcrun --show-sdk-path)" -O1 -nostdlib -Wl,-platform_version,macos,11.0,11.5 -Wl,-e,_main \
+    -o "$out/hello-dyn" hello-dyn.c "$xr/libSystem.B.dylib" "$xr/libc++abi.dylib"
+fi
 file "$out"/*
 
 # ucrun: x64run mit Unicorn (GPL-2.0, QEMU-TCG als Bibliothek) als CPU-Kern. Quelle: git clone --branch 2.1.4 unicorn-engine/unicorn
