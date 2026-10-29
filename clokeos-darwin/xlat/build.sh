@@ -19,3 +19,19 @@ for t in jitprobe x64run; do
 done
 clang -target x86_64-apple-macos11.0 -nostdlib -static -Wl,-e,_start -o "$out/hello-x64" hello-x64.s
 file "$out"/*
+
+# ucrun: x64run mit Unicorn (GPL-2.0, QEMU-TCG als Bibliothek) als CPU-Kern. Quelle: git clone --branch 2.1.4 unicorn-engine/unicorn
+# nach $WORK/download/unicorn/src; gebaut wird nur, wenn sie da ist (Zwischenstand build-arm64 danach löschen).
+uni="$WORK/download/unicorn"
+if [ -d "$uni/src" ]; then
+  if [ ! -f "$uni/build-arm64/libunicorn-static.a" ]; then
+    mkdir -p "$uni/build-arm64"
+    (cd "$uni/build-arm64" && cmake ../src -DCMAKE_BUILD_TYPE=Release -DUNICORN_ARCH="x86;aarch64" -DBUILD_SHARED_LIBS=OFF \
+      -DUNICORN_BUILD_TESTS=OFF -DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0 \
+      -DCMAKE_OSX_SYSROOT="$(xcrun --show-sdk-path)" -DCMAKE_C_FLAGS=-fno-stack-check >/dev/null && make -j6 unicorn >/dev/null)
+  fi
+  b="$uni/build-arm64"
+  clang -target arm64-apple-macos11.0 -isysroot "$(xcrun --show-sdk-path)" -O1 -fno-stack-check -nostdlib \
+    -Wl,-platform_version,macos,11.0,11.5 -Wl,-no_fixup_chains -I"$uni/src/include" -o "$out/ucrun" ucrun.c \
+    "$b/libunicorn-static.a" "$b/libx86_64-softmmu.a" "$b/libaarch64-softmmu.a" "$b/libunicorn-common.a" "$libs/libSystem.B.dylib"
+fi

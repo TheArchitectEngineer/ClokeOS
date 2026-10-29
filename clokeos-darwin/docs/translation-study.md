@@ -69,6 +69,13 @@ Order:
 Tested in the arm64 VM (ClokeOS 2.5 desktop image copy, QEMU + HVF): `./hello-x64` -> `bad CPU type in executable`;
 `./x64run hello-x64` -> three lines, exit code 7 (same as the host Mac). `jitprobe` output as in section 1.
 
+Option A, second round (user approved the download; Unicorn 2.1.4, `COPYING` is GPL-2.0, 27 MB source): `xlat/ucrun` is the
+same loader with Unicorn as CPU core. It builds for Darwin 20 arm64 without changes (static, linked against the image's libSystem,
+3 MB) and **runs the same hello in the arm64 VM with the same output and exit code 7**. So QEMU's TCG, including its `MAP_JIT`
+code buffer, works on PureDarwin without a kernel patch. Unicorn keeps guest memory in its own address space with 4 KiB pages,
+so the 16 KiB host page, the missing pagezero range and the PIE slide at 4 GiB do not matter for it (they still do for an own 1:1 JIT).
+Still unknown for Unicorn: speed (not measured), threads, dynamic Mach-O, guest memory management by syscalls (`mmap`).
+
 Not tested: x86_64 host side (the proof is arm64-only; the reverse direction is not started); any dynamic Mach-O, threads,
 signals, SSE/x87, TSO, `FlagM`/`LRCPC` availability, the 4 KiB emulation, the commpage, performance of any of it, building
 Unicorn or Box64/FEX on Darwin, the claimed licenses and speeds (from memory/public experience, not re-verified here).
