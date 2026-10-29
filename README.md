@@ -259,6 +259,27 @@ The x86_64 desktop image runs Windows programs (`.exe`, `.msi`) with **Wine 11.0
 
 Try it in a terminal: `wine program.exe`, `wine cmd`, `wine notepad`, `winecfg`. The first start of a user creates the prefix (`wineboot` imports `wine.inf`), which takes a few minutes in the emulated x86_64 VM and well under a minute on a PC.
 
+### cloke: one package manager for everything
+
+`cloke` (`/usr/bin/cloke`, Python 3, also runs on Linux and Windows) installs software from whatever source has it, on any OS:
+
+```
+$ cloke install steam
+found five versions:
+
+1. Steam-macOS (brew, cask)
+2. Steam-Linux (dnf)  [via linux, not installed]
+3. Steam-Linux (flatpak)  [via linux, not installed]
+4. Steam-Windows (winget)  [via wine]
+5. Steam-Windows (choco)  [via wine]
+
+Choose a Version, 2 recommended (default 2):
+```
+
+Backends used when present: **brew** (macOS and ClokeOS), **dnf / apt / pacman / flatpak / AppImage** (Linux; AppImages come from the appimage.github.io feed and the project's GitHub release) and **winget / choco** (Windows). Live searches run on every backend the system has; a built-in catalog of popular programs adds the versions for the other OSes. Versions for another OS run through a compatibility layer: Windows programs through **Wine** (cloke reads the installer URL from the winget-pkgs manifest, downloads it and runs it silently under Wine), Linux programs through the command in `CLOKE_LINUX_LAYER` (no Linux layer ships yet, so those entries say "not installed"). The recommended version is a native command-line package first, then Linux, then a native GUI cask, then Windows.
+
+`cloke search|install|remove|list|update|backends`, `-y` takes the recommendation, `--from brew|dnf|...` and `--os macos|linux|windows` narrow the list, `search --json` is machine-readable. Tests: `clokeos-darwin/tools/test_cloke.py`. Not tested yet: dnf, flatpak, winget, choco and the Wine installer path on real systems (only parsers, ranking and the prompt are covered by tests).
+
 ### Architectures
 
 | Target | State | Base |

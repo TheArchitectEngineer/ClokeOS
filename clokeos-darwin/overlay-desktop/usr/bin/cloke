@@ -1,0 +1,598 @@
+#!/usr/bin/env python3
+"""cloke - one package manager for ClokeOS, macOS, Linux and Windows software.
+
+  cloke install <name>      search every backend, let you pick a version, install it
+  cloke search <name>       show what is available and from where
+  cloke remove <name>       remove a package that cloke installed
+  cloke list                packages installed through cloke
+  cloke update              upgrade everything cloke installed
+  cloke backends            which backends and compatibility layers this system has
+
+Backends (used when present on this system): brew | dnf, apt, pacman, flatpak, AppImage |
+winget, choco. Software for another OS is offered too and installed through a compatibility
+layer: Windows programs through Wine (the installer comes from the winget-pkgs manifests),
+Linux programs through the layer named in CLOKE_LINUX_LAYER (a command that runs its arguments
+inside a Linux environment, for example "cloke-linux --").
+
+Options: -y/--yes takes the recommended version without asking, --from <backend> picks a backend,
+--os macos|linux|windows limits the list to one OS, --json (search) prints machine-readable output.
+"""
+import argparse
+import json
+import os
+import platform
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import urllib.request
+from concurrent.futures import ThreadPoolExecutor
+
+VERSION = "0.1"
+STATE = os.path.join(os.environ.get("XDG_DATA_HOME", os.path.expanduser("~/.local/share")), "cloke", "installed.json")
+
+# Which OS this program is running on. ClokeOS is Darwin, so it counts as macOS.
+HOST = {"darwin": "macos", "linux": "linux", "win32": "windows", "cygwin": "windows"}.get(sys.platform, "linux")
+ARCH = platform.machine().lower()
+
+OS_LABEL = {"macos": "macOS", "linux": "Linux", "windows": "Windows"}
+# Native first, then the order in which the OSes make sense as a fallback.
+OS_ORDER = {
+    "macos": ["macos", "linux", "windows"],
+    "linux": ["linux", "windows", "macos"],
+    "windows": ["windows", "linux", "macos"],
+}[HOST]
+
+# backend -> (OS it installs for, command it needs, sort rank inside that OS)
+BACKENDS = {
+    "brew": ("macos", "brew", 0),
+    "dnf": ("linux", "dnf", 0),
+    "apt": ("linux", "apt-get", 1),
+    "pacman": ("linux", "pacman", 2),
+    "flatpak": ("linux", "flatpak", 3),
+    "appimage": ("linux", None, 4),
+    "winget": ("windows", "winget", 0),
+    "choco": ("windows", "choco", 1),
+}
+
+# Popular programs with their ids per backend, so other OSes' versions can be listed even where
+# that OS's package manager does not exist. "cask:" marks a Homebrew cask (a GUI app bundle).
+CATALOG = {
+    "steam": {"brew": "cask:steam", "dnf": "steam", "flatpak": "com.valvesoftware.Steam", "winget": "Valve.Steam", "choco": "steam-client"},
+    "firefox": {"brew": "cask:firefox", "dnf": "firefox", "flatpak": "org.mozilla.firefox", "winget": "Mozilla.Firefox", "choco": "firefox"},
+    "vlc": {"brew": "cask:vlc", "dnf": "vlc", "flatpak": "org.videolan.VLC", "winget": "VideoLAN.VLC", "choco": "vlc"},
+    "git": {"brew": "git", "dnf": "git", "apt": "git", "pacman": "git", "winget": "Git.Git", "choco": "git"},
+    "python": {"brew": "python", "dnf": "python3", "apt": "python3", "pacman": "python", "winget": "Python.Python.3.13", "choco": "python"},
+    "nodejs": {"brew": "node", "dnf": "nodejs", "apt": "nodejs", "pacman": "nodejs", "winget": "OpenJS.NodeJS", "choco": "nodejs"},
+    "vscode": {"brew": "cask:visual-studio-code", "flatpak": "com.visualstudio.code", "winget": "Microsoft.VisualStudioCode", "choco": "vscode"},
+    "discord": {"brew": "cask:discord", "flatpak": "com.discordapp.Discord", "winget": "Discord.Discord", "choco": "discord"},
+    "spotify": {"brew": "cask:spotify", "flatpak": "com.spotify.Client", "winget": "Spotify.Spotify", "choco": "spotify"},
+    "obs": {"brew": "cask:obs", "dnf": "obs-studio", "flatpak": "com.obsproject.Studio", "winget": "OBSProject.OBSStudio", "choco": "obs-studio"},
+    "gimp": {"brew": "cask:gimp", "dnf": "gimp", "flatpak": "org.gimp.GIMP", "winget": "GIMP.GIMP.3", "choco": "gimp"},
+    "blender": {"brew": "cask:blender", "dnf": "blender", "flatpak": "org.blender.Blender", "winget": "BlenderFoundation.Blender", "choco": "blender"},
+    "libreoffice": {"brew": "cask:libreoffice", "dnf": "libreoffice", "flatpak": "org.libreoffice.LibreOffice", "winget": "TheDocumentFoundation.LibreOffice", "choco": "libreoffice-fresh"},
+    "telegram": {"brew": "cask:telegram", "flatpak": "org.telegram.desktop", "winget": "Telegram.TelegramDesktop", "choco": "telegram"},
+    "signal": {"brew": "cask:signal", "flatpak": "org.signal.Signal", "winget": "OpenWhisperSystems.Signal", "choco": "signal"},
+    "ffmpeg": {"brew": "ffmpeg", "dnf": "ffmpeg", "apt": "ffmpeg", "pacman": "ffmpeg", "winget": "Gyan.FFmpeg", "choco": "ffmpeg"},
+    "7zip": {"brew": "sevenzip", "dnf": "p7zip", "apt": "p7zip-full", "pacman": "p7zip", "winget": "7zip.7zip", "choco": "7zip"},
+    "htop": {"brew": "htop", "dnf": "htop", "apt": "htop", "pacman": "htop"},
+    "wget": {"brew": "wget", "dnf": "wget", "apt": "wget", "pacman": "wget", "choco": "wget"},
+    "neovim": {"brew": "neovim", "dnf": "neovim", "apt": "neovim", "pacman": "neovim", "winget": "Neovim.Neovim", "choco": "neovim"},
+    "ripgrep": {"brew": "ripgrep", "dnf": "ripgrep", "apt": "ripgrep", "pacman": "ripgrep", "winget": "BurntSushi.ripgrep.MSVC", "choco": "ripgrep"},
+}
+ALIASES = {"node": "nodejs", "code": "vscode", "visual-studio-code": "vscode", "libre-office": "libreoffice",
+           "p7zip": "7zip", "sevenzip": "7zip", "nvim": "neovim", "rg": "ripgrep", "obs-studio": "obs"}
+
+
+class Pkg:
+    def __init__(self, backend, pid, name, desc="", version="", score=0, kind=""):
+        self.backend, self.id, self.name, self.desc, self.version, self.score, self.kind = backend, pid, name, desc, version, score, kind
+        self.os = BACKENDS[backend][0]
+
+    def label(self):
+        n = self.name if self.name else self.id
+        shown = n[:1].upper() + n[1:] if n.islower() else n
+        return f"{shown}-{OS_LABEL[self.os]} ({self.backend}{', ' + self.kind if self.kind else ''})"
+
+    def as_dict(self):
+        return {"backend": self.backend, "id": self.id, "name": self.name, "os": self.os, "version": self.version,
+                "description": self.desc, "kind": self.kind, "layer": self.layer(), "recommended": False}
+
+    def layer(self):
+        """Compatibility layer this package needs on this system, or '' when it runs natively."""
+        if self.os == HOST:
+            return ""
+        return {"windows": "wine", "linux": "linux"}.get(self.os, "macos")
+
+
+def norm(s):
+    return re.sub(r"[^a-z0-9]", "", s.lower())
+
+
+def match_score(query, *names):
+    """3 exact, 2 prefix, 1 contains, 0 none - over the best of the given names."""
+    q, best = norm(query), 0
+    for n in names:
+        n = norm(n)
+        if not n:
+            continue
+        if n == q:
+            best = max(best, 3)
+        elif n.startswith(q):
+            best = max(best, 2)
+        elif q in n:
+            best = max(best, 1)
+    return best
+
+
+def run(cmd, timeout=60, check=False):
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    return r.stdout if (r.returncode == 0 or not check) else ""
+
+
+def have(backend):
+    cmd = BACKENDS[backend][1]
+    return True if cmd is None else shutil.which(cmd) is not None
+
+
+# ---------------------------------------------------------------- live searches
+def search_brew(q):
+    out = []
+    for kind, flag in (("formula", "--formula"), ("cask", "--cask")):
+        for line in run(["brew", "search", flag, q]).splitlines():
+            line = line.strip()
+            if line and not line.startswith("==>"):
+                out.append(Pkg("brew", ("cask:" if kind == "cask" else "") + line, line.split("/")[-1], kind="cask" if kind == "cask" else "",
+                               score=match_score(q, line)))
+    return out
+
+
+def search_dnf(q):
+    out = []
+    for line in run(["dnf", "-q", "search", q]).splitlines():
+        m = re.match(r"^(\S+?)\.(\w+)\s*:\s*(.*)$", line)
+        if m:
+            out.append(Pkg("dnf", m.group(1), m.group(1), m.group(3), score=match_score(q, m.group(1))))
+    return out
+
+
+def search_apt(q):
+    out = []
+    for line in run(["apt-cache", "search", q]).splitlines():
+        name, _, desc = line.partition(" - ")
+        if name:
+            out.append(Pkg("apt", name, name, desc, score=match_score(q, name)))
+    return out
+
+
+def search_pacman(q):
+    out = []
+    lines = run(["pacman", "-Ss", q]).splitlines()
+    for i in range(0, len(lines) - 1, 2):
+        m = re.match(r"^\S+/(\S+)\s+(\S+)", lines[i])
+        if m:
+            out.append(Pkg("pacman", m.group(1), m.group(1), lines[i + 1].strip(), m.group(2), match_score(q, m.group(1))))
+    return out
+
+
+def search_flatpak(q):
+    out = []
+    for line in run(["flatpak", "search", "--columns=application,name,description", q]).splitlines():
+        parts = line.split("\t")
+        if len(parts) >= 2 and "." in parts[0]:
+            out.append(Pkg("flatpak", parts[0], parts[1], parts[2] if len(parts) > 2 else "", score=match_score(q, parts[1], parts[0].split(".")[-1])))
+    return out
+
+
+def search_winget(q):
+    text = run(["winget", "search", q, "--accept-source-agreements"], 90)
+    lines = [l for l in text.splitlines() if l.strip()]
+    head = next((i for i, l in enumerate(lines) if re.match(r"^Name\s+Id\s+Version", l)), None)
+    out = []
+    if head is None:
+        return out
+    h = lines[head]
+    ci, cv = h.index("Id"), h.index("Version")
+    for l in lines[head + 2:]:
+        name, pid, ver = l[:ci].strip(), l[ci:cv].strip(), l[cv:].split()[0:1]
+        if name and pid:
+            out.append(Pkg("winget", pid, name, version=ver[0] if ver else "", score=match_score(q, name, pid.split(".")[-1])))
+    return out
+
+
+def search_choco(q):
+    out = []
+    for line in run(["choco", "search", q, "-r"]).splitlines():
+        name, _, ver = line.strip().partition("|")
+        if name and "|" in line:
+            out.append(Pkg("choco", name, name, version=ver, score=match_score(q, name)))
+    return out
+
+
+_APPIMAGE_FEED = None
+
+
+def appimage_feed():
+    global _APPIMAGE_FEED
+    if _APPIMAGE_FEED is None:
+        try:
+            with urllib.request.urlopen("https://appimage.github.io/feed.json", timeout=20) as r:
+                _APPIMAGE_FEED = json.load(r).get("items", [])
+        except Exception:
+            _APPIMAGE_FEED = []
+    return _APPIMAGE_FEED
+
+
+def search_appimage(q):
+    out = []
+    for it in appimage_feed():
+        name = it.get("name", "")
+        s = match_score(q, name)
+        repo = next((l["url"] for l in it.get("links") or [] if "github.com" in l.get("url", "")), "")
+        if s and repo:
+            out.append(Pkg("appimage", repo, name, (it.get("description") or "")[:80], score=s))
+    return out
+
+
+SEARCHERS = {"brew": search_brew, "dnf": search_dnf, "apt": search_apt, "pacman": search_pacman, "flatpak": search_flatpak,
+             "appimage": search_appimage, "winget": search_winget, "choco": search_choco}
+
+
+def catalog_entry(q):
+    key = ALIASES.get(norm(q), norm(q))
+    for name, ids in CATALOG.items():
+        if norm(name) == key:
+            return name, ids
+    return None, None
+
+
+def find(q, only_os=None, only_backend=None):
+    """Return the candidate packages, at most one per backend, ordered for choosing."""
+    cat_name, cat = catalog_entry(q)
+    wanted = [b for b in BACKENDS if (not only_backend or b == only_backend) and (not only_os or BACKENDS[b][0] == only_os)]
+    live = [b for b in wanted if have(b)]
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        results = dict(zip(live, ex.map(lambda b: SEARCHERS[b](q), live)))
+    picks = []
+    for b in wanted:
+        cands = sorted((p for p in results.get(b, []) if p.score), key=lambda p: (-p.score, p.kind == "cask", len(p.id)))
+        # A catalog id beats a fuzzy hit: it is the program people mean by that name.
+        if cat and b in cat:
+            ids = {p.id: p for p in cands}
+            want = cat[b]
+            pk = ids.get(want) or Pkg(b, want, cat_name, kind="cask" if want.startswith("cask:") else "", score=3)
+            if want.startswith("cask:") and pk.id != want:
+                pk.id = want
+            cands = [pk] + [p for p in cands if p.id != want]
+        # Only exact and prefix hits are worth listing (no flood of fuzzy matches).
+        cands = [p for p in cands if p.score >= (3 if b == "appimage" else 2)]
+        if cands:
+            picks.append(cands[0])
+    picks.sort(key=lambda p: (OS_ORDER.index(p.os), BACKENDS[p.backend][2]))
+    return picks
+
+
+def recommended(picks):
+    """Index of the recommended version. Order: runs natively as a command-line package, then Linux
+    versions (a Linux layer is the better bet than Wine; one that is set up wins), then a native GUI
+    cask (often built for the wrong CPU), then Windows versions (Wine first when installed)."""
+    def rank(p):
+        ok = not p.layer() or layer_available(p.layer())
+        if p.os == HOST and p.kind != "cask":
+            cls = 0
+        elif p.os == "linux":
+            cls = 1
+        elif p.os == HOST:
+            cls = 2
+        else:
+            cls = 3
+        return (cls, 0 if ok else 1, OS_ORDER.index(p.os), BACKENDS[p.backend][2])
+    return min(range(len(picks)), key=lambda i: rank(picks[i]))
+
+
+# ---------------------------------------------------------------- layers
+def layer_command(layer):
+    if layer == "wine":
+        return ["wine"] if shutil.which("wine") else None
+    if layer == "linux":
+        spec = os.environ.get("CLOKE_LINUX_LAYER", "")
+        return spec.split() if spec and shutil.which(spec.split()[0]) else None
+    return None
+
+
+def layer_available(layer):
+    return layer_command(layer) is not None
+
+
+# ---------------------------------------------------------------- install / remove
+def sudo():
+    return [] if (os.name == "nt" or os.geteuid() == 0 or not shutil.which("sudo")) else ["sudo"]
+
+
+def native_cmd(p, action):
+    b, i = p.backend, p.id
+    if b == "brew":
+        cask = i.startswith("cask:")
+        base = ["brew", action] + (["--cask"] if cask else []) + [i.replace("cask:", "")]
+        return base
+    if b == "dnf":
+        return sudo() + ["dnf", "-y", "install" if action == "install" else "remove", i]
+    if b == "apt":
+        return sudo() + ["apt-get", "-y", "install" if action == "install" else "remove", i]
+    if b == "pacman":
+        return sudo() + (["pacman", "-S", "--noconfirm", i] if action == "install" else ["pacman", "-R", "--noconfirm", i])
+    if b == "flatpak":
+        return ["flatpak", "-y", "install", "flathub", i] if action == "install" else ["flatpak", "-y", "uninstall", i]
+    if b == "winget":
+        return ["winget", action if action == "install" else "uninstall", "--id", i, "-e", "--accept-source-agreements"] + (["--accept-package-agreements"] if action == "install" else [])
+    if b == "choco":
+        return ["choco", action if action == "install" else "uninstall", "-y", i]
+    return None
+
+
+def appimage_install(p):
+    m = re.match(r"https://github.com/([^/]+/[^/]+)", p.id)
+    if not m:
+        print("cloke: no download source for this AppImage", file=sys.stderr)
+        return 1
+    with urllib.request.urlopen(f"https://api.github.com/repos/{m.group(1).rstrip('/')}/releases/latest", timeout=30) as r:
+        assets = json.load(r).get("assets", [])
+    arch = "aarch64|arm64" if ARCH in ("arm64", "aarch64") else "x86_64|amd64"
+    cand = [a for a in assets if a["name"].lower().endswith(".appimage") and re.search(arch, a["name"].lower())] or \
+           [a for a in assets if a["name"].lower().endswith(".appimage")]
+    if not cand:
+        print("cloke: no AppImage in the latest release", file=sys.stderr)
+        return 1
+    dest = os.path.expanduser("~/Applications/AppImages")
+    os.makedirs(dest, exist_ok=True)
+    path = os.path.join(dest, cand[0]["name"])
+    print(f"Downloading {cand[0]['name']}")
+    urllib.request.urlretrieve(cand[0]["browser_download_url"], path)
+    os.chmod(path, 0o755)
+    print(f"Installed {path}")
+    p.id = path
+    return 0
+
+
+def winget_manifest_installer(pid):
+    """Find the newest installer for a winget package id in the winget-pkgs repository."""
+    parts = pid.split(".")
+    base = f"manifests/{pid[0].lower()}/" + "/".join(parts)
+    def api(path):
+        req = urllib.request.Request("https://api.github.com/repos/microsoft/winget-pkgs/contents/" + path, headers={"Accept": "application/vnd.github+json"})
+        with urllib.request.urlopen(req, timeout=30) as r:
+            return json.load(r)
+    entries = api(base)
+    versions = [e["name"] for e in entries if e["type"] == "dir"]
+    if not versions:
+        return None
+    key = lambda v: [int(x) if x.isdigit() else 0 for x in re.split(r"[.\-]", v)]
+    ver = sorted(versions, key=key)[-1]
+    raw = f"https://raw.githubusercontent.com/microsoft/winget-pkgs/master/{base}/{ver}/{pid}.installer.yaml"
+    with urllib.request.urlopen(raw, timeout=30) as r:
+        text = r.read().decode()
+    blocks = re.split(r"\n- ", text)
+    best = None
+    for blk in blocks:
+        url = re.search(r"InstallerUrl:\s*(\S+)", blk)
+        if not url:
+            continue
+        arch = (re.search(r"Architecture:\s*(\S+)", blk) or [None, ""])[1]
+        typ = (re.search(r"InstallerType:\s*(\S+)", blk) or re.search(r"InstallerType:\s*(\S+)", text) or [None, ""])[1]
+        # Wine on ClokeOS runs 32-bit and 64-bit x86 programs; prefer x64
+        if best is None or arch == "x64":
+            best = (url.group(1), typ, arch)
+    return best
+
+
+def windows_via_wine(p):
+    wine = layer_command("wine")
+    try:
+        info = winget_manifest_installer(p.id)
+    except Exception as e:
+        print(f"cloke: could not read the winget manifest: {e}", file=sys.stderr)
+        return 1
+    if not info:
+        print("cloke: no installer found for this package", file=sys.stderr)
+        return 1
+    url, typ, _ = info
+    tmp = tempfile.mkdtemp(prefix="cloke-")
+    fn = os.path.join(tmp, os.path.basename(url.split("?")[0]) or "setup.exe")
+    print(f"Downloading {url}")
+    urllib.request.urlretrieve(url, fn)
+    t = typ.lower()
+    if fn.lower().endswith(".msi") or t in ("msi", "wix"):
+        cmd = wine + ["msiexec", "/i", fn, "/qn"]
+    elif t == "inno":
+        cmd = wine + [fn, "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART"]
+    elif t in ("nullsoft", "nsis"):
+        cmd = wine + [fn, "/S"]
+    else:
+        cmd = wine + [fn]
+    print("Running installer through Wine:", " ".join(cmd))
+    return subprocess.call(cmd)
+
+
+def do_install(p):
+    layer = p.layer()
+    if layer:
+        lc = layer_command(layer)
+        if lc is None:
+            hint = {"wine": "Wine is not installed on this system.",
+                    "linux": "No Linux layer set up: set CLOKE_LINUX_LAYER to a command that runs its arguments in Linux, e.g. 'cloke-linux --'."}.get(layer, "Needs the macOS layer.")
+            print(f"cloke: {p.label()} needs a compatibility layer. {hint}", file=sys.stderr)
+            return 2
+        if layer == "wine":
+            return windows_via_wine(p)
+        cmd = native_cmd(p, "install")
+        print("Running in the Linux layer:", " ".join(cmd))
+        return subprocess.call(lc + cmd) if cmd else 1
+    if p.backend == "appimage":
+        return appimage_install(p)
+    cmd = native_cmd(p, "install")
+    print("Running:", " ".join(cmd))
+    return subprocess.call(cmd)
+
+
+def load_state():
+    try:
+        with open(STATE) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return []
+
+
+def save_state(rows):
+    os.makedirs(os.path.dirname(STATE), exist_ok=True)
+    with open(STATE, "w") as f:
+        json.dump(rows, f, indent=1)
+
+
+# ---------------------------------------------------------------- commands
+def show(picks, rec):
+    for i, p in enumerate(picks, 1):
+        extra = ""
+        if p.layer():
+            extra = f"  [via {p.layer()}{'' if layer_available(p.layer()) else ', not installed'}]"
+        print(f"{i}. {p.label()}{extra}")
+    return rec
+
+
+def cmd_search(a):
+    picks = find(a.name, a.os, a.__dict__.get("from_"))
+    if not picks:
+        print(f"cloke: nothing found for '{a.name}'")
+        return 1
+    rec = recommended(picks)
+    if a.json:
+        rows = [p.as_dict() for p in picks]
+        rows[rec]["recommended"] = True
+        print(json.dumps(rows, indent=1))
+        return 0
+    print(f"found {len(picks)} version{'s' if len(picks) != 1 else ''}:\n")
+    show(picks, rec)
+    print(f"\nrecommended: {rec + 1}")
+    return 0
+
+
+def cmd_install(a):
+    picks = find(a.name, a.os, a.__dict__.get("from_"))
+    if not picks:
+        print(f"cloke: nothing found for '{a.name}'")
+        return 1
+    rec = recommended(picks)
+    if len(picks) == 1:
+        choice = 0
+    else:
+        words = {2: "two", 3: "three", 4: "four", 5: "five", 6: "six", 7: "seven", 8: "eight"}
+        print(f"found {words.get(len(picks), len(picks))} versions:\n")
+        show(picks, rec)
+        if a.yes or not sys.stdin.isatty():
+            choice = rec
+        else:
+            ans = input(f"\n\nChoose a Version, {rec + 1} recommended (default {rec + 1}): ").strip()
+            if not ans:
+                choice = rec
+            elif ans.isdigit() and 1 <= int(ans) <= len(picks):
+                choice = int(ans) - 1
+            else:
+                print("cloke: invalid choice", file=sys.stderr)
+                return 1
+    p = picks[choice]
+    print(f"\nInstalling {p.label()}")
+    rc = do_install(p)
+    if rc == 0:
+        rows = [r for r in load_state() if not (r["backend"] == p.backend and r["id"] == p.id)]
+        rows.append({"name": a.name, "backend": p.backend, "id": p.id, "os": p.os})
+        save_state(rows)
+    return rc
+
+
+def cmd_remove(a):
+    rows = load_state()
+    hit = [r for r in rows if norm(r["name"]) == norm(a.name) or norm(r["id"]) == norm(a.name)]
+    if not hit:
+        print(f"cloke: '{a.name}' was not installed by cloke")
+        return 1
+    rc = 0
+    for r in hit:
+        p = Pkg(r["backend"], r["id"], r["name"])
+        if p.backend == "appimage":
+            try:
+                os.remove(p.id)
+            except OSError:
+                pass
+        else:
+            cmd = native_cmd(p, "remove")
+            lc = layer_command(p.layer()) if p.layer() else []
+            if p.layer() == "wine":
+                print(f"cloke: remove {r['name']} in Wine with 'wine uninstaller'", file=sys.stderr)
+                cmd = None
+            if cmd:
+                print("Running:", " ".join((lc or []) + cmd))
+                rc = subprocess.call((lc or []) + cmd) or rc
+        rows.remove(r)
+    save_state(rows)
+    return rc
+
+
+def cmd_list(a):
+    rows = load_state()
+    for r in rows:
+        print(f"{r['name']:24s} {OS_LABEL[r['os']]:8s} {r['backend']}")
+    if not rows:
+        print("nothing installed through cloke yet")
+    return 0
+
+
+def cmd_update(a):
+    rc = 0
+    for b in sorted({r["backend"] for r in load_state()}):
+        if not have(b) and b != "appimage":
+            continue
+        cmd = {"brew": ["brew", "upgrade"], "dnf": sudo() + ["dnf", "-y", "upgrade"], "apt": sudo() + ["apt-get", "-y", "upgrade"],
+               "pacman": sudo() + ["pacman", "-Syu", "--noconfirm"], "flatpak": ["flatpak", "-y", "update"],
+               "winget": ["winget", "upgrade", "--all"], "choco": ["choco", "upgrade", "all", "-y"]}.get(b)
+        if cmd:
+            print("Running:", " ".join(cmd))
+            rc = subprocess.call(cmd) or rc
+    return rc
+
+
+def cmd_backends(a):
+    print(f"cloke {VERSION} on {OS_LABEL[HOST]} ({ARCH})\n")
+    for b, (osn, _, _) in BACKENDS.items():
+        print(f"  {b:9s} {OS_LABEL[osn]:8s} {'yes' if have(b) else 'no'}")
+    print("\nCompatibility layers:")
+    print(f"  wine (Windows programs)  {'yes' if layer_available('wine') else 'no'}")
+    print(f"  linux (CLOKE_LINUX_LAYER) {'yes' if layer_available('linux') else 'no'}")
+    return 0
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(prog="cloke", description="one package manager for macOS, Linux and Windows software")
+    sub = ap.add_subparsers(dest="cmd")
+    for name in ("install", "search", "remove"):
+        sp = sub.add_parser(name)
+        sp.add_argument("name")
+        sp.add_argument("-y", "--yes", action="store_true")
+        sp.add_argument("--from", dest="from_", choices=list(BACKENDS))
+        sp.add_argument("--os", choices=["macos", "linux", "windows"])
+        sp.add_argument("--json", action="store_true")
+    for name in ("list", "update", "backends"):
+        sub.add_parser(name)
+    a = ap.parse_args(argv)
+    fn = {"install": cmd_install, "search": cmd_search, "remove": cmd_remove, "list": cmd_list,
+          "update": cmd_update, "backends": cmd_backends}.get(a.cmd)
+    if not fn:
+        print(__doc__)
+        return 2
+    return fn(a)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
