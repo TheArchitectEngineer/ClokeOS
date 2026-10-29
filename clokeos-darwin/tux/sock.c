@@ -339,9 +339,26 @@ static long seq_send(int fd, const struct iovec *iov, int iovcnt, void *ctl, soc
 }
 
 // Empfängt eine Nachricht; *trunc wird 1, wenn sie größer war als der Platz
-static long seq_recv(int fd, const struct iovec *iov, int iovcnt, void *ctl, socklen_t *ctllen, int *trunc)
+static int nlpeer[4096];     // Netlink: Gegenstelle des Socketpaares
+static uint8_t isnl[4096];
+// Vorgelesene Nachricht (MSG_PEEK) je Deskriptor
+static struct { uint8_t *buf; uint32_t n; } pk[4096];
+void tux_seq_close(int fd)
+{
+	if (fd >= 0 && fd < 4096 && isnl[fd]) { isnl[fd] = 0; close(nlpeer[fd]); }
+	if (fd >= 0 && fd < 4096 && pk[fd].buf) { free(pk[fd].buf); pk[fd].buf = NULL; }
+}
+
+static long seq_recv(int fd, const struct iovec *iov, int iovcnt, void *ctl, socklen_t *ctllen, int *trunc, int peek)
 {
 	uint32_t n32;
+	uint8_t *body;
+	if (fd >= 0 && fd < 4096 && pk[fd].buf) {
+		body = pk[fd].buf;
+		n32 = pk[fd].n;
+		if (ctl) *ctllen = 0;
+		goto deliver;
+	}
 	uint8_t *hb = (uint8_t *)&n32;
 	struct iovec hv = {hb, 4};
 	struct msghdr m;
@@ -355,9 +372,10 @@ static long seq_recv(int fd, const struct iovec *iov, int iovcnt, void *ctl, soc
 	if (ctl) *ctllen = m.msg_controllen;
 	if (r == 0) return 0;   // Gegenstelle zu
 	if (r < 4 && recv_all(fd, hb + r, 4 - r) < 0) return err();
-	uint8_t *body = malloc(n32 ? n32 : 1);
+	body = malloc(n32 ? n32 : 1);
 	if (!body) return -tux_errno(ENOMEM);
 	if (n32 && recv_all(fd, body, n32) < 0) { long e = err(); free(body); return e; }
+deliver:;
 	size_t cap = 0, o = 0;
 	for (int i = 0; i < iovcnt; i++) cap += iov[i].iov_len;
 	size_t take = n32 < cap ? n32 : cap;
@@ -366,7 +384,11 @@ static long seq_recv(int fd, const struct iovec *iov, int iovcnt, void *ctl, soc
 		memcpy(iov[i].iov_base, body + o, c);
 		o += c;
 	}
-	free(body);
+	if (peek && fd >= 0 && fd < 4096) { pk[fd].buf = body; pk[fd].n = n32; }
+	else {
+		free(body);
+		if (fd >= 0 && fd < 4096) pk[fd].buf = NULL;
+	}
 	*trunc = n32 > cap;
 	return (long)take;
 }
@@ -375,7 +397,7 @@ int tux_seq_read(int fd, void *buf, size_t n, long *ret)
 {
 	struct iovec v = {buf, n};
 	int tr;
-	*ret = seq_recv(fd, &v, 1, NULL, NULL, &tr);
+	*ret = seq_recv(fd, &v, 1, NULL, NULL, &tr, 0);
 	return 1;
 }
 int tux_seq_write(int fd, const void *buf, size_t n, long *ret)
@@ -443,9 +465,160 @@ static uint64_t ctl_d2l(const void *dc, socklen_t dl, void *lc, uint64_t lcap, i
 	return o;
 }
 
+
+// --- Netlink (nur NETLINK_ROUTE, nur Abfragen): Antworten aus getifaddrs, durch einen Datagramm-Socketpaar geschickt -------
+#include <ifaddrs.h>
+#include <net/if.h>
+#include <net/if_dl.h>
+#include <net/if_types.h>
+
+typedef struct { uint8_t *b; size_t n, cap; } nlbuf;
+static void nl_put(nlbuf *o, const void *d, size_t n)
+{
+	if (o->n + n > o->cap) { o->cap = (o->n + n) * 2; o->b = realloc(o->b, o->cap); }
+	memcpy(o->b + o->n, d, n);
+	o->n += n;
+}
+static void nl_pad(nlbuf *o) { static const uint8_t z[4] = {0}; nl_put(o, z, (4 - (o->n & 3)) & 3); }
+static void nl_attr(nlbuf *o, uint16_t type, const void *d, uint16_t n)
+{
+	uint16_t h[2] = {(uint16_t)(4 + n), type};
+	nl_put(o, h, 4);
+	nl_put(o, d, n);
+	nl_pad(o);
+}
+static void nl_hdr(nlbuf *o, size_t start, uint16_t type, uint16_t flags, uint32_t seq)
+{
+	uint32_t len = (uint32_t)(o->n - start);
+	uint8_t *p = o->b + start;
+	memcpy(p, &len, 4);
+	memcpy(p + 4, &type, 2);
+	memcpy(p + 6, &flags, 2);
+	memcpy(p + 8, &seq, 4);
+	memset(p + 12, 0, 4);
+}
+static uint32_t flags_d2l(unsigned f)
+{
+	uint32_t l = 0;
+	if (f & IFF_UP) l |= 1;
+	if (f & IFF_BROADCAST) l |= 2;
+	if (f & IFF_LOOPBACK) l |= 8;
+	if (f & IFF_POINTOPOINT) l |= 0x10;
+	if (f & IFF_RUNNING) l |= 0x40;
+	if (f & IFF_MULTICAST) l |= 0x1000;
+	return l | 0x10000;   // IFF_LOWER_UP
+}
+
+static void nl_answer(int fd, const uint8_t *req, size_t rn)
+{
+	if (rn < 16) return;
+	uint16_t type;
+	uint32_t seq;
+	memcpy(&type, req + 4, 2);
+	memcpy(&seq, req + 8, 4);
+	nlbuf o = {0};
+	struct ifaddrs *ifa, *p;
+	if (getifaddrs(&ifa) != 0) ifa = NULL;
+	if (type == 18) {   // RTM_GETLINK
+		for (p = ifa; p; p = p->ifa_next) {
+			if (!p->ifa_addr || p->ifa_addr->sa_family != AF_LINK) continue;
+			struct sockaddr_dl *dl = (struct sockaddr_dl *)p->ifa_addr;
+			size_t st = o.n;
+			uint8_t z16[16] = {0};
+			nl_put(&o, z16, 16);
+			uint8_t im[16] = {0};   // ifinfomsg: family, pad, type, index, flags, change
+			uint16_t t = (p->ifa_flags & IFF_LOOPBACK) ? 772 : 1;
+			memcpy(im + 2, &t, 2);
+			int idx = (int)if_nametoindex(p->ifa_name);
+			memcpy(im + 4, &idx, 4);
+			uint32_t fl = flags_d2l(p->ifa_flags);
+			memcpy(im + 8, &fl, 4);
+			nl_put(&o, im, 16);
+			nl_attr(&o, 3, p->ifa_name, (uint16_t)(strlen(p->ifa_name) + 1));
+			uint8_t mac[6] = {0};
+			if (dl->sdl_alen == 6) memcpy(mac, LLADDR(dl), 6);
+			nl_attr(&o, 1, mac, 6);
+			uint8_t bc[6] = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
+			nl_attr(&o, 2, bc, 6);
+			uint32_t mtu = 1500;
+			if (p->ifa_data) mtu = ((struct if_data *)p->ifa_data)->ifi_mtu;
+			nl_attr(&o, 4, &mtu, 4);
+			nl_hdr(&o, st, 16, 2, seq);   // RTM_NEWLINK, NLM_F_MULTI
+		}
+	} else if (type == 22) {   // RTM_GETADDR
+		for (p = ifa; p; p = p->ifa_next) {
+			if (!p->ifa_addr) continue;
+			int fam = p->ifa_addr->sa_family;
+			if (fam != AF_INET && fam != AF_INET6) continue;
+			size_t st = o.n;
+			uint8_t z16[16] = {0};
+			nl_put(&o, z16, 16);
+			uint8_t am[8] = {0};
+			int plen = 0;
+			if (p->ifa_netmask) {
+				if (fam == AF_INET) plen = __builtin_popcount(((struct sockaddr_in *)p->ifa_netmask)->sin_addr.s_addr);
+				else for (int i = 0; i < 16; i++) plen += __builtin_popcount(((struct sockaddr_in6 *)p->ifa_netmask)->sin6_addr.s6_addr[i]);
+			}
+			am[0] = fam == AF_INET ? 2 : 10;
+			am[1] = (uint8_t)plen;
+			am[3] = (p->ifa_flags & IFF_LOOPBACK) ? 254 : 0;   // RT_SCOPE_HOST / UNIVERSE
+			int idx = (int)if_nametoindex(p->ifa_name);
+			memcpy(am + 4, &idx, 4);
+			nl_put(&o, am, 8);
+			if (fam == AF_INET) {
+				struct in_addr a = ((struct sockaddr_in *)p->ifa_addr)->sin_addr;
+				nl_attr(&o, 1, &a, 4);
+				nl_attr(&o, 2, &a, 4);
+				if ((p->ifa_flags & IFF_BROADCAST) && p->ifa_dstaddr) {
+					struct in_addr b = ((struct sockaddr_in *)p->ifa_dstaddr)->sin_addr;
+					nl_attr(&o, 4, &b, 4);
+				}
+			} else {
+				struct in6_addr a = ((struct sockaddr_in6 *)p->ifa_addr)->sin6_addr;
+				nl_attr(&o, 1, &a, 16);
+			}
+			nl_attr(&o, 3, p->ifa_name, (uint16_t)(strlen(p->ifa_name) + 1));
+			nl_hdr(&o, st, 20, 2, seq);   // RTM_NEWADDR
+		}
+	}   // RTM_GETROUTE & Co.: leere Antwort
+	if (ifa) freeifaddrs(ifa);
+	size_t st = o.n;
+	uint8_t z[20] = {0};
+	nl_put(&o, z, 16);
+	nl_put(&o, z, 4);
+	nl_hdr(&o, st, 3, 2, seq);   // NLMSG_DONE
+	// in Stücken von höchstens 8 KiB senden, dabei nicht mitten in einer Nachricht trennen
+	size_t off = 0;
+	while (off < o.n) {
+		size_t end = off, len;
+		while (end < o.n) {
+			len = *(uint32_t *)(o.b + end);
+			if (end > off && end + len - off > 8192) break;
+			end += (len + 3) & ~3UL;
+		}
+		send(nlpeer[fd], o.b + off, end - off, 0);
+		off = end;
+	}
+	free(o.b);
+}
+
 // --- Sockets ---------------------------------------------------------------------------------
 long tux_socket(long domain, long type, long proto)
 {
+	if (domain == 16) {   // AF_NETLINK
+		if (proto != 0) return -tux_errno(EPROTONOSUPPORT);
+		int sp[2];
+		if (socketpair(AF_UNIX, SOCK_DGRAM, 0, sp)) return err();
+		if (sp[0] >= 4096) { close(sp[0]); close(sp[1]); return -tux_errno(EMFILE); }
+		int hi = fcntl(sp[1], F_DUPFD_CLOEXEC, 700);
+		if (hi < 0) hi = fcntl(sp[1], F_DUPFD_CLOEXEC, 100);
+		if (hi >= 0) { close(sp[1]); sp[1] = hi; }
+		if (type & L_O_NONBLOCK) fcntl(sp[0], F_SETFL, O_NONBLOCK);
+		if (type & L_SOCK_CLOEXEC) fcntl(sp[0], F_SETFD, FD_CLOEXEC);
+		isnl[sp[0]] = 1;
+		nlpeer[sp[0]] = sp[1];
+		return sp[0];
+	}
 	int d = dom_l2d((int)domain);
 	if (d < 0) return -tux_errno(EAFNOSUPPORT);
 	int t = type & 0xf;
@@ -484,6 +657,7 @@ long tux_socketpair(long domain, long type, long proto, int *sv)
 
 long tux_bind(int fd, const void *a, socklen_t al)
 {
+	if (fd >= 0 && fd < 4096 && isnl[fd]) return 0;
 	struct sockaddr_storage d;
 	socklen_t dl;
 	int r = addr_l2d(a, al, &d, &dl, 0);
@@ -531,6 +705,13 @@ long tux_accept(int fd, void *a, uint32_t *alp, long flags)
 
 long tux_getsockname(int fd, void *a, uint32_t *alp)
 {
+	if (fd >= 0 && fd < 4096 && isnl[fd]) {
+		uint8_t sa[12] = {16, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+		uint32_t pid = (uint32_t)getpid();
+		memcpy(sa + 4, &pid, 4);
+		if (a && alp) { memcpy(a, sa, *alp < 12 ? *alp : 12); *alp = 12; }
+		return 0;
+	}
 	struct sockaddr_storage d;
 	socklen_t dl = sizeof d;
 	if (getsockname(fd, (struct sockaddr *)&d, &dl)) return err();
@@ -574,6 +755,7 @@ static void nosig_off(nosig_t *n)
 
 long tux_sendto(int fd, const void *buf, size_t n, long flags, const void *a, socklen_t al)
 {
+	if (fd >= 0 && fd < 4096 && isnl[fd]) { nl_answer(fd, buf, n); return (long)n; }
 	if (tux_fdx_kind(fd) == K_SEQPKT) { struct iovec v = {(void *)buf, n}; return seq_send(fd, &v, 1, NULL, 0); }
 	struct sockaddr_storage d;
 	socklen_t dl = 0;
@@ -591,7 +773,7 @@ long tux_recvfrom(int fd, void *buf, size_t n, long flags, void *a, uint32_t *al
 	if (tux_fdx_kind(fd) == K_SEQPKT) {
 		struct iovec v = {buf, n};
 		int tr;
-		return seq_recv(fd, &v, 1, NULL, NULL, &tr);
+		return seq_recv(fd, &v, 1, NULL, NULL, &tr, (flags & 2) != 0);
 	}
 	struct sockaddr_storage d;
 	socklen_t dl = sizeof d;
@@ -604,6 +786,7 @@ long tux_recvfrom(int fd, void *buf, size_t n, long flags, void *a, uint32_t *al
 long tux_sendmsg(int fd, void *lm, long flags)
 {
 	struct l_msghdr *l = lm;
+	if (fd >= 0 && fd < 4096 && isnl[fd] && l->iovlen >= 1) { nl_answer(fd, l->iov[0].iov_base, l->iov[0].iov_len); return (long)l->iov[0].iov_len; }
 	socklen_t cl;
 	void *ctl = ctl_l2d(l->control, l->controllen, &cl);
 	long ret;
@@ -646,7 +829,7 @@ long tux_recvmsg(int fd, void *lm, long flags)
 	long ret;
 	int fl = 0;
 	if (tux_fdx_kind(fd) == K_SEQPKT) {
-		ret = seq_recv(fd, l->iov, (int)l->iovlen, lcap ? dctl : NULL, &dcl, &trunc);
+		ret = seq_recv(fd, l->iov, (int)l->iovlen, lcap ? dctl : NULL, &dcl, &trunc, (flags & 2) != 0);
 		if (trunc) fl |= 0x20;
 		l->namelen = 0;
 	} else {

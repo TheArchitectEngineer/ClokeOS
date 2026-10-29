@@ -56,6 +56,7 @@ typedef struct tux_thr {
 	void *host_sp;               // Stapel des pthreads (zum Beenden, wenn der Gaststapel schon weg sein kann)
 	int ldt_idx;                 // x86_64: LDT-Eintrag für FS
 	uint64_t ldt_cur;
+	uint64_t defer_addr, defer_len;   // eigener Stapel, dessen munmap erst auf dem pthread-Stapel passiert
 	struct tux_thr *next;
 } tux_thr;
 tux_thr *tux_cur(void);
@@ -88,6 +89,12 @@ int tux_seq_read(int fd, void *buf, size_t n, long *ret);
 int tux_seq_write(int fd, const void *buf, size_t n, long *ret);
 void tux_host_to_guest(const char *h, char *g);
 
+long tux_inotify_init(long flags);
+long tux_inotify_add(int fd, const char *guest_path, uint32_t mask);
+long tux_inotify_rm(int fd, int wd);
+int tux_ino_read(int fd, void *buf, size_t n, long *ret);
+void tux_ino_dup(int oldfd, int newfd);
+void tux_ino_close(int fd);
 long tux_memfd_create(const char *name, unsigned flags);
 
 // /proc (proc.c)

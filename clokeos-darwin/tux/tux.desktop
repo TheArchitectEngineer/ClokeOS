@@ -3,6 +3,6 @@ Type=Application
 Name=Linux Program
 Comment=Run a Linux program with tux
 Exec=tux-open %f
-MimeType=application/x-linux-elf;
+MimeType=application/x-linux-elf;application/octet-stream;
 NoDisplay=true
 Terminal=false

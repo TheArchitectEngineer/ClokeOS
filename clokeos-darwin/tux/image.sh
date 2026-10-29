@@ -20,6 +20,7 @@ printf '[50:application/x-linux-elf]\n>0=\0\004\177ELF\n' >> "$m"
 append() { # Datei, Kopfzeile
   [ -f "$1" ] || printf '%s\n' "$2" > "$1"
   echo 'application/x-linux-elf=tux.desktop;' >> "$1"
+  echo 'application/octet-stream=tux.desktop;' >> "$1"   # Fundus sniffs no magic: tux-open checks for ELF itself
 }
 append "$stage/share/applications/mimeinfo.cache" '[MIME Cache]'
 append "$stage/share/applications/mimeapps.list" '[Default Applications]'

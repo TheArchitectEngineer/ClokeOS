@@ -8,6 +8,7 @@
 #include <errno.h>
 #include <signal.h>
 #include <fcntl.h>
+#include <libproc.h>
 #include <mach/mach.h>
 #include <mach/mach_vm.h>
 #include <stdio.h>
@@ -378,6 +379,65 @@ static void sweep(void)
 	closedir(d);
 }
 
+
+// --- andere Prozesse: /proc/<pid>/{stat,status,cmdline,comm,exe} aus libproc und KERN_PROCARGS2 ---------------------------
+static void gen_pid(int pid)
+{
+	struct proc_bsdinfo bi;
+	if (proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &bi, sizeof bi) != sizeof bi) return;
+	struct proc_taskinfo ti;
+	memset(&ti, 0, sizeof ti);
+	proc_pidinfo(pid, PROC_PIDTASKINFO, 0, &ti, sizeof ti);
+	char st = bi.pbi_status == 2 ? 'R' : bi.pbi_status == 4 ? 'T' : bi.pbi_status == 5 ? 'Z' : 'S';
+	char rel[64], b[1536];
+	int n;
+	snprintf(rel, sizeof rel, "%d/status", pid);
+	n = snprintf(b, sizeof b,
+	    "Name:\t%s\nState:\t%c\nTgid:\t%d\nPid:\t%d\nPPid:\t%u\nTracerPid:\t0\nUid:\t%u\t%u\t%u\t%u\nGid:\t%u\t%u\t%u\t%u\n"
+	    "VmSize:\t%8llu kB\nVmRSS:\t%8llu kB\nThreads:\t%d\n",
+	    bi.pbi_comm, st, pid, pid, bi.pbi_ppid, bi.pbi_ruid, bi.pbi_uid, bi.pbi_svuid, bi.pbi_ruid, bi.pbi_rgid, bi.pbi_gid, bi.pbi_svgid,
+	    bi.pbi_rgid, (unsigned long long)(ti.pti_virtual_size / 1024), (unsigned long long)(ti.pti_resident_size / 1024),
+	    ti.pti_threadnum ? ti.pti_threadnum : 1);
+	put(rel, b, n);
+	snprintf(rel, sizeof rel, "%d/stat", pid);
+	n = snprintf(b, sizeof b, "%d (%s) %c %u %u %u 0 -1 0 0 0 0 0 0 0 0 0 20 0 %d 0 %llu %llu %llu 18446744073709551615 0 0 0 0 0 0 0 0 0 0 0 0 17 0 0 0 0 0 0\n",
+	    pid, bi.pbi_comm, st, bi.pbi_ppid, bi.pbi_pgid, 0u, ti.pti_threadnum ? ti.pti_threadnum : 1, (unsigned long long)bi.pbi_start_tvsec,
+	    (unsigned long long)ti.pti_virtual_size, (unsigned long long)(ti.pti_resident_size / tux_page));
+	put(rel, b, n);
+	snprintf(rel, sizeof rel, "%d/comm", pid);
+	n = snprintf(b, sizeof b, "%s\n", bi.pbi_comm);
+	put(rel, b, n);
+	// Befehlszeile: KERN_PROCARGS2 = argc, Programmpfad, NUL-Füllung, argv...
+	int mib[3] = {CTL_KERN, KERN_PROCARGS2, pid};
+	size_t sz = 0;
+	snprintf(rel, sizeof rel, "%d/cmdline", pid);
+	if (sysctl(mib, 3, NULL, &sz, NULL, 0) == 0 && sz > 8) {
+		char *buf = malloc(sz);
+		if (buf && sysctl(mib, 3, buf, &sz, NULL, 0) == 0) {
+			int argc;
+			memcpy(&argc, buf, 4);
+			char *q = buf + 4, *e = buf + sz;
+			while (q < e && *q) q++;
+			while (q < e && !*q) q++;
+			char *start = q;
+			for (int i = 0; i < argc && q < e; i++) { while (q < e && *q) q++; q++; }
+			put(rel, start, q > e ? e - start : q - start);
+		} else put(rel, "", 0);
+		free(buf);
+	} else put(rel, "", 0);
+	char path[PATH_MAX];
+	if (proc_pidpath(pid, path, sizeof path) > 0) { snprintf(rel, sizeof rel, "%d/exe", pid); put_link(rel, path); }
+}
+
+static void gen_all_pids(void)
+{
+	int pids[2048];
+	int n = proc_listallpids(pids, sizeof pids) ;
+	if (n <= 0) return;
+	if (n > 2048) n = 2048;
+	for (int i = 0; i < n; i++) if (pids[i] > 0 && pids[i] != (int)getpid()) gen_pid(pids[i]);
+}
+
 // rest: der Teil des Pfads hinter /proc (leer oder mit führendem /). Liefert die Wurzel des erzeugten Baums.
 int tux_proc_prepare(const char *rest, char *rootout)
 {
@@ -397,13 +457,15 @@ int tux_proc_prepare(const char *rest, char *rootout)
 		const char *top[] = {"cpuinfo", "meminfo", "uptime", "loadavg", "version", "filesystems", "mounts", "stat", "cmdline", "sys"};
 		for (unsigned i = 0; i < sizeof top / sizeof *top; i++) gen_top(top[i]);
 		gen_proc_self("status");
+		gen_all_pids();
 	} else if (!strcmp(first, "self") || !strcmp(first, "thread-self") || atoi(first) == (int)getpid()) {
 		if (!*second) {
 			const char *all[] = {"maps", "status", "stat", "statm", "cmdline", "environ", "comm", "mounts", "mountinfo", "limits", "fd", "exe", "cwd", "root", "task"};
 			for (unsigned i = 0; i < sizeof all / sizeof *all; i++) gen_proc_self(all[i]);
 		} else gen_proc_self(second);
 		if (!strcmp(first, "thread-self")) put_link("thread-self", ".p");
-	} else gen_top(first);
+	} else if (atoi(first) > 0) gen_pid(atoi(first));
+	else gen_top(first);
 	strlcpy(rootout, root, PATH_MAX);
 	return 0;
 }

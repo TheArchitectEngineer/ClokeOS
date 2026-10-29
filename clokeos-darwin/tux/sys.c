@@ -918,7 +918,11 @@ static long syscall_inner(tux_regs *r)
 	case N_mmap: return sys_mmap(a0, a1, (int)a2, (int)a3, (int)a4, a5);
 	case N_munmap:
 		// ein Thread, der seinen eigenen Stapel freigibt (musl: __unmapself), würde sich den Boden wegziehen
-		if ((uintptr_t)*r->sp >= a0 && (uintptr_t)*r->sp < a0 + a1) return 0;
+		if ((uintptr_t)*r->sp >= a0 && (uintptr_t)*r->sp < a0 + a1) {
+			tux_cur()->defer_addr = a0;   // thread_finish gibt ihn frei, sobald der pthread auf eigenem Stapel läuft
+			tux_cur()->defer_len = (a1 + tux_page - 1) & ~(tux_page - 1);
+			return 0;
+		}
 		return E(munmap((void *)a0, (a1 + tux_page - 1) & ~(tux_page - 1)));
 	case N_mprotect: return sys_mprotect(a0, a1, (int)a2);
 	case N_mremap: {
@@ -1220,6 +1224,12 @@ static long syscall_inner(tux_regs *r)
 	case N_recvmsg: return tux_recvmsg((int)a0, (void *)a1, a2);
 	case N_sendmmsg: return tux_sendmmsg((int)a0, (void *)a1, (unsigned)a2, a3);
 	case N_recvmmsg: return tux_recvmmsg((int)a0, (void *)a1, (unsigned)a2, a3);
+	case N_inotify_init1: return tux_inotify_init(a0);
+#ifdef TUX_X86_64
+	case N_inotify_init: return tux_inotify_init(0);
+#endif
+	case N_inotify_add_watch: return tux_inotify_add((int)a0, (const char *)a1, (uint32_t)a2);
+	case N_inotify_rm_watch: return tux_inotify_rm((int)a0, (int)a1);
 	case N_memfd_create: return tux_memfd_create((const char *)a0, (unsigned)a1);
 	case N_eventfd2: return tux_eventfd((unsigned)a0, a1);
 #ifdef TUX_X86_64

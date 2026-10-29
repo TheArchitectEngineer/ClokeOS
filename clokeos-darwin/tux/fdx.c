@@ -77,14 +77,18 @@ static void setcloexec(int fd, long flags) { if (flags & L_CLOEXEC) fcntl(fd, F_
 // --- Aufrufe aus sys.c für dup/close ---------------------------------------------------------
 void tux_fdx_dup(int oldfd, int newfd)
 {
+	tux_ino_dup(oldfd, newfd);
 	if (newfd < 0 || newfd >= FDX_MAX) return;
 	pthread_mutex_lock(&lock);
 	if (oldfd >= 0 && oldfd < FDX_MAX && tab[oldfd]) { tab[newfd] = tab[oldfd]; tab[newfd]->refs++; }
 	pthread_mutex_unlock(&lock);
 }
 
+void tux_seq_close(int fd);
 void tux_fdx_close(int fd)
 {
+	tux_ino_close(fd);
+	tux_seq_close(fd);
 	if (fd < 0 || fd >= FDX_MAX) return;
 	pthread_mutex_lock(&lock);
 	obj *o = tab[fd];
@@ -442,6 +446,7 @@ static long signalfd_read(int fd, obj *o, void *buf, size_t n)
 // Rückgabe 1: der Aufruf war für ein solches Objekt und *ret ist das Ergebnis
 int tux_fdx_read(int fd, void *buf, size_t n, long *ret)
 {
+	if (tux_ino_read(fd, buf, n, ret)) return 1;
 	obj *o = get(fd, 0);
 	if (!o) return 0;
 	switch (o->kind) {

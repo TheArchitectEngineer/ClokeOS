@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mman.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -71,6 +72,7 @@ static void thread_finish(void *arg)
 		__atomic_store_n((uint32_t *)t->clear_tid, 0, __ATOMIC_SEQ_CST);
 		tux_futex((uint32_t *)t->clear_tid, 1, INT_MAX, NULL, NULL, 0);
 	}
+	if (t->defer_len) munmap((void *)t->defer_addr, t->defer_len);
 	tux_tls_free();
 	free(t);
 	pthread_exit(NULL);

@@ -1,3 +1,9 @@
 #!/bin/sh
-# Doppelklick auf eine Linux-Datei in Fundus: in einem Terminalfenster ausführen
-exec xfce4-terminal --disable-server --role=com.clokeos.linux --title="$(basename "$1")" --hold -x tux "$@"
+# Doppelklick auf eine Datei in Fundus: ELF-Programme laufen in einem Terminalfenster unter tux. Fundus kennt den ELF-Typ
+# nicht (die Dateitypen-Datenbank wird nicht nach Magic durchsucht), darum ist tux.desktop auch für "application/octet-stream"
+# eingetragen und prüft hier selbst die ersten vier Byte.
+f="$1"
+case "$(head -c 4 "$f" 2>/dev/null | cat -v)" in
+'^?ELF') exec xfce4-terminal --disable-server --role=com.clokeos.linux --title="$(basename "$f")" --dynamic-title-mode=none --geometry=80x24 --hold -x sh -c 'sleep 1; tux "$@"; r=$?; echo; echo "[exit status $r]"; sleep 1' sh "$@" ;;
+*) exec xfce4-terminal --disable-server --title="$(basename "$f")" --hold -x sh -c 'echo "ClokeOS: this file is not a Linux program (no ELF header) and has no other opener."; echo "$1"' sh "$f" ;;
+esac
