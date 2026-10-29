@@ -198,6 +198,14 @@ static const Sc tab[] = {
 	{339, "fstat64", {{1, 'o', 144, 0}, NONE}},
 	{500, "getentropy", {{0, 'o', 0, 1}, NONE}},
 	{327, "issetugid", {NONE, NONE}},
+	{344, "getdirentries64", {{1, 'o', 0, 2}, {3, 'o', 8, 0}}},
+	{463, "openat", {{1, 's', 0, 0}, NONE}},
+	{470, "fstatat64", {{1, 's', 0, 0}, {2, 'o', 144, 0}}},
+	{473, "readlinkat", {{1, 's', 0, 0}, {2, 'o', 0, 3}}},
+	{58, "readlink", {{0, 's', 0, 0}, {1, 'o', 0, 2}}},
+	{346, "fstatfs64", {{1, 'o', 2168, 0}, NONE}},
+	{345, "statfs64", {{0, 's', 0, 0}, {1, 'o', 2168, 0}}},
+	{60, "umask", {NONE, NONE}},
 	{194, "getrlimit", {{1, 'o', 16, 0}, NONE}},
 	{220, "getattrlist", {{0, 's', 0, 0}, {1, 'i', 24, 0}, {2, 'o', 0, 3}}},
 };
@@ -317,7 +325,8 @@ static void do_syscall(uc_engine *u, void *ud) {
 		size_t ol = 0; if (a[3]) uc_mem_read(u, a[3], &ol, 8);
 		char *ob = a[2] ? calloc(1, ol ? ol : 1) : 0; void *nb = 0;
 		if (a[4]) { nb = malloc(a[5]); uc_mem_read(u, a[4], nb, a[5]); }
-		res = sysctl(mib, nl, ob, a[3] ? &ol : 0, nb, a[5]);
+		if (nl >= 2 && mib[0] == 6 && mib[1] == 1 && ob && ol >= 7) { memcpy(ob, "x86_64", 7); ol = 7; res = 0; }  // hw.machine: der Gast ist x86_64 (wie unter Rosetta)
+		else res = sysctl(mib, nl, ob, a[3] ? &ol : 0, nb, a[5]);
 		if (res == -1) { err = errno; res = errno; }
 		if (ob && (res == 0 || err == ENOMEM)) uc_mem_write(u, a[2], ob, ol);
 		if (a[3] && (res == 0 || err == ENOMEM)) uc_mem_write(u, a[3], &ol, 8);
@@ -347,10 +356,13 @@ static void do_syscall(uc_engine *u, void *ud) {
 	if (nr == 338) res = stat((char *)h[0], (struct stat *)h[1]);        // libc statt SYS_stat64: auf arm64-Hosts nicht überall vorhanden
 	else if (nr == 340) res = lstat((char *)h[0], (struct stat *)h[1]);
 	else if (nr == 339) res = fstat((int)h[0], (struct stat *)h[1]);
+	else if (nr == 470) res = fstatat((int)h[0], (char *)h[1], (struct stat *)h[2], (int)h[3]);
 	else res = syscall((int)nr, h[0], h[1], h[2], h[3], h[4], h[5]);
 	if (res == -1) { err = errno; res = errno; }
 	else for (int k = 0; k < 3; k++) if (bufs[k] && s->p[k].dir == 'o') {
-		size_t n = sz[k]; if (nr == 3 || nr == 153) n = res < 0 ? 0 : (size_t)res;
+		size_t n = sz[k]; if ((nr == 3 || nr == 153 || nr == 344) && k == 0) n = res < 0 ? 0 : (size_t)res;
+		else if ((nr == 473 || nr == 58) && res >= 0) n = (size_t)res;
+		if (0) n = res < 0 ? 0 : (size_t)res;
 		uc_mem_write(u, a[s->p[k].idx], bufs[k], n);
 	}
 	for (int k = 0; k < 3; k++) free(bufs[k]);
