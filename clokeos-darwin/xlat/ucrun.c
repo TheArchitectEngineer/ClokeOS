@@ -181,14 +181,34 @@ static void *thread_main(void *p) {
 }
 static uint32_t dead[256]; static int ndead;  // Mach-Thread-Ports beendeter Gast-Threads (Eigner von UL_UNFAIR_LOCK-Wörtern)
 static int is_dead(uint32_t v) { for (int i = 0; i < ndead; i++) if (dead[i] == v) return 1; return 0; }
-static int ulock_wait(uint64_t addr, uint32_t val, uint64_t timeout_us) {
+// __ulock_wait/wake: Warteschlange je Adresse (FIFO). Wert wird nur beim Eintritt verglichen; geweckt wird durch ulock_wake, den Tod des Eigners (UL_UNFAIR_LOCK, pthread_join),
+// ein Zeitlimit oder ein wartendes Signal. Das Ergebnis ist die Zahl der übrigen Wartenden (libpthread setzt daraus das WAITERS-Bit des Mutex).
+typedef struct UlW { uint64_t addr, val; int woke; struct UlW *next; } UlW;
+static UlW *ulq_head, *ulq_tail;
+static int ulock_wait(uint64_t addr, int is64, uint64_t val, uint64_t timeout_us, int *remaining) {
 	struct timespec ts; if (timeout_us) { clock_gettime(CLOCK_REALTIME, &ts); ts.tv_sec += timeout_us / 1000000; ts.tv_nsec += (timeout_us % 1000000) * 1000; if (ts.tv_nsec >= 1000000000) { ts.tv_sec++; ts.tv_nsec -= 1000000000; } }
 	uint32_t *p = g2h32(addr); if (!p) return EFAULT;
-	BLOCKING_BEGIN; pthread_mutex_lock(&wmx); int r = 0;
-	while (__atomic_load_n(p, __ATOMIC_SEQ_CST) == val && !is_dead(val & ~3u)) {
-		if (timeout_us) { if (pthread_cond_timedwait(&wcv, &wmx, &ts)) { r = ETIMEDOUT; break; } } else pthread_cond_wait(&wcv, &wmx);
+	BLOCKING_BEGIN; pthread_mutex_lock(&wmx); int r = 0; *remaining = 0;
+	uint64_t cur = is64 ? __atomic_load_n((uint64_t *)p, __ATOMIC_SEQ_CST) : __atomic_load_n(p, __ATOMIC_SEQ_CST);
+	if (cur == val) {
+		UlW w = {addr, val, 0, 0};
+		if (ulq_tail) ulq_tail->next = &w; else ulq_head = &w; ulq_tail = &w;
+		while (!w.woke && !is_dead((uint32_t)val & ~3u)) {
+			if (__atomic_load_n(&sig_pending, __ATOMIC_SEQ_CST) & ~(gmask << 1)) { r = EINTR; break; }
+			struct timespec slice; clock_gettime(CLOCK_REALTIME, &slice); slice.tv_nsec += 20000000; if (slice.tv_nsec >= 1000000000) { slice.tv_sec++; slice.tv_nsec -= 1000000000; }
+			if (timeout_us && (ts.tv_sec < slice.tv_sec || (ts.tv_sec == slice.tv_sec && ts.tv_nsec < slice.tv_nsec))) slice = ts;
+			if (pthread_cond_timedwait(&wcv, &wmx, &slice) && timeout_us) { struct timespec n; clock_gettime(CLOCK_REALTIME, &n); if (n.tv_sec > ts.tv_sec || (n.tv_sec == ts.tv_sec && n.tv_nsec >= ts.tv_nsec)) { r = ETIMEDOUT; break; } }
+		}
+		UlW **pp = &ulq_head, *prev = 0; for (; *pp; prev = *pp, pp = &(*pp)->next) if (*pp == &w) { *pp = w.next; if (ulq_tail == &w) ulq_tail = prev; break; }
+		for (UlW *q = ulq_head; q; q = q->next) if (q->addr == addr) (*remaining)++;
 	}
 	pthread_mutex_unlock(&wmx); BLOCKING_END; return r;
+}
+// 0, oder ENOENT wenn niemand wartete
+static int ulock_wake_addr(uint64_t addr, int all) {
+	int n = 0; pthread_mutex_lock(&wmx);
+	for (UlW *w = ulq_head; w; w = w->next) if (w->addr == addr && !w->woke) { w->woke = 1; n++; if (!all) break; }
+	pthread_cond_broadcast(&wcv); pthread_mutex_unlock(&wmx); return n ? 0 : ENOENT;
 }
 static void ulock_wake(void) { pthread_mutex_lock(&wmx); pthread_cond_broadcast(&wcv); pthread_mutex_unlock(&wmx); }
 
@@ -477,35 +497,17 @@ static void do_syscall(uc_engine *u, void *ud) {
 		pthread_create(&pt, &pa, thread_main, t); res = a[3]; goto done;
 	}
 	if (nr == 361) { pthread_mutex_lock(&wmx); if (ndead < 256) dead[ndead++] = (uint32_t)a[2]; pthread_mutex_unlock(&wmx); ulock_wake(); for (int q = 0; q < 64; q++) if (eth[q] && eth[q]->u == u) eth[q]->done = 1; uc_emu_stop(u); res = 0; goto done; }  // bsdthread_terminate: Gast-Thread endet
-	if (nr == 515 || nr == 544) { int r = ulock_wait(a[1], (uint32_t)a[2], nr == 515 ? a[3] : a[3] / 1000); if (r) { err = r; res = r; } else res = 0; goto done; }  // __ulock_wait(2)
-	// psynch (libpthread-Mutex im Konfliktfall): Warten wird als kurzes Schlafen mit EINTR nachgebildet, libpthread versucht es dann selbst erneut
-	if (nr == 334) {  // __semwait_signal(cond_sem, mutex_sem, timeout, relative, sec, nsec): so schläft libc (usleep, nanosleep, sleep)
-		if (!a[2]) { res = 0; goto done; }
-		struct timespec ts; if (a[3]) { ts.tv_sec = (time_t)a[4]; ts.tv_nsec = (long)a[5]; }
-		else { clock_gettime(CLOCK_REALTIME, &ts); struct timespec target = {(time_t)a[4], (long)a[5]}; ts.tv_sec = target.tv_sec - ts.tv_sec; ts.tv_nsec = target.tv_nsec - ts.tv_nsec; if (ts.tv_nsec < 0) { ts.tv_sec--; ts.tv_nsec += 1000000000; } if (ts.tv_sec < 0) ts.tv_sec = ts.tv_nsec = 0; }
-		BLOCKING_BEGIN;
-		struct timespec rem = ts; int intr = 0;
-		while (rem.tv_sec > 0 || rem.tv_nsec > 0) {  // in 10-ms-Stücken, damit Signale das Schlafen unterbrechen
-			struct timespec step = {0, 10000000}; if (rem.tv_sec == 0 && rem.tv_nsec < step.tv_nsec) step.tv_nsec = rem.tv_nsec;
-			nanosleep(&step, 0);
-			rem.tv_nsec -= step.tv_nsec; if (rem.tv_nsec < 0) { if (rem.tv_sec > 0) { rem.tv_sec--; rem.tv_nsec += 1000000000; } else rem.tv_nsec = 0; }
-			if (rem.tv_sec > 0 && rem.tv_nsec >= 1000000000) { rem.tv_sec++; rem.tv_nsec -= 1000000000; }
-			if (__atomic_load_n(&sig_pending, __ATOMIC_SEQ_CST) & ~(gmask << 1)) { intr = 1; break; }
-		}
-		BLOCKING_END; err = intr ? EINTR : ETIMEDOUT; res = err; goto done;
+	if (nr == 515 || nr == 544) {  // __ulock_wait(op, addr, value, timeout_us) / __ulock_wait2(op, addr, value, timeout_ns, value2)
+		int op = (int)(a[0] & 0xff), noerr = (a[0] & 0x01000000) != 0, rem = 0;
+		int r = ulock_wait(a[1], op == 5 || op == 6, op == 5 || op == 6 ? a[2] : (uint32_t)a[2], nr == 515 ? a[3] : a[3] / 1000, &rem);
+		if (r) { if (noerr) res = -(int64_t)r; else { err = r; res = r; } } else res = rem;
+		goto done;
 	}
-	if (nr == 305) {  // __psynch_cvwait(cv, cvlsgen, cvugen, mutex, mugen, flags, sec, nsec): sec/nsec liegen auf dem Stapel (7./8. Argument)
-		uint64_t sp, st[3] = {0, 0, 0}; uc_reg_read(u, UC_X86_REG_RSP, &sp); uc_mem_read(u, sp, st, 24);
-		uint32_t flags = (uint32_t)a[5]; int hasto = st[1] != 0 || st[2] != 0 || 0;  // sec==0 && nsec==0: kein Zeitlimit
-		int r = cv_wait(a[0], hasto, (int64_t)st[1], (int64_t)st[2]); (void)flags;
-		if (r) { err = r; res = r; } else res = 0; goto done;
+	if (nr == 516) {  // __ulock_wake(op, addr, wake_value)
+		int noerr = (a[0] & 0x01000000) != 0; int r = ulock_wake_addr(a[1], (a[0] & 0x100) != 0);
+		if (r) { if (noerr) res = -(int64_t)r; else { err = r; res = r; } } else res = 0;
+		goto done;
 	}
-	if (nr == 304) { cv_wake(a[0], 0); res = 0; goto done; }  // __psynch_cvsignal
-	if (nr == 303) { cv_wake(a[0], 1); res = 0; goto done; }  // __psynch_cvbroad
-	if (nr == 312) { res = 0; goto done; }                    // __psynch_cvclrprepost
-	if (nr == 301) { BLOCKING_BEGIN; usleep(20); BLOCKING_END; err = EINTR; res = EINTR; goto done; }  // __psynch_mutexwait
-	if (nr == 302) { res = 0; goto done; }                               // __psynch_mutexdrop
-	if (nr == 516) { ulock_wake(); res = 0; goto done; }  // __ulock_wake
 	if (nr == 46) {  // sigaction(sig, struct __sigaction *nsa {handler, tramp, mask, flags}, struct sigaction *osa {handler, mask, flags})
 		int sg = (int)a[0]; if (sg <= 0 || sg >= 32 || sg == 9 || sg == 17) { err = EINVAL; res = EINVAL; goto done; }
 		if (a[2]) { uint64_t o[2] = {gsa[sg].handler, 0}; uint32_t om[2] = {gsa[sg].mask, gsa[sg].flags}; memcpy((char *)o + 8, om, 0); uint8_t ob[16]; memcpy(ob, &o[0], 8); memcpy(ob + 8, om, 8); uc_mem_write(u, a[2], ob, 16); }
@@ -682,6 +684,8 @@ int main(int argc, char **argv) {
 	// Umgebung des Gastes: ohne DYLD_INSERT_LIBRARIES des Hosts (die arm64-Bibliothek passt nicht zum x86_64-dyld)
 	static char *genv[1024]; int ne = 0;
 	for (int i = 0; environ[i] && ne < 1000; i++) if (strncmp(environ[i], "DYLD_INSERT_LIBRARIES=", 22)) genv[ne++] = environ[i];
+	// libpthread soll Mutexe über __ulock (os_unfair_lock-Stil) statt über psynch machen: die Nachbildung von psynch_mutexwait/drop (Kernel-Warteschlange mit Sequenzzählern) entfällt
+	{ int have = 0; for (int i = 0; i < ne; i++) if (!strncmp(genv[i], "PTHREAD_MUTEX_USE_ULOCK=", 24)) have = 1; if (!have) genv[ne++] = "PTHREAD_MUTEX_USE_ULOCK=1"; }
 	uint64_t sp = STACK_TOP - 0x1000, ptrs[512]; int np = 0;
 	int ng = argc - 1; char **gv = argv + 1;
 	uint64_t pstr[600]; int ns = 0;
