@@ -170,3 +170,53 @@ Still untested: real hardware, arm64 (no driver there).
   ~500-line `IOAudioEngine` over the virtio queues, `IOVirtIOFamily` exists) is the natural one.
   `intel-hda` also works on `virt` in QEMU, so (1) alone may be enough for a first sound, *untested*.
 * Not done: any user-space client of `IOAudioEngineUserClient`, any CoreAudio API, capture, MIDI.
+
+## 4. User-space Core Audio shim (`macapps/coreaudio/`)
+
+**Result: a Mac program that links Apple's `CoreAudio.framework` from the SDK plays sound on an x86_64 ClokeOS
+VM through public HAL calls only.** `macapps/coreaudio.sh` builds `CoreAudio.framework` (own C code, no Apple
+code, `CoreAudio.c`, x86_64 and arm64; arm64 builds but was not run) into the `MacFrameworks` directory next to
+Darling's CoreFoundation (it needs it for CFString properties) and `satest.c`, a test tool built against the SDK
+that plays a 2 s, 440 Hz Float32 sine. Run in the VM with `DYLD_FRAMEWORK_PATH=/Library/ClokeOS/MacFrameworks`.
+
+Implemented (signatures checked against the SDK headers; the framework exports exactly these):
+`AudioObjectHasProperty`, `AudioObjectIsPropertySettable`, `AudioObjectGetPropertyDataSize`,
+`AudioObjectGetPropertyData`, `AudioObjectSetPropertyData` (buffer frame size only), `AudioDeviceCreateIOProcID`,
+`AudioDeviceDestroyIOProcID`, `AudioDeviceStart`, `AudioDeviceStop`. Objects: system object (1), one device (2),
+one output stream (3). Properties: system `Devices`, `DefaultOutputDevice`, `DefaultSystemOutputDevice`; device
+name, manufacturer, UID, class, owner, transport type (built-in), alive, running, nominal rate (48000, the only
+available rate), `BufferFrameSize` (default 512, settable 32..4096) and its range, latency and safety offset (0),
+`Streams`, `StreamConfiguration` (1 buffer, 2 channels); stream `VirtualFormat` = Float32 packed interleaved
+stereo (what the IOProc fills), `PhysicalFormat` = signed 16-bit packed stereo (what `/dev/dsp0` takes), direction,
+starting channel. `AudioDeviceStart` opens `/dev/dsp0` and starts one thread (time-constraint policy requested,
+result unchecked) that loops: zero a Float32 buffer, call every registered IOProc (summed), clip and convert to s16,
+`write()` the block. The block size is the buffer frame size; `write()` blocking on the driver's ring is the only
+clock. `CLOKE_CA_DEVICE=<file>` redirects the output to a file, `CLOKE_CA_STATS=1` prints the IOProc spacing.
+
+Measured (x86_64, QEMU TCG, `RavynHDAudio` with `ravynhda-amp.patch`, `hda-duplex` and the `wav` backend,
+512-frame blocks = 10.667 ms):
+* WAV on the host: 440.0 Hz, peak 16384 (= 0.5 · 32767, exact), L = R. The WAV was 2.29 s long although the
+  IOProc was called for 345 blocks (3.68 s): the first ~1.4 s the driver accepts without waiting (its ring is
+  262144 bytes = 1.365 s) and **`AudioDeviceStop` (close of `/dev/dsp0`) drops what is still in the ring**, about
+  131 blocks.
+* IOProc spacing in the second half of the run: mean 10.56 ms (nominal 10.667), i.e. the period follows the
+  48 kHz device clock; the first half is faster (ring fill, mean ~2.6 ms). Over the whole run: min 0.28, max 79.8 ms
+  (TCG with other VMs running; a max over one period means the thread was not scheduled in time and would be an
+  audible dropout with a real ring of a few ms).
+* Latency: the output latency is the driver's ring, ~1.36 s, not the 10 ms block. No lower figure can be measured
+  until the driver's ring is shortened (`CBL`/`LVI` in `RavynHDAudio`). The shim reports latency 0 and a
+  timestamp one block ahead, which is not true.
+
+Missing for Logic Pro (see `docs/logic-pro-gap.md`): everything above the HAL (AudioUnit, AudioToolbox,
+AudioComponent, AUGraph, ExtAudioFile, CoreMIDI); input streams (the driver is write-only); more than one device or
+format, sample-rate and format setters, hog mode, aggregate devices; property listeners
+(`AudioObjectAddPropertyListener`); real device clock (`AudioDeviceGetCurrentTime`, `AudioDeviceTranslateTime`,
+`AudioGetCurrentHostTime`/`HostTime.h` functions; timestamps here are the thread's `mach_absolute_time`, sample
+time counts blocks written, not frames played); `AudioDeviceCreateIOProcIDWithBlock`; correct latency and safety
+offset; a tight ring in the driver (a DAW wants 64..256 frames end to end); a drain on stop; a one-shot
+multi-client mixer (two apps open `/dev/dsp0` today? untested); real-time thread behaviour with SMP (the VM runs
+one CPU).
+
+Not tested: arm64 (no audio driver there), real hardware, other apps than `satest`, `kAudioObjectPropertyName`
+string retrieval (compiled, not called by `satest`), `SetPropertyData`, several IOProcs, run on the shipped desktop
+image (test used the plain PureDarwin image plus the amp-patched kernel collection from another session).

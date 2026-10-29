@@ -36,6 +36,7 @@ for r in darling-corefoundation darling-foundation darling-cocotron; do
 done
 "$M/foundation.sh" | tail -1
 "$M/appkit.sh" | tail -1
+"$M/coreaudio.sh" | tail -2 | head -1 || echo "CoreAudio-Shim nicht gebaut"
 
 mkdir -p "$stage/Library/ClokeOS"
 rm -rf "$stage/Library/ClokeOS/MacFrameworks"

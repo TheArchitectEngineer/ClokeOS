@@ -21,6 +21,9 @@ Stand 20.10.2026:
   geladen sind. CloakServer erkennt Mac-Programme, deren Frameworks dort liegen, und startet sie aus
   Launchpad und Dock mit `DYLD_FRAMEWORK_PATH`.
 
+- **CoreAudio-Shim (29.10.2026).** `coreaudio.sh` baut `CoreAudio.framework` (eigener Code, `coreaudio/CoreAudio.c`): eine
+  kleine öffentliche HAL über `/dev/dsp0`, dazu `satest` (2 s Sinus). Einzelheiten in `docs/audio-stack.md`, Abschnitt 4.
+
 ```bash
 macapps/machcheck.py /pfad/zu/Programm.app
 ```
