@@ -27,9 +27,9 @@ No GPU: everything is software rendering (virtio-gpu is scanout only).
 | **Ladybird** (LibWeb/LibJS) | BSD-2 | ~100 MB build, deps via vcpkg (Skia, ICU, curl, harfbuzz, ...) | yes (Skia CPU) | Project targets Linux **and macOS**; its macOS port uses Mach ports + AppKit, Linux uses Qt6. PD has Mach IPC, no AppKit/Qt. A GTK3 or X11 front-end would be new code. Pre-alpha (alpha announced for 2026 on Linux/macOS only); web compat growing fast (passed 90% WPT in 2025) but not Safari-class. | maybe | **High**, but fewest Linux assumptions of the modern engines; clean C++23 code. |
 | **Servo** (libservo, 0.4 in 2026, crates.io, GTK widget prototype exists) | MPL-2 | 50-100 MB; Rust toolchain on host | yes (software GL via surfman/Mesa) | Rust tier-3 target `aarch64/x86_64-apple-darwin` exists, but PD is not macOS: needs a custom target/sysroot; GL via Mesa EGL/X11 plausible. Web compat behind WebKit/Gecko. | maybe | High; Rust cross-build of ~700 crates. |
 | **Firefox/Gecko from source** | MPL-2 | 500 MB+ build tree | yes | Needs GTK3 build (Linux-only code paths), Rust, huge build (30+ GB, hours). | x86_64 only realistic | Very high |
-| **Chromium / CEF / Electron** | BSD-3 | multi-GB build | yes (SwiftShader) | Linux/Ozone-X11 or Cocoa port; neither matches PD. Sandbox, zygote, `/proc`, Linux syscalls | no | Prohibitive |
-| **Firefox/Chrome/Safari Mac binary** (via MacFrameworks/Darling) | proprietary / MPL | 250 MB | needs Metal/CoreAnimation/AppKit | Mac apps run today only for tiny AppKit apps (StuffIt); Firefox needs the full Cocoa/CoreGraphics/Metal stack, JIT entitlements, XPC, and x86_64 binary only on arm64 (no translator yet). | no | Not feasible on this route |
-| **Linux browser via `tux`** (ELF loader) | - | - | - | tux handles a tiny Alpine userland; browsers need clone/futex/epoll/memfd/seccomp/`/proc`, glibc/musl, GL stack. Far beyond today's tux. | no | Not feasible near-term |
+| **Chromium / CEF / Electron** | BSD-3 | multi-GB build | yes (SwiftShader) | Linux/Ozone-X11 or Cocoa port; neither matches PD. Sandbox, zygote, `/proc`, Linux syscalls | no | Build: out of scope; prebuilt binary: goal (see 3.4) |
+| **Firefox/Chrome/Safari Mac binary** (via MacFrameworks/Darling) | proprietary / MPL | 250 MB | needs Metal/CoreAnimation/AppKit | Mac apps run today only for tiny AppKit apps (StuffIt); Firefox needs the full Cocoa/CoreGraphics/Metal stack, JIT entitlements, XPC, and x86_64 binary only on arm64 (no translator yet). | no | Not today, goal (see 3.4) |
+| **Linux browser via `tux`** (ELF loader) | - | - | - | tux handles a tiny Alpine userland; browsers need clone/futex/epoll/memfd/seccomp/`/proc`, glibc/musl, GL stack. Far beyond today's tux. | no | Not today, goal (see 3.4) |
 | **Windows browser via Wine** (x86_64 image only) | - | 100 MB+ | CPU render ok | Wine 11 is in the x86_64 desktop image but first start takes ~13 min under TCG and wineboot still hangs (see wine notes); no arm64 Wine. | x86_64 only | Fragile, not a product |
 | **Homebrew bottles** (Big Sur) | - | - | - | brew is for CLI tools; Firefox is a cask (an app bundle), WebKitGTK/Epiphany have no macOS bottles. | no | n/a |
 
@@ -49,7 +49,21 @@ No GPU: everything is software rendering (virtio-gpu is scanout only).
    4. x86_64 after arm64 (arm64 HVF is ~10x faster to test); x86_64 JS speed under TCG will be poor for testing, fine on real PCs.
 3. **Meanwhile keep NetSurf as Search** (small, instant, works offline pages and docs). Cheap polish only: ship librsvg/libwebp support for
    NetSurf so images on modern sites show up (the screenshot's boxes). Do **not** invest in Duktape.
-4. Not recommended now: Gecko/Chromium builds, Mac/Windows/Linux browser binaries (blocked by missing OS layers, see table).
+4. **Long-term goal: near-complete binary support, so the real browsers run unmodified.** Gecko/Chromium *builds* stay out of scope
+   (hours, tens of GB, Linux/Cocoa-only code), but their **prebuilt binaries** become the target once the OS layers exist. The table
+   marks those rows "not today", not "never". What each needs:
+
+   | Browser binary | Route | Layers still missing (today's status) |
+   |---|---|---|
+   | Firefox / Chrome / Safari-class for **Linux** (arm64 + x86_64) | `tux` | glibc (not musl) userland; threads (`clone`, `futex`), `epoll`, `eventfd`/`memfd`, `/proc` and `/sys`, `SOCK_SEQPACKET`, seccomp as no-op, `ioctl`/`ucontext` tables for both ABIs, Mesa/EGL + X11 (X11 and llvmpipe already exist). Biggest missing piece: a complete Linux syscall surface. |
+   | Firefox / Chrome for **Windows** | Wine | arm64 Wine (none today), working x86_64 prefix/wineboot, then x86<->arm translation for arm64 hosts (translation-study.md). |
+   | Firefox / Chrome / Safari for **macOS** | Darling-style MacFrameworks | AppKit/CoreGraphics/CoreAnimation depth beyond today's probes, Metal-less software path, XPC/Mach services, JIT entitlements (MAP_JIT already works), and x86_64 Mach-O on arm64 (translator). |
+   | Foreign-arch binaries in general | translation layer | `docs/translation-study.md` (4 KiB vs 16 KiB pages, TSO, commpage). |
+
+   Recommended order of those layers for browsers: (a) Linux-via-tux depth (one engine family covers Firefox *and* Chromium-based
+   browsers, both ship Linux arm64 and x86_64 builds, no translator needed), (b) x86<->arm translation, (c) Wine on arm64,
+   (d) Mac frameworks last (widest API surface, proprietary binaries). Until (a) lands, the native Ladybird/WebKitGTK spike above
+   is the only route to a modern page, and it also serves as a test load for those layers (a JIT-heavy multi-process app).
 
 ## 4. What this session did and did not do
 
