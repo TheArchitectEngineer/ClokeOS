@@ -106,6 +106,31 @@ def generic_icon(name, hue):
 '''
 
 
+def linux_icon():
+    """Icon für Linux.app: ein Pinguin auf dunklem Grund (eigene Zeichnung)."""
+    return '''<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">
+<defs>
+<linearGradient id="bg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#3b4a66"/><stop offset="1" stop-color="#171d2b"/></linearGradient>
+<linearGradient id="body" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#2b2f3a"/><stop offset="1" stop-color="#0d0f14"/></linearGradient>
+<linearGradient id="belly" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ffffff"/><stop offset="1" stop-color="#d9dde6"/></linearGradient>
+<linearGradient id="beak" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ffc233"/><stop offset="1" stop-color="#f08a12"/></linearGradient>
+</defs>
+<rect x="4" y="4" width="56" height="56" rx="13" fill="url(#bg)"/>
+<rect x="4.5" y="4.5" width="55" height="55" rx="12.5" fill="none" stroke="#fff" stroke-opacity=".25"/>
+<ellipse cx="32" cy="55" rx="16" ry="2.6" fill="#000" fill-opacity=".35"/>
+<path d="M20.5 51c-3 .4-5.200-1.100-3.600-3 1.700-2 6-2.200 7.800-.4zM43.500 51c3 .4 5.200-1.100 3.600-3-1.700-2-6-2.200-7.800-.4z" fill="url(#beak)"/>
+<path d="M32 8c-7 0-11 5.500-11 13 0 3.400-3.800 6.600-5.500 12-1.700 5.500-.6 13 4.500 16.500 3.200 2.200 7 2.700 12 2.700s8.800-.5 12-2.700c5.100-3.500 6.200-11 4.500-16.500-1.700-5.400-5.500-8.600-5.500-12 0-7.500-4-13-11-13z" fill="url(#body)"/>
+<path d="M32 25c-5.200 0-9.200 4.600-9.200 11.500 0 7.400 3.800 13 9.200 13s9.200-5.600 9.200-13C41.200 29.600 37.200 25 32 25z" fill="url(#belly)"/>
+<ellipse cx="27.300" cy="17.500" rx="3.300" ry="3.700" fill="#fff"/><ellipse cx="36.700" cy="17.500" rx="3.300" ry="3.700" fill="#fff"/>
+<circle cx="28.100" cy="18.200" r="1.700" fill="#111"/><circle cx="35.900" cy="18.200" r="1.700" fill="#111"/>
+<circle cx="28.600" cy="17.600" r=".55" fill="#fff"/><circle cx="36.400" cy="17.600" r=".55" fill="#fff"/>
+<path d="M32 20.500c-3 0-5.500 1.700-5.500 3.200 0 1.600 2.700 3 5.500 3s5.500-1.400 5.500-3c0-1.500-2.500-3.200-5.500-3.200z" fill="url(#beak)"/>
+<path d="M26.800 23.800c1.600 1 3.300 1.400 5.200 1.400s3.600-.4 5.200-1.400" fill="none" stroke="#c9680a" stroke-width=".8" stroke-linecap="round"/>
+<path d="M21 28c-4 3.500-5 10-3 15 1.200 3 3.800 3.600 4.600 1.400.9-2.600.4-9 1.600-13.500zM43 28c4 3.500 5 10 3 15-1.200 3-3.800 3.600-4.600 1.400-.9-2.600-.4-9-1.600-13.500z" fill="#15181f"/>
+</svg>
+'''
+
+
 def write(path, text, mode=0o644):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, 'w', encoding='utf-8') as f:
@@ -144,6 +169,8 @@ def main(stage, icons, version, build):
         if icon:
             with open(os.path.join(icons, icon + '.svg'), encoding='utf-8') as f:
                 svg = f.read()
+        elif name == 'Linux':
+            svg = linux_icon()
         else:
             svg = generic_icon(name, sum(map(ord, name)) * 37 % 360)
         write(os.path.join(app, 'Resources', 'AppIcon.svg'), svg)
