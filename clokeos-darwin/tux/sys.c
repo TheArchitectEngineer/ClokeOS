@@ -596,10 +596,10 @@ static long sys_mprotect(uint64_t addr, uint64_t len, int prot)
 static long fcntl_l2d(int fd, long cmd, long arg)
 {
 	switch (cmd) {
-	case 0: return E(fcntl(fd, F_DUPFD, (int)arg));
+	case 0: { long n = E(fcntl(fd, F_DUPFD, (int)arg)); if (n >= 0) tux_fdx_dup(fd, (int)n); return n; }
 	case 1: return E(fcntl(fd, F_GETFD));
 	case 2: return E(fcntl(fd, F_SETFD, (int)arg));
-	case 1030: return E(fcntl(fd, F_DUPFD_CLOEXEC, (int)arg));
+	case 1030: { long n = E(fcntl(fd, F_DUPFD_CLOEXEC, (int)arg)); if (n >= 0) tux_fdx_dup(fd, (int)n); return n; }
 	case 3: {
 		long f = fcntl(fd, F_GETFL);
 		if (f < 0) return ERR();
@@ -623,28 +623,38 @@ static long fcntl_l2d(int fd, long cmd, long arg)
 static void tv_from_l(const int64_t *l, struct timeval *d) { d->tv_sec = l[0]; d->tv_usec = l[1]; }
 static void tv_to_l(const struct timeval *d, int64_t *l) { l[0] = d->tv_sec; l[1] = d->tv_usec; }
 
+static long syscall_inner(tux_regs *r);
 long tux_syscall(tux_regs *r)
+{
+	long v = syscall_inner(r);
+	if (tux_trace > 1) fprintf(stderr, "tux:   -> %ld\n", v);
+	return v;
+}
+
+static long syscall_inner(tux_regs *r)
 {
 	uint64_t a0 = r->a[0], a1 = r->a[1], a2 = r->a[2], a3 = r->a[3], a4 = r->a[4], a5 = r->a[5];
 	long nr = (long)r->nr;
 	if (tux_trace > 1) fprintf(stderr, "tux: syscall %ld(%llx, %llx, %llx)\n", nr, (unsigned long long)a0,
 	    (unsigned long long)a1, (unsigned long long)a2);
 	switch (nr) {
-	case N_read: return E(read((int)a0, (void *)a1, a2));
-	case N_write: return E(write((int)a0, (void *)a1, a2));
+	case N_read: { long x; if (tux_fdx_read((int)a0, (void *)a1, a2, &x)) return x; return E(read((int)a0, (void *)a1, a2)); }
+	case N_write: { long x; if (tux_fdx_write((int)a0, (void *)a1, a2, &x)) return x; return E(write((int)a0, (void *)a1, a2)); }
 	case N_readv: return E(readv((int)a0, (void *)a1, (int)a2));
 	case N_writev: return E(writev((int)a0, (void *)a1, (int)a2));
 	case N_pread64: return E(pread((int)a0, (void *)a1, a2, a3));
 	case N_pwrite64: return E(pwrite((int)a0, (void *)a1, a2, a3));
 	case N_lseek: return E(lseek((int)a0, a1, (int)a2));
-	case N_close: return E(close((int)a0));
-	case N_dup: return E(dup((int)a0));
+	case N_close: tux_fdx_close((int)a0); return E(close((int)a0));
+	case N_dup: { long n = E(dup((int)a0)); if (n >= 0) tux_fdx_dup((int)a0, (int)n); return n; }
 #ifdef TUX_X86_64
-	case N_dup2: return E(dup2((int)a0, (int)a1));
+	case N_dup2: { if (a0 != a1) tux_fdx_close((int)a1); long n = E(dup2((int)a0, (int)a1)); if (n >= 0 && a0 != a1) tux_fdx_dup((int)a0, (int)a1); return n; }
 #endif
 	case N_dup3: {
 		if (a0 == a1) return -EINVAL;
+		tux_fdx_close((int)a1);
 		long n = E(dup2((int)a0, (int)a1));
+		if (n >= 0) tux_fdx_dup((int)a0, (int)a1);
 		if (n >= 0 && (a2 & 02000000)) fcntl((int)a1, F_SETFD, FD_CLOEXEC);
 		return n;
 	}
@@ -721,6 +731,7 @@ long tux_syscall(tux_regs *r)
 	case N_getdents: return -ENOSYS;
 	case N_fork: case N_vfork: {
 		pid_t p = fork();
+		if (p == 0) tux_threads_after_fork();
 		return p < 0 ? ERR() : p;
 	}
 	case N_pause: { sigset_t s; sigemptyset(&s); sigsuspend(&s); return -EINTR; }
@@ -885,7 +896,10 @@ long tux_syscall(tux_regs *r)
 	}
 	// Speicher
 	case N_mmap: return sys_mmap(a0, a1, (int)a2, (int)a3, (int)a4, a5);
-	case N_munmap: return E(munmap((void *)a0, (a1 + tux_page - 1) & ~(tux_page - 1)));
+	case N_munmap:
+		// ein Thread, der seinen eigenen Stapel freigibt (musl: __unmapself), würde sich den Boden wegziehen
+		if ((uintptr_t)*r->sp >= a0 && (uintptr_t)*r->sp < a0 + a1) return 0;
+		return E(munmap((void *)a0, (a1 + tux_page - 1) & ~(tux_page - 1)));
 	case N_mprotect: return sys_mprotect(a0, a1, (int)a2);
 	case N_mremap: {
 		size_t os = (a1 + tux_page - 1) & ~(tux_page - 1), ns = (a2 + tux_page - 1) & ~(tux_page - 1);
@@ -910,7 +924,7 @@ long tux_syscall(tux_regs *r)
 	// Prozesse und Identität
 	case N_getpid: return getpid();
 	case N_getppid: return getppid();
-	case N_gettid: return getpid();
+	case N_gettid: return tux_cur()->tid;
 	case N_getuid: return getuid();
 	case N_geteuid: return geteuid();
 	case N_getgid: return getgid();
@@ -934,7 +948,7 @@ long tux_syscall(tux_regs *r)
 	}
 	case N_setgroups: return 0;
 	case N_umask: return umask(a0);
-	case N_set_tid_address: return getpid();
+	case N_set_tid_address: tux_cur()->clear_tid = a0; return tux_cur()->tid;
 	case N_set_robust_list: return 0;
 	case N_rseq: return -ENOSYS;
 	case N_sched_yield: sched_yield(); return 0;
@@ -958,13 +972,17 @@ long tux_syscall(tux_regs *r)
 	case N_clone: {
 		unsigned long fl = a0;
 		if (fl & 0x10000) {   // CLONE_THREAD
-			if (tux_trace) fprintf(stderr, "tux: clone mit Threads (noch nicht übersetzt)\n");
-			return -ENOSYS;
+#ifdef TUX_X86_64
+			return tux_thread_spawn(r, fl, a1, a2, a3, a4);   // clone(flags, stack, ptid, ctid, tls)
+#else
+			return tux_thread_spawn(r, fl, a1, a2, a4, a3);   // clone(flags, stack, ptid, tls, ctid)
+#endif
 		}
 		uint64_t ptid = a2;
 		pid_t p = fork();
 		if (p < 0) return ERR();
 		if (p == 0) {
+			tux_threads_after_fork();
 			if (a1) *r->sp = a1;
 			return 0;
 		}
@@ -989,19 +1007,15 @@ long tux_syscall(tux_regs *r)
 		if (a3) memset((void *)a3, 0, 144);
 		return p;
 	}
-	case N_exit: case N_exit_group: _exit((int)a0);
+	case N_exit: tux_thread_exit((int)a0);
+	case N_exit_group: _exit((int)a0);
 	case N_kill: {
 		int s = (int)a1;
 		if (s) { s = tux_sig_l2d(s); if (s < 0) return -EINVAL; }
 		return E(kill((pid_t)a0, s));
 	}
-	case N_tkill: case N_tgkill: {
-		long pid = nr == N_tgkill ? a0 : getpid();
-		long sig = nr == N_tgkill ? a2 : a1;
-		int s = sig ? tux_sig_l2d((int)sig) : 0;
-		if (sig && s < 0) return -EINVAL;
-		return E(kill((pid_t)pid, s));
-	}
+	case N_tkill: return tux_tgkill(0, a0, a1);
+	case N_tgkill: return tux_tgkill(a0, a1, a2);
 	case N_rt_sigaction: return tux_sigaction(a0, (void *)a1, (void *)a2, a3);
 	case N_rt_sigprocmask: return tux_sigprocmask(a0, (const uint64_t *)a1, (uint64_t *)a2, a3);
 	case N_rt_sigpending: {
@@ -1156,18 +1170,37 @@ long tux_syscall(tux_regs *r)
 		return 0;
 	}
 	case N_futex: {
-		int op = (int)a1 & 0x7f;
-		if (op == 0 /* WAIT */) {
-			// ohne weitere Threads kann niemand wecken: wenn der Wert noch gilt, nur kurz schlafen
-			if (*(volatile int *)a0 != (int)a3) return -EAGAIN;
-			struct timespec t = {0, 1000000};
-			nanosleep(&t, NULL);
-			return -EAGAIN;
+		struct timespec ts, *tp = NULL;
+		int cmd = (int)a1 & 0x7f;
+		// bei WAIT/WAIT_BITSET ist a3 die Zeitangabe, sonst eine Zahl (val2, Höchstzahl beim Umhängen)
+		if (a3 && (cmd == 0 || cmd == 9)) {
+			ts.tv_sec = ((int64_t *)a3)[0];
+			ts.tv_nsec = ((int64_t *)a3)[1];
+			tp = &ts;
 		}
-		return 0;   // WAKE & Co: niemand wartet
+		return tux_futex((uint32_t *)a0, (int)a1, (uint32_t)a2, (cmd == 0 || cmd == 9) ? tp : (const struct timespec *)a3,
+		    (uint32_t *)a4, (uint32_t)a5);
 	}
 	case N_fallocate: return -EOPNOTSUPP;
-	case N_eventfd2: case N_epoll_create1: return -ENOSYS;
+	case N_eventfd2: return tux_eventfd((unsigned)a0, a1);
+#ifdef TUX_X86_64
+	case N_eventfd: return tux_eventfd((unsigned)a0, 0);
+	case N_epoll_create: return tux_epoll_create(0);
+	case N_epoll_wait: return tux_epoll_wait((int)a0, (void *)a1, (int)a2, (int)a3, NULL);
+	case N_signalfd: return tux_signalfd((int)a0, *(uint64_t *)a1, 0);
+#endif
+	case N_epoll_create1: return tux_epoll_create(a0);
+	case N_epoll_ctl: return tux_epoll_ctl((int)a0, (int)a1, (int)a2, (void *)a3);
+	case N_epoll_pwait: return tux_epoll_wait((int)a0, (void *)a1, (int)a2, (int)a3, (const uint64_t *)a4);
+	case N_epoll_pwait2: {
+		long ms = -1;
+		if (a3) { const int64_t *t = (const int64_t *)a3; ms = t[0] * 1000 + (t[1] + 999999) / 1000000; }
+		return tux_epoll_wait((int)a0, (void *)a1, (int)a2, ms, (const uint64_t *)a4);
+	}
+	case N_timerfd_create: return tux_timerfd_create(a0, a1);
+	case N_timerfd_settime: return tux_timerfd_settime((int)a0, a1, (const int64_t *)a2, (int64_t *)a3);
+	case N_timerfd_gettime: return tux_timerfd_gettime((int)a0, (int64_t *)a1);
+	case N_signalfd4: return tux_signalfd((int)a0, *(uint64_t *)a1, a3);
 	default:
 		if (tux_trace) fprintf(stderr, "tux: Systemaufruf %ld nicht übersetzt (a0=%llx)\n", nr, (unsigned long long)a0);
 		return -ENOSYS;
@@ -1179,8 +1212,6 @@ long tux_syscall(tux_regs *r)
 #include <i386/user_ldt.h>
 // FS-Zeiger (TLS): Darwin kann ihn nicht direkt setzen (kein wrfsbase), aber ein LDT-Eintrag mit der Adresse als Basis
 // (nur 32 Bit, deshalb liegt Linux-Speicher unter 4 GiB) und das Segmentregister FS tun dasselbe.
-static int ldt_idx = -1;
-static uint64_t ldt_cur;
 static void ldt_set(uint64_t addr, int *out)
 {
 	union ldt_entry e;
@@ -1188,30 +1219,43 @@ static void ldt_set(uint64_t addr, int *out)
 	memset(&e, 0, sizeof e);
 	d[0] = 0xff; d[1] = 0xff; d[2] = addr & 0xff; d[3] = (addr >> 8) & 0xff; d[4] = (addr >> 16) & 0xff;
 	d[5] = 0xf2; d[6] = 0xcf; d[7] = (addr >> 24) & 0xff;
-	*out = i386_set_ldt(ldt_idx < 0 ? LDT_AUTO_ALLOC : ldt_idx, &e, 1);
+	int idx = tux_cur()->ldt_idx;
+	*out = i386_set_ldt(idx < 0 ? LDT_AUTO_ALLOC : idx, &e, 1);
 }
-// Der Eintrag wird vor dem Start des Programms angelegt: im Signal-Handler neu angelegt, scheitert die Rückkehr
-// (Allgemeine Schutzverletzung beim Zurückspringen).
+// Jeder Thread hat seinen eigenen Eintrag. Er wird vor dem Start angelegt: im Signal-Handler neu angelegt, scheitert die
+// Rückkehr (Allgemeine Schutzverletzung beim Zurückspringen).
 void tux_ldt_init(void)
 {
 	int n;
 	ldt_set(0x10000000UL, &n);
-	if (n >= 0) ldt_idx = n;
+	if (n >= 0) tux_cur()->ldt_idx = n;
+}
+void tux_tls_new(uint64_t tls)
+{
+	int n;
+	ldt_set(tls ? tls : 0x10000000UL, &n);
+	if (n < 0) return;
+	tux_cur()->ldt_idx = n;
+	tux_cur()->ldt_cur = tls;
+	unsigned short sel = (n << 3) | 7;
+	__asm__ volatile("mov %0, %%fs" :: "r"(sel));
+}
+void tux_tls_free(void)
+{
+	int idx = tux_cur()->ldt_idx;
+	if (idx >= 0) i386_set_ldt(idx, NULL, 1);
 }
 long tux_arch_prctl(tux_regs *r, long code, uint64_t addr)
 {
-	int idx = ldt_idx;
-	uint64_t cur = ldt_cur;
-	if (code == 0x1003) { *(uint64_t *)addr = ldt_cur; return 0; }
+	if (code == 0x1003) { *(uint64_t *)addr = tux_cur()->ldt_cur; return 0; }
 	if (code != 0x1002) return -EINVAL;
 	if (addr >> 32) { if (tux_trace) fprintf(stderr, "tux: TLS-Adresse %llx über 4 GiB\n", (unsigned long long)addr); return -ENOMEM; }
 	int n;
 	ldt_set(addr, &n);
 	if (n < 0) return ERR();
-	idx = n;
-	ldt_cur = addr;
-	(void)cur;
-	unsigned short sel = (idx << 3) | 7;
+	tux_cur()->ldt_idx = n;
+	tux_cur()->ldt_cur = addr;
+	unsigned short sel = (n << 3) | 7;
 	ucontext_t *uc = r->uc;
 	uc->uc_mcontext->__ss.__fs = sel;
 	__asm__ volatile("mov %0, %%fs" :: "r"(sel));
@@ -1219,5 +1263,7 @@ long tux_arch_prctl(tux_regs *r, long code, uint64_t addr)
 }
 #else
 void tux_ldt_init(void) {}
+void tux_tls_new(uint64_t tls) { if (tls) tux_set_tp(tls); }
+void tux_tls_free(void) {}
 long tux_arch_prctl(tux_regs *r, long code, uint64_t addr) { return -EINVAL; }
 #endif

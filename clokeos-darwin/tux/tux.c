@@ -113,6 +113,14 @@ void *tux_mmap(void *want, size_t len, int prot, int flags)
 
 // ---------------------------------------------------------------------------------------------
 // Systemaufruf-Befehle umschreiben
+// Systemaufrufe laufen in einem Signal-Handler; dessen Rückkehr stellt die Signalmaske vom Eintritt wieder her. Damit
+// sigprocmask & Co. des Gastes wirken, wird die aktuelle Maske in den Kontext übernommen.
+static void keep_mask(ucontext_t *uc)
+{
+	sigset_t cur;
+	if (pthread_sigmask(SIG_BLOCK, NULL, &cur) == 0) uc->uc_sigmask = cur;
+}
+
 #ifdef TUX_X86_64
 // `syscall` mit Linux-Nummer tut in PureDarwins Kern nichts; darum wird jeder Systemaufruf-Befehl (0f 05) zu ud2 (0f 0b).
 // Befehlsgrenzen kommen aus einem Längendecoder, weil 0f 05 auch in Konstanten vorkommt.
@@ -148,6 +156,7 @@ static void on_trap(int sig, siginfo_t *si, void *ucv)
 	if (tux_trace) fprintf(stderr, "tux: rsp=%llx [rsp]=%llx rip=%llx\n", ss->__rsp, *(unsigned long long *)ss->__rsp, ss->__rip);
 	long v = tux_syscall(&r);
 	ss->__rax = (uint64_t)v;
+	keep_mask(uc);
 	ss->__rcx = ss->__rip + 2;   // wie der echte Befehl
 	ss->__r11 = ss->__rflags;
 	ss->__rip += 2;
@@ -202,6 +211,7 @@ static void on_trap(int sig, siginfo_t *si, void *ucv)
 		ret = ss->__x[0];
 		long v = tux_syscall(&r);
 		ss->__x[0] = (uint64_t)v;
+		keep_mask(uc);
 	} else if ((imm & 0xff00) == IMM_MRS) {
 		unsigned rt = imm & 31;
 		if (rt < 29) ss->__x[rt] = tux_get_tp();
@@ -231,6 +241,88 @@ static void on_trap(int sig, siginfo_t *si, void *ucv)
 
 __asm__(ENTER_ASM);
 extern void tux_enter(uint64_t entry, uint64_t sp) __attribute__((noreturn));
+
+// ---------------------------------------------------------------------------------------------
+// Threads: clone(CLONE_THREAD) startet einen pthread, der mit den Registern des Aufrufers (Ergebnis 0, neuer Stapel)
+// hinter dem Systemaufruf-Befehl weiterläuft.
+#ifdef TUX_X86_64
+typedef struct { uint64_t rax, rbx, rcx, rdx, rsi, rdi, rbp, rsp, r8, r9, r10, r11, r12, r13, r14, r15, rip; } gregs;
+__asm__(".text\n.globl _tux_resume\n_tux_resume:\n"
+	"	mov %rdi, %r11\n	mov 0(%r11), %rax\n	mov 8(%r11), %rbx\n	mov 24(%r11), %rdx\n	mov 32(%r11), %rsi\n"
+	"	mov 40(%r11), %rdi\n	mov 48(%r11), %rbp\n	mov 64(%r11), %r8\n	mov 72(%r11), %r9\n	mov 80(%r11), %r10\n"
+	"	mov 96(%r11), %r12\n	mov 104(%r11), %r13\n	mov 112(%r11), %r14\n	mov 120(%r11), %r15\n"
+	"	mov 56(%r11), %rsp\n	mov 128(%r11), %rcx\n	mov 88(%r11), %r11\n	jmp *%rcx\n"
+	".globl _tux_on_stack\n_tux_on_stack:\n"
+	"	mov %rdi, %rax\n	mov %rsi, %rdi\n	mov %rdx, %rsp\n	and $-16, %rsp\n	call *%rax\n	ud2\n");
+static void capture(gregs *g, ucontext_t *uc, uint64_t sp)
+{
+	_STRUCT_X86_THREAD_STATE64 *s = &uc->uc_mcontext->__ss;
+	g->rax = 0; g->rbx = s->__rbx; g->rcx = s->__rip + 2; g->rdx = s->__rdx; g->rsi = s->__rsi; g->rdi = s->__rdi;
+	g->rbp = s->__rbp; g->rsp = sp ? sp : s->__rsp; g->r8 = s->__r8; g->r9 = s->__r9; g->r10 = s->__r10; g->r11 = s->__rflags;
+	g->r12 = s->__r12; g->r13 = s->__r13; g->r14 = s->__r14; g->r15 = s->__r15; g->rip = s->__rip + 2;
+}
+#else
+typedef struct { uint64_t x[31], sp, pc; } gregs;
+__asm__(".text\n.globl _tux_resume\n_tux_resume:\n"
+	"	mov x16, x0\n	ldr x1, [x16, #248]\n	mov sp, x1\n	ldr x17, [x16, #256]\n"
+	"	ldp x0, x1, [x16, #0]\n	ldp x2, x3, [x16, #16]\n	ldp x4, x5, [x16, #32]\n	ldp x6, x7, [x16, #48]\n"
+	"	ldp x8, x9, [x16, #64]\n	ldp x10, x11, [x16, #80]\n	ldp x12, x13, [x16, #96]\n	ldp x14, x15, [x16, #112]\n"
+	"	ldr x19, [x16, #152]\n	ldp x20, x21, [x16, #160]\n	ldp x22, x23, [x16, #176]\n	ldp x24, x25, [x16, #192]\n"
+	"	ldp x26, x27, [x16, #208]\n	ldp x28, x29, [x16, #224]\n	ldr x30, [x16, #240]\n	br x17\n"
+	".globl _tux_on_stack\n_tux_on_stack:\n"
+	"	mov x16, x0\n	mov x0, x1\n	mov sp, x2\n	blr x16\n	brk #1\n");
+static void capture(gregs *g, ucontext_t *uc, uint64_t sp)
+{
+	_STRUCT_ARM_THREAD_STATE64 *s = &uc->uc_mcontext->__ss;
+	for (int i = 0; i < 29; i++) g->x[i] = s->__x[i];
+	g->x[29] = s->__fp; g->x[30] = s->__lr;
+	g->x[0] = 0;
+	g->sp = sp ? sp : s->__sp;
+	g->pc = s->__pc + 4;
+}
+#endif
+extern void tux_resume(gregs *g) __attribute__((noreturn));
+
+typedef struct { tux_thr *t; gregs g; unsigned long fl; uint64_t ctid, tls; } thr_start;
+
+static void *thread_main(void *arg)
+{
+	thr_start s = *(thr_start *)arg;
+	free(arg);
+	char probe;
+	s.t->host_sp = (void *)(((uintptr_t)&probe - 1024) & ~15UL);
+	tux_thread_attach(s.t);
+	if (s.fl & 0x80000) tux_tls_new(s.tls);   // CLONE_SETTLS
+	else tux_tls_new(0);
+	if ((s.fl & 0x1000000) && s.ctid) *(int *)s.ctid = s.t->tid;       // CLONE_CHILD_SETTID
+	tux_resume(&s.g);
+}
+
+long tux_thread_spawn(tux_regs *r, unsigned long fl, uint64_t stack, uint64_t ptid, uint64_t ctid, uint64_t tls)
+{
+	thr_start *s = calloc(1, sizeof *s);
+	s->t = tux_thread_new();
+	s->fl = fl;
+	s->ctid = ctid;
+	s->tls = tls;
+	int tid = s->t->tid;
+	capture(&s->g, r->uc, stack);
+	if ((fl & 0x200000) && ctid) s->t->clear_tid = ctid;                // CLONE_CHILD_CLEARTID
+	if ((fl & 0x100000) && ptid) *(int *)ptid = s->t->tid;              // CLONE_PARENT_SETTID
+	pthread_attr_t at;
+	pthread_attr_init(&at);
+	pthread_attr_setdetachstate(&at, PTHREAD_CREATE_DETACHED);
+	pthread_attr_setstacksize(&at, 64 << 10);
+	pthread_t pt;
+	int e = pthread_create(&pt, &at, thread_main, s);
+	pthread_attr_destroy(&at);
+	if (e) {
+		free(s->t);
+		free(s);
+		return -EAGAIN;
+	}
+	return tid;
+}
 
 static void install_trap(void)
 {
@@ -483,6 +575,7 @@ int main(int argc, char **argv)
 	}
 	if (pthread_key_create(&tp_key, NULL) != 0) die("pthread_key_create");
 	tux_sys_init();
+	tux_threads_init();
 	tux_ldt_init();
 	install_trap();
 	tux_signals_init();
