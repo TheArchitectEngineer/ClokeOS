@@ -26,6 +26,8 @@ xr="$WORK/x86root/usr/lib"
 if [ -f "$xr/libSystem.B.dylib" ]; then
   clang -target x86_64-apple-macos11.0 -isysroot "$(xcrun --show-sdk-path)" -O1 -nostdlib -Wl,-platform_version,macos,11.0,11.5 -Wl,-e,_main \
     -o "$out/hello-dyn" hello-dyn.c "$xr/libSystem.B.dylib" "$xr/libc++abi.dylib"
+  clang -target x86_64-apple-macos11.0 -isysroot "$(xcrun --show-sdk-path)" -O1 -nostdlib -Wl,-platform_version,macos,11.0,11.5 -Wl,-e,_main \
+    -o "$out/hello-thr" hello-thr.c "$xr/libSystem.B.dylib" "$xr/libc++abi.dylib"
 fi
 file "$out"/*
 

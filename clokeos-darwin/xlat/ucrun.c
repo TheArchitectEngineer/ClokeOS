@@ -18,6 +18,7 @@
 #include <sys/syscall.h>
 #include <sys/time.h>
 #include <unistd.h>
+#include <pthread.h>
 #include <unicorn/unicorn.h>
 
 #define STACK_TOP 0x7ffee0100000ULL
@@ -27,6 +28,71 @@
 
 extern char **environ;
 static uc_engine *uc;
+
+// --- Gastspeicher: Host-Speicher, in jede Unicorn-Maschine (ein Gast-Thread = eine Maschine) per uc_mem_map_ptr eingeblendet ---
+typedef struct { uint64_t g, n; uint8_t *h; } Reg;
+static Reg regs[1024]; static int nregs;
+static uc_engine *engs[64]; static int neng;
+static pthread_mutex_t big = PTHREAD_MUTEX_INITIALIZER;
+static bool on_unmapped(uc_engine *u, uc_mem_type t, uint64_t addr, int size, int64_t val, void *ud);
+static void do_syscall(uc_engine *u, void *ud);
+
+static void unmap_all(uint64_t g, uint64_t n) {
+	pthread_mutex_lock(&big);
+	for (int i = 0; i < neng; i++) uc_mem_unmap(engs[i], g, n);  // Fehler (nichts abgebildet) sind egal
+	for (int i = 0, cnt = nregs; i < cnt; i++) {
+		Reg r = regs[i]; uint64_t b = r.g + r.n, ue = g + n;
+		if (r.g >= ue || b <= g) continue;
+		if (r.g < g) { regs[i].n = g - r.g; if (b > ue && nregs < 1024) regs[nregs++] = (Reg){ue, b - ue, r.h + (ue - r.g)}; }
+		else if (b > ue) { regs[i] = (Reg){ue, b - ue, r.h + (ue - r.g)}; }
+		else regs[i].n = 0;
+	}
+	int k = 0; for (int i = 0; i < nregs; i++) if (regs[i].n) regs[k++] = regs[i]; nregs = k;
+	pthread_mutex_unlock(&big);
+}
+static uc_err map_all(uint64_t g, uint64_t n) {
+	pthread_mutex_lock(&big);
+	uint8_t *h = mmap(0, n, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+	uc_err e = h == MAP_FAILED ? UC_ERR_NOMEM : UC_ERR_OK;
+	for (int i = 0; !e && i < neng; i++) e = uc_mem_map_ptr(engs[i], g, n, UC_PROT_ALL, h);
+	if (!e && nregs < 1024) regs[nregs++] = (Reg){g, n, h};
+	pthread_mutex_unlock(&big);
+	return e;
+}
+static uc_engine *new_engine(void) {
+	uc_engine *e; if (uc_open(UC_ARCH_X86, UC_MODE_64, &e)) return 0;
+	pthread_mutex_lock(&big);
+	for (int i = 0; i < nregs; i++) uc_mem_map_ptr(e, regs[i].g, regs[i].n, UC_PROT_ALL, regs[i].h);
+	engs[neng++] = e;
+	pthread_mutex_unlock(&big);
+	uc_hook hm, h; uc_hook_add(e, &hm, UC_HOOK_MEM_UNMAPPED, on_unmapped, 0, 1, 0); uc_hook_add(e, &h, UC_HOOK_INSN, do_syscall, 0, 1, 0, UC_X86_INS_SYSCALL);
+	return e;
+}
+static uint32_t *g2h32(uint64_t a) {
+	uint32_t *p = 0; pthread_mutex_lock(&big);
+	for (int i = nregs - 1; i >= 0; i--) if (a >= regs[i].g && a + 4 <= regs[i].g + regs[i].n) { p = (uint32_t *)(regs[i].h + (a - regs[i].g)); break; }
+	pthread_mutex_unlock(&big); return p;
+}
+
+// --- Threads (bsdthread_create) und ulock-Warteschlange ---
+static uint64_t thread_entry, tsd_offset, mts_offset;  // von bsdthread_register: Einsprung neuer Threads (libpthread)
+static pthread_mutex_t wmx = PTHREAD_MUTEX_INITIALIZER; static pthread_cond_t wcv = PTHREAD_COND_INITIALIZER;
+typedef struct { uc_engine *u; uint64_t pc; } Th;
+static void *thread_main(void *p) {
+	Th *t = p; uc_err e = uc_emu_start(t->u, t->pc, 0, 0, 0);
+	if (e) { uint64_t rip; uc_reg_read(t->u, UC_X86_REG_RIP, &rip); { uint8_t b[16] = {0}; uc_mem_read(t->u, rip, b, 16); fprintf(stderr, "ucrun: Thread: %s bei rip %#llx, Bytes:", uc_strerror(e), (unsigned long long)rip); for (int q = 0; q < 16; q++) fprintf(stderr, " %02x", b[q]); fputc(10, stderr); uint64_t r1, r2, r3; uc_reg_read(t->u, UC_X86_REG_RDI, &r1); uc_reg_read(t->u, UC_X86_REG_RAX, &r2); uc_reg_read(t->u, UC_X86_REG_RSP, &r3); fprintf(stderr, "  rdi %#llx rax %#llx rsp %#llx\n", (unsigned long long)r1, (unsigned long long)r2, (unsigned long long)r3); uc_x86_msr m = {0xC0000101, 0}; uc_reg_read(t->u, UC_X86_REG_MSR, &m); fprintf(stderr, "  gs_base %#llx\n", (unsigned long long)m.value); uint64_t ra[3] = {0}; uc_mem_read(t->u, r3, ra, 24); fprintf(stderr, "  [rsp] %#llx %#llx %#llx\n", (unsigned long long)ra[0], (unsigned long long)ra[1], (unsigned long long)ra[2]); } exit(4); }
+	free(t); return 0;
+}
+static int ulock_wait(uint64_t addr, uint32_t val, uint64_t timeout_us) {
+	struct timespec ts; if (timeout_us) { clock_gettime(CLOCK_REALTIME, &ts); ts.tv_sec += timeout_us / 1000000; ts.tv_nsec += (timeout_us % 1000000) * 1000; if (ts.tv_nsec >= 1000000000) { ts.tv_sec++; ts.tv_nsec -= 1000000000; } }
+	uint32_t *p = g2h32(addr); if (!p) return EFAULT;
+	pthread_mutex_lock(&wmx); int r = 0;
+	while (__atomic_load_n(p, __ATOMIC_SEQ_CST) == val) {
+		if (timeout_us) { if (pthread_cond_timedwait(&wcv, &wmx, &ts)) { r = ETIMEDOUT; break; } } else pthread_cond_wait(&wcv, &wmx);
+	}
+	pthread_mutex_unlock(&wmx); return r;
+}
+static void ulock_wake(void) { pthread_mutex_lock(&wmx); pthread_cond_broadcast(&wcv); pthread_mutex_unlock(&wmx); }
 static int trace;
 static unsigned long nsys;
 static uint64_t mmap_next = MMAP_BASE;
@@ -45,8 +111,8 @@ static int load_image(const uint8_t *file, uint64_t slide, uint64_t *entry, uint
 			if (!strcmp(s->segname, "__PAGEZERO") || !s->vmsize) continue;
 			uint64_t va = s->vmaddr + slide;
 			uint64_t base = va & ~0xfffULL, sz = (va + s->vmsize - base + 0xfff) & ~0xfffULL;
-			uc_mem_unmap(uc, base, sz);
-			if ((e = uc_mem_map(uc, base, sz, UC_PROT_ALL)) && e != UC_ERR_MAP) { fprintf(stderr, "map %s: %s\n", s->segname, uc_strerror(e)); return -1; }
+			unmap_all(base, sz);
+			if ((e = map_all(base, sz))) { fprintf(stderr, "map %s: %s\n", s->segname, uc_strerror(e)); return -1; }
 			uc_mem_write(uc, va, file + s->fileoff, s->filesize);
 			if (!strcmp(s->segname, "__TEXT")) *mh_addr = va;
 		} else if (lc->cmd == LC_UNIXTHREAD) {
@@ -107,8 +173,8 @@ static const Sc tab[] = {
 static uint64_t gmap(uint64_t addr, uint64_t len, int fixed) {
 	len = (len + 0xfff) & ~0xfffULL;
 	if (!fixed || !addr) { addr = mmap_next; mmap_next += len + 0x1000; }
-	else uc_mem_unmap(uc, addr, len);  // MAP_FIXED überschreibt
-	if (uc_mem_map(uc, addr, len, UC_PROT_ALL)) return 0;
+	else unmap_all(addr, len);  // MAP_FIXED überschreibt
+	if (map_all(addr, len)) return 0;
 	return addr;
 }
 
@@ -138,7 +204,7 @@ static void do_syscall(uc_engine *u, void *ud) {
 			if (!g) { res = 3; break; }
 			uc_mem_write(u, a[1], &g, 8); break; }
 		case 16: { uint32_t nm = 0x1003; uc_mem_write(u, a[2], &nm, 4); break; }  // mach_port_allocate_trap(task, right, *name)
-		case 12: uc_mem_unmap(u, a[1], (a[2] + 0xfff) & ~0xfffULL); break;  // mach_vm_deallocate
+		case 12: unmap_all(a[1], (a[2] + 0xfff) & ~0xfffULL); break;  // mach_vm_deallocate
 		case 14: break;                // mach_vm_protect: Gastspeicher bleibt RWX
 		case 18: case 19: break;       // mach_port_deallocate / mod_refs
 		case 31: {  // mach_msg_trap: nur Nachrichten an den Host-Port, als kleine MIG-Server
@@ -183,8 +249,27 @@ static void do_syscall(uc_engine *u, void *ud) {
 		}
 		res = g; goto done;
 	}
+	if (nr == 366) {  // bsdthread_register(threadstart, wqthread, pthsize, init_data, size, ...): tsd_offset steht bei init_data+24
+		thread_entry = a[0]; if (trace) fprintf(stderr, "ucrun: bsdthread_register data %#llx size %llu a5 %#llx\n", (unsigned long long)a[3], (unsigned long long)a[4], (unsigned long long)a[5]); { uint32_t dmp[13]; uc_mem_read(u, a[3], dmp, 52); if (trace) for (int q = 0; q < 13; q++) fprintf(stderr, " %08x", dmp[q]); if (trace) fputc(10, stderr); } uint32_t to = 0; if (a[3] && a[4] >= 28) uc_mem_read(u, a[3] + 24, &to, 4); tsd_offset = to;
+		uint32_t mo = 0; if (a[3] && a[4] >= 36) uc_mem_read(u, a[3] + 32, &mo, 4); mts_offset = mo; res = 0; goto done;
+	}  // bsdthread_register(threadstart, wqthread, ...)
+	if (nr == 360) {  // bsdthread_create(func, arg, stack, pthread, flags): neue Unicorn-Maschine + Host-Thread
+		uc_engine *ne = new_engine(); if (!ne) { err = ENOMEM; res = ENOMEM; goto done; }
+		uint64_t sp = ((a[2] - 128) & ~15ULL) - 8, port = 0x2000 + nsys, flg = a[4] | 0x10000000, z = 0, gs = a[3] + tsd_offset;
+		{ uc_x86_msr m = {0xC0000101, gs}; uc_reg_write(ne, UC_X86_REG_MSR, &m); }  // IA32_GS_BASE
+		{ uint32_t p32 = (uint32_t)port; if (mts_offset) uc_mem_write(u, a[3] + tsd_offset + mts_offset, &p32, 4); }  // der Kernel trägt den Mach-Thread-Port ins pthread ein
+		uc_reg_write(ne, UC_X86_REG_RSP, &sp); uc_reg_write(ne, UC_X86_REG_RDI, &a[3]); uc_reg_write(ne, UC_X86_REG_RSI, &port);
+		uc_reg_write(ne, UC_X86_REG_RDX, &a[0]); uc_reg_write(ne, UC_X86_REG_RCX, &a[1]); uc_reg_write(ne, UC_X86_REG_R8, &a[2]); uc_reg_write(ne, UC_X86_REG_R9, &flg);
+		(void)z;
+		Th *t = malloc(sizeof *t); t->u = ne; t->pc = thread_entry;
+		pthread_t pt; pthread_attr_t pa; pthread_attr_init(&pa); pthread_attr_setdetachstate(&pa, PTHREAD_CREATE_DETACHED);
+		pthread_create(&pt, &pa, thread_main, t); res = a[3]; goto done;
+	}
+	if (nr == 361) { ulock_wake(); uc_emu_stop(u); res = 0; goto done; }  // bsdthread_terminate: Gast-Thread endet
+	if (nr == 515 || nr == 544) { int r = ulock_wait(a[1], (uint32_t)a[2], nr == 515 ? a[3] : a[3] / 1000); if (r) { err = r; res = r; } else res = 0; goto done; }  // __ulock_wait(2)
+	if (nr == 516) { ulock_wake(); res = 0; goto done; }  // __ulock_wake
 	switch (nr) {  // Systemaufrufe, die nur beim Start nach dem Zustand des Systems fragen
-	case 483: case 366: case 381: case 520: case 521: case 48: case 46: case 329: res = 0; goto done;                 // csrctl, bsdthread_register, __mac_syscall
+	case 483: case 381: case 520: case 521: case 48: case 46: case 329: res = 0; goto done;                 // csrctl, bsdthread_register, __mac_syscall
 	case 54: err = 25; res = 25; goto done;                              // ioctl: ENOTTY (Terminal-Abfragen der libc)
 	case 274: err = 2; res = 2; goto done;                               // __sysctlbyname: ENOENT
 	case 294: case 336: case 287: err = EINVAL; res = EINVAL; goto done; // shared_region_check_np (kein Cache), proc_info, ...
@@ -208,7 +293,7 @@ static void do_syscall(uc_engine *u, void *ud) {
 		free(ob); free(nb); goto done;
 	}
 	if (nr == 372) { res = 1; goto done; }  // thread_selfid
-	if (nr == 73) { uc_mem_unmap(u, a[0], (a[1] + 0xfff) & ~0xfffULL); res = 0; goto done; }
+	if (nr == 73) { unmap_all(a[0], (a[1] + 0xfff) & ~0xfffULL); res = 0; goto done; }
 	if (nr == 74) { res = 0; goto done; }  // mprotect: Gastspeicher bleibt RWX (Eigenschaft von ucrun, siehe Studie)
 	const Sc *s = 0;
 	for (unsigned i = 0; i < sizeof tab / sizeof *tab; i++) if (tab[i].nr == (int)nr) s = &tab[i];
@@ -265,7 +350,7 @@ int main(int argc, char **argv) {
 	}
 	struct mach_header_64 *mh = (void *)file;
 	if (mh->magic != MH_MAGIC_64 || mh->cputype != 0x01000007) { fprintf(stderr, "ucrun: %s ist kein x86_64-Mach-O\n", argv[1]); return 126; }
-	uc_err e = uc_open(UC_ARCH_X86, UC_MODE_64, &uc); if (e) { fprintf(stderr, "uc_open: %s\n", uc_strerror(e)); return 3; }
+	uc_err e = UC_ERR_OK; uc = new_engine(); if (!uc) { fprintf(stderr, "uc_open fehlgeschlagen\n"); return 3; }
 	uint64_t entry = 0, mh_addr = 0; int dynamic = 0;
 	if (load_image(file, 0, &entry, &mh_addr, &dynamic)) return 3;
 	uint64_t unix_entry = entry;
@@ -284,10 +369,10 @@ int main(int argc, char **argv) {
 		memcpy(cp, "commpage 64-bit", 16); memcpy(cp + 0x10, &caps, 8); memcpy(cp + 0x1e, &ver, 2); cp[0x22] = ncpu;
 		cp[0x34] = cp[0x35] = cp[0x36] = ncpu; memcpy(cp + 0x38, &mem, 8); memcpy(cp + 0x40, &fam, 4);
 		{ uint32_t scale = 0xffffffffu, gen = 1; memcpy(cp + 0x58, &scale, 4); memcpy(cp + 0x68, &gen, 4); }  // nanotime: 1 ns je TSC-Takt
-		uc_mem_map(uc, 0x7fffffe00000ULL, sizeof cp, UC_PROT_READ | UC_PROT_EXEC);
+		map_all(0x7fffffe00000ULL, sizeof cp);
 		uc_mem_write(uc, 0x7fffffe00000ULL, cp, sizeof cp);
 	}
-	uc_mem_map(uc, STACK_TOP - STACK_SIZE, STACK_SIZE, UC_PROT_READ | UC_PROT_WRITE);
+	map_all(STACK_TOP - STACK_SIZE, STACK_SIZE);
 	// Stapel wie ihn der Kernel für ein Programm mit LC_UNIXTHREAD baut: argc, argv[], 0, envp[], 0, apple[], 0, Strings
 	// Umgebung des Gastes: ohne DYLD_INSERT_LIBRARIES des Hosts (die arm64-Bibliothek passt nicht zum x86_64-dyld)
 	static char *genv[1024]; int ne = 0;
@@ -309,8 +394,6 @@ int main(int argc, char **argv) {
 	ptrs[np++] = 0; ptrs[np++] = pstr[ns - 1]; ptrs[np++] = 0;
 	sp -= np * 8; sp &= ~15ULL; uc_mem_write(uc, sp, ptrs, np * 8);
 	uc_reg_write(uc, UC_X86_REG_RSP, &sp);
-	uc_hook hm; uc_hook_add(uc, &hm, UC_HOOK_MEM_UNMAPPED, on_unmapped, 0, 1, 0);
-	uc_hook h; uc_hook_add(uc, &h, UC_HOOK_INSN, do_syscall, 0, 1, 0, UC_X86_INS_SYSCALL);
 	t0 = now();
 	e = uc_emu_start(uc, entry, 0, getenv("UCRUN_TIMEOUT_MS") ? atoll(getenv("UCRUN_TIMEOUT_MS")) * 1000 : 0, 0);
 	if (!e && getenv("UCRUN_TIMEOUT_MS")) { uint64_t rip; uc_reg_read(uc, UC_X86_REG_RIP, &rip); fprintf(stderr, "ucrun: Zeitlimit, rip %#llx\n", (unsigned long long)rip); }
