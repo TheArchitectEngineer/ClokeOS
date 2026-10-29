@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=arm64 Program
+Comment=Run an arm64 program with the translator a64run
+Exec=a64-open %f
+MimeType=application/x-arm64-macho;
+NoDisplay=true
+Terminal=false

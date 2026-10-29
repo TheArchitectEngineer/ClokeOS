@@ -139,7 +139,7 @@ printf '\n# ClokeOS\n[ -n "$BASH_VERSION" ] && [ -r /etc/bashrc ] && . /etc/bash
 # tux: Linux-Programme und der Linux-Baum /TUX (Desktop)
 [ "$CLOKE_FLAVOR" = desktop ] && : > "$tmp/tux.cmds" && "$HERE/tux/image.sh" "$tmp/stage" "$tmp/tux.cmds"
 # xlat: x86_64-Programme auf arm64 (Übersetzer ucrun + exec-Haken, siehe docs/translation-study.md)
-[ "$CLOKE_FLAVOR" = desktop ] && [ "$CLOKE_ARCH" = arm64 ] && "$HERE/xlat/image.sh" "$tmp/stage" "$tmp/tux.cmds" || true
+[ "$CLOKE_FLAVOR" = desktop ] && "$HERE/xlat/image.sh" "$tmp/stage" "$tmp/tux.cmds" || true
 
 # MIME-Datenbank (mime.cache), damit Fundus Programme anderer Systeme (ELF, x86_64-Mach-O) erkennt
 [ "$CLOKE_FLAVOR" = desktop ] && "$HERE/mime/build.sh" "$tmp/stage" || true

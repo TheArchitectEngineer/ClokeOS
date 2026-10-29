@@ -11,4 +11,8 @@
     <comment>x86_64 Mac program</comment>
     <magic priority="90"><match type="string" value="\xcf\xfa\xed\xfe\x07\x00\x00\x01" offset="0"/></magic>
   </mime-type>
+  <mime-type type="application/x-arm64-macho">
+    <comment>arm64 Mac program</comment>
+    <magic priority="90"><match type="string" value="\xcf\xfa\xed\xfe\x0c\x00\x00\x01" offset="0"/></magic>
+  </mime-type>
 </mime-info>

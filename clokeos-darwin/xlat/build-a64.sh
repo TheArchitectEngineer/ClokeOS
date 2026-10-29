@@ -36,6 +36,11 @@ else
     -Wl,-platform_version,macos,11.0,11.5 -Wl,-no_fixup_chains -I"$uni/src/include" -o "$out/a64run" a64run.c \
     "$b/libunicorn-static.a" "$b/libaarch64-softmmu.a" "$b/libunicorn-common.a" "$libs/libSystem.B.dylib"
 fi
+# exec-Haken für x86_64-Hosts (derselbe Quelltext wie für arm64, Ziel hier /usr/bin/a64run)
+if [ -z "${A64_HOST:-}" ]; then
+  clang -target x86_64-apple-macos11.0 -isysroot "$sdk" -O1 -Wall -fno-stack-check -nostdlib -dynamiclib \
+    -Wl,-platform_version,macos,11.0,11.5 -Wl,-no_fixup_chains -o "$out/libxlat-exec.dylib" exechook.c "$libs/libSystem.B.dylib"
+fi
 # arm64-Testprogramme: freistehend (statisch) und dynamisch gegen die arm64-libSystem aus dem Image (xlat/xroot-a64.sh holt sie)
 clang -target arm64-apple-macos11.0 -O2 -ffreestanding -fno-builtin -fno-stack-protector -nostdlib -static -Wl,-e,_start -o "$out/a64-sys" a64-sys.c
 ar_="${A64_ROOT:-$WORK/a64root}/usr/lib"

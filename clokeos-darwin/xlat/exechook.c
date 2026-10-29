@@ -19,9 +19,11 @@ extern char **environ;
 #ifdef __arm64__
 #define HOST_CPU 0x0100000c
 #define FOREIGN_CPU 0x01000007
+#define TRANSLATOR "/usr/bin/ucrun"
 #else
 #define HOST_CPU 0x01000007
 #define FOREIGN_CPU 0x0100000c
+#define TRANSLATOR "/usr/bin/a64run"
 #endif
 
 static int foreign(const char *path) {
@@ -41,7 +43,8 @@ static int foreign(const char *path) {
 }
 
 static char **wrap(const char *path, char *const argv[], const char **tr) {
-	*tr = getenv("XLAT_UCRUN") ? getenv("XLAT_UCRUN") : "/usr/bin/ucrun";
+	// arm64-Host: ucrun (x86_64-Programme); x86_64-Host: a64run (arm64-Programme). XLAT_RUN überschreibt beides (XLAT_UCRUN gilt weiter)
+	*tr = getenv("XLAT_RUN") ? getenv("XLAT_RUN") : getenv("XLAT_UCRUN") ? getenv("XLAT_UCRUN") : TRANSLATOR;
 	int n = 0; while (argv && argv[n]) n++;
 	char **v = malloc((n + 3) * sizeof *v);
 	v[0] = (char *)*tr; v[1] = (char *)path;
