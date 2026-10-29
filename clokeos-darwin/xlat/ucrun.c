@@ -81,12 +81,13 @@ static uint32_t *g2h32(uint64_t a) {
 // --- Threads (bsdthread_create) und ulock-Warteschlange ---
 static uint64_t thread_entry, tsd_offset, mts_offset;  // von bsdthread_register: Einsprung neuer Threads (libpthread)
 static pthread_mutex_t wmx = PTHREAD_MUTEX_INITIALIZER; static pthread_cond_t wcv = PTHREAD_COND_INITIALIZER;
-typedef struct { uc_engine *u; uint64_t pc; uint64_t ring[64]; unsigned n; volatile int done; uint64_t rsp, rdi, rsi, rdx, rcx, r8, r9, gs; struct Saved *ss; int sd; uint64_t fault_addr; volatile int resume; uint64_t resume_rip; } Th;
+typedef struct { uc_engine *u; uint64_t pc; uint64_t ring[64]; unsigned n; volatile int done; uint64_t rsp, rdi, rsi, rdx, rcx, r8, r9, gs; struct Saved *ss; int sd; uint64_t fault_addr; volatile int resume; uint64_t resume_rip; uint64_t tid; } Th;
 static pthread_mutex_t gm = PTHREAD_MUTEX_INITIALIZER; static pthread_cond_t gc = PTHREAD_COND_INITIALIZER; static unsigned g_next, g_serving;  // fairer Ticket-Sperre
 static void gil_lock(void) { pthread_mutex_lock(&gm); unsigned my = g_next++; while (g_serving != my) pthread_cond_wait(&gc, &gm); pthread_mutex_unlock(&gm); }
 static void gil_unlock(void) { pthread_mutex_lock(&gm); g_serving++; pthread_cond_broadcast(&gc); pthread_mutex_unlock(&gm); }  // immer nur eine Maschine rechnet (Unicorn-Speicherabbild ist nicht thread-sicher); Zeitscheiben + Blockieren geben ihn frei
 static Th *eth[64];
 static Th main_th;
+static uint64_t next_tid = 2;  // thread_selfid je Gast-Thread (libpthread erkennt damit EDEADLK beim rwlock/Mutex-Besitzer); der Haupt-Thread hat 1
 static uint64_t slice_us = 1000000;  // Zeitscheibe 1 s: Wechsel praktisch nur an blockierenden Aufrufen, damit Mutexe nie umkämpft sind (psynch ist nicht nachgebildet)
 #define BLOCKING_BEGIN gil_unlock()
 #define BLOCKING_END gil_lock()
@@ -177,10 +178,26 @@ static void *thread_main(void *p) {
 	gil_unlock();
 	uc_err e = run_engine(t);
 	if (e) { uint64_t rip; uc_reg_read(t->u, UC_X86_REG_RIP, &rip); { uint8_t b[16] = {0}; uc_mem_read(t->u, rip, b, 16); fprintf(stderr, "ucrun: Thread: %s bei rip %#llx, Bytes:", uc_strerror(e), (unsigned long long)rip); for (int q = 0; q < 16; q++) fprintf(stderr, " %02x", b[q]); fputc(10, stderr); if (getenv("UCRUN_RING")) { fprintf(stderr, "  letzte Befehle:"); for (unsigned q = t->n > 40 ? t->n - 40 : 0; q < t->n; q++) fprintf(stderr, " %llx", (unsigned long long)t->ring[q & 63]); fputc(10, stderr); } uint64_t r1, r2, r3; uc_reg_read(t->u, UC_X86_REG_RDI, &r1); uc_reg_read(t->u, UC_X86_REG_RAX, &r2); uc_reg_read(t->u, UC_X86_REG_RSP, &r3); fprintf(stderr, "  rdi %#llx rax %#llx rsp %#llx\n", (unsigned long long)r1, (unsigned long long)r2, (unsigned long long)r3); uc_x86_msr m = {0xC0000101, 0}; uc_reg_read(t->u, UC_X86_REG_MSR, &m); fprintf(stderr, "  gs_base %#llx\n", (unsigned long long)m.value); uint64_t ra[3] = {0}; uc_mem_read(t->u, r3, ra, 24); fprintf(stderr, "  [rsp] %#llx %#llx %#llx\n", (unsigned long long)ra[0], (unsigned long long)ra[1], (unsigned long long)ra[2]); } exit(4); }
+	// Maschine und Tabelleneintrag freigeben (sonst läuft engs[] nach 64 Threads über und eth[] ist voll)
+	gil_lock();
+	for (int q = 0; q < 64; q++) if (eth[q] == t) eth[q] = 0;
+	pthread_mutex_lock(&big); for (int i = 0; i < neng; i++) if (engs[i] == t->u) { engs[i] = engs[--neng]; break; } pthread_mutex_unlock(&big);
+	uc_close(t->u); free(t->ss);
+	gil_unlock();
 	free(t); return 0;
 }
-static uint32_t dead[256]; static int ndead;  // Mach-Thread-Ports beendeter Gast-Threads (Eigner von UL_UNFAIR_LOCK-Wörtern)
-static int is_dead(uint32_t v) { for (int i = 0; i < ndead; i++) if (dead[i] == v) return 1; return 0; }
+static uint32_t *dead; static unsigned dead_cap, ndead;  // Mach-Thread-Ports beendeter Gast-Threads (Eigner von UL_UNFAIR_LOCK-Wörtern)
+// offene Hash-Menge (0 = leer): wächst mit der Zahl beendeter Threads, damit pthread_join nie auf einen längst toten Thread wartet
+static int is_dead(uint32_t v) { if (!dead_cap) return 0; for (unsigned i = (v * 2654435761u) & (dead_cap - 1); dead[i]; i = (i + 1) & (dead_cap - 1)) if (dead[i] == v) return 1; return 0; }
+static void add_dead(uint32_t v) {
+	if (!v) return;
+	if (ndead * 2 >= dead_cap) {
+		uint32_t *old = dead; unsigned oc = dead_cap; dead_cap = oc ? oc * 2 : 1024; dead = calloc(dead_cap, 4); ndead = 0;
+		for (unsigned i = 0; i < oc; i++) if (old[i]) { unsigned j = (old[i] * 2654435761u) & (dead_cap - 1); while (dead[j]) j = (j + 1) & (dead_cap - 1); dead[j] = old[i]; ndead++; }
+		free(old);
+	}
+	unsigned j = (v * 2654435761u) & (dead_cap - 1); while (dead[j]) { if (dead[j] == v) return; j = (j + 1) & (dead_cap - 1); } dead[j] = v; ndead++;
+}
 // __ulock_wait/wake: Warteschlange je Adresse (FIFO). Wert wird nur beim Eintritt verglichen; geweckt wird durch ulock_wake, den Tod des Eigners (UL_UNFAIR_LOCK, pthread_join),
 // ein Zeitlimit oder ein wartendes Signal. Das Ergebnis ist die Zahl der übrigen Wartenden (libpthread setzt daraus das WAITERS-Bit des Mutex).
 typedef struct UlW { uint64_t addr, val; int woke; struct UlW *next; } UlW;
@@ -260,6 +277,222 @@ static int sem_signal(uint32_t port, int all) {
 	pthread_mutex_lock(&wmx); int i = sem_index(port), r = 0;
 	if (i < 0) r = 3; else { sems[i].value += all ? 1000000 : 1; pthread_cond_broadcast(&wcv); }
 	pthread_mutex_unlock(&wmx); return r;
+}
+
+// --- pthread_rwlock: __psynch_rw_rdlock/wrlock/unlock (306-308), Port des rw-Teils von kern_synch.c (PureDarwin, src/Kernel/Extensions/pthread) ---
+// Wie im Kernel: je Sperre eine Warteschlange (kwq) mit einer Leser- und einer Schreiberliste, sortiert nach der Sequenz aus dem L-Wort, dazu Preposts (Entsperren vor dem
+// Eintreffen der Wartenden), die Überlappungslogik (MBIT) und die Rückgabebits (updatebits), die libpthread in L/U/S einmischt. Der Kern der Logik läuft unter wmx;
+// Wartende schlafen auf wcv (wie cv_wait) und werden mit "woke" und ihrem Rückgabewert geweckt. Weggelassen: Besitzer/Turnstile (Prioritätsvererbung), pshared-Objekte,
+// kw_lowseq/kw_highseq (nur für Mutex/CV), die "unterbrochener Weckruf"-Zählung (ein schon geweckter Wartender behält seine Zuteilung, auch wenn ein Signal wartet).
+#define RW_COUNT_SHIFT 8
+#define RW_INC (1u << RW_COUNT_SHIFT)
+#define RW_BIT_MASK (RW_INC - 1)
+#define RW_COUNT_MASK ((uint32_t)~RW_BIT_MASK)
+#define RW_MAX_READERS RW_COUNT_MASK
+#define RWL_KBIT 0x01
+#define RWL_EBIT 0x02
+#define RWL_WBIT 0x04
+#define RWL_MBIT 0x40
+#define RWL_IBIT 0x80
+#define RWL_INIT RWL_IBIT
+#define RWS_SBIT 0x01
+#define RWS_INIT RWS_SBIT
+#define RWS_SAVEMASK 0x04
+#define RW_TYPE_READ 0x01
+#define RW_TYPE_WRITE 0x04
+#define RW_SHFT_READ 0x0100
+#define RW_SHFT_WRITE 0x0400
+#define RW_SHFT_MASK 0xff00
+#define KW_UNLOCK_PREPOST 0x01
+#define KW_UNLOCK_PREPOST_READLOCK 0x08
+#define KW_UNLOCK_PREPOST_WRLOCK 0x20
+#define KWF_INITCLEARED 0x1
+#define KWF_OVERLAP_GUARD 0x8
+static int seq_lower(uint32_t x, uint32_t y) { x &= RW_COUNT_MASK; y &= RW_COUNT_MASK; return x < y ? (y - x) < RW_MAX_READERS / 2 : (x - y) > RW_MAX_READERS / 2; }
+static int seq_lower_eq(uint32_t x, uint32_t y) { return (x & RW_COUNT_MASK) == (y & RW_COUNT_MASK) ? 1 : seq_lower(x, y); }
+static int seq_higher(uint32_t x, uint32_t y) { x &= RW_COUNT_MASK; y &= RW_COUNT_MASK; return x > y ? (x - y) < RW_MAX_READERS / 2 : (y - x) > RW_MAX_READERS / 2; }
+static int seq_higher_eq(uint32_t x, uint32_t y) { return (x & RW_COUNT_MASK) == (y & RW_COUNT_MASK) ? 1 : seq_higher(x, y); }
+static int diff_genseq(uint32_t x, uint32_t y) { x &= RW_COUNT_MASK; y &= RW_COUNT_MASK; return x == y ? 0 : x > y ? (int)(x - y) : (int)((RW_MAX_READERS - y) + x + RW_INC); }
+static int find_diff(uint32_t upto, uint32_t lowest) {
+	if (upto == lowest) return 0;
+	uint32_t d = seq_lower(upto, lowest) ? diff_genseq(lowest, upto) : diff_genseq(upto, lowest);
+	return d >> RW_COUNT_SHIFT;
+}
+typedef struct Kwe { struct Kwe *prev, *next; uint32_t lockseq, retval; int woke; struct Kq *q; } Kwe;
+typedef struct Kq { Kwe *head, *tail; uint32_t count, firstnum, lastnum; } Kq;
+enum { KQ_READ = 0, KQ_WRITE, KQ_MAX };
+typedef struct Kwq {
+	struct Kwq *next; uint64_t addr; time_t used;
+	uint32_t inqueue, lword, uword, sword, lastunlockseq, lastseqword, nextseqword; int kflags;
+	struct { uint32_t count, lseq, sseq; } prepost;
+	Kq q[KQ_MAX];
+} Kwq;
+static Kwq *kwqs;
+static void kwq_clear_prepost(Kwq *k) { k->prepost.lseq = 0; k->prepost.sseq = RWS_INIT; k->prepost.count = 0; }
+static void kwq_clear_reinit(Kwq *k) {  // CLEAR_REINIT_BITS
+	k->nextseqword = RWS_INIT; k->kflags &= ~KWF_OVERLAP_GUARD; kwq_clear_prepost(k);
+	k->lastunlockseq = RWL_INIT; k->lastseqword = RWS_INIT; k->lword = 0; k->uword = 0; k->sword = RWS_INIT;
+}
+static Kwq *kwq_find(uint64_t addr, uint32_t l, uint32_t u, uint32_t s) {  // ksyn_wqfind; unbenutzte Einträge werden nach 10 s wieder freigegeben (wie die Aufräumfrist im Kernel)
+	time_t now = time(0); Kwq *k, **pp;
+	for (pp = &kwqs; (k = *pp);) {
+		if (k->addr != addr && k->inqueue == 0 && k->prepost.count == 0 && now - k->used > 10) { *pp = k->next; free(k); } else pp = &k->next;
+	}
+	for (k = kwqs; k; k = k->next) if (k->addr == addr) break;
+	if (!k) {
+		k = calloc(1, sizeof *k); k->addr = addr; kwq_clear_reinit(k); k->lword = l; k->uword = u; k->sword = s; k->next = kwqs; kwqs = k;
+	}
+	k->used = now; return k;
+}
+static int kwq_check_init(Kwq *k, uint32_t lgen) {  // _ksyn_check_init
+	int res = (lgen & RWL_INIT) != 0;
+	if (res && !(k->kflags & KWF_INITCLEARED)) { kwq_clear_reinit(k); k->kflags |= KWF_INITCLEARED; }
+	return res;
+}
+static int kq_insert(Kwq *k, int qi, Kwe *e, uint32_t mgen) {  // ksyn_queue_insert (SEQFIT, ohne Abbruch-Sonderfall)
+	Kq *q = &k->q[qi]; uint32_t seq = mgen & RW_COUNT_MASK; int res = 0;
+	e->lockseq = seq; e->next = e->prev = 0;
+	if (q->count == 0) { q->head = q->tail = e; q->firstnum = q->lastnum = seq; }
+	else if (seq == q->firstnum || seq == q->lastnum) res = EBUSY;
+	else if (seq_lower(q->lastnum, seq)) { e->prev = q->tail; q->tail->next = e; q->tail = e; q->lastnum = seq; }
+	else if (seq_lower(seq, q->firstnum)) { e->next = q->head; q->head->prev = e; q->head = e; q->firstnum = seq; }
+	else {
+		res = ESRCH;
+		for (Kwe *w = q->head; w; w = w->next) if (seq_higher(w->lockseq, seq)) { e->next = w; e->prev = w->prev; if (w->prev) w->prev->next = e; else q->head = e; w->prev = e; res = 0; break; }
+	}
+	if (res == 0) { e->q = q; q->count++; k->inqueue++; }
+	return res;
+}
+static void kq_remove(Kwq *k, Kq *q, Kwe *e) {  // ksyn_queue_remove_item
+	if (e->prev) e->prev->next = e->next; else q->head = e->next;
+	if (e->next) e->next->prev = e->prev; else q->tail = e->prev;
+	e->prev = e->next = 0; e->q = 0;
+	if (--q->count > 0) { q->firstnum = q->head->lockseq & RW_COUNT_MASK; q->lastnum = q->tail->lockseq & RW_COUNT_MASK; } else q->firstnum = q->lastnum = 0;
+	k->inqueue--;
+}
+static uint32_t kq_count_tolowest(Kq *q, uint32_t upto) {
+	uint32_t i = 0;
+	if (q->count == 0 || seq_higher(q->firstnum, upto)) return 0;
+	if (upto == q->firstnum) return 1;
+	for (Kwe *w = q->head; w; w = w->next) { uint32_t cur = w->lockseq & RW_COUNT_MASK; if (seq_higher(cur, upto)) break; ++i; if (upto == cur) break; }
+	return i;
+}
+static int find_seq_till(Kwq *k, uint32_t upto, uint32_t nwaiters, uint32_t *countp) {
+	uint32_t count = 0;
+	for (int i = 0; i < KQ_MAX; i++) { count += kq_count_tolowest(&k->q[i], upto); if (count >= nwaiters) break; }
+	*countp = count;
+	return count != 0 && count >= nwaiters;
+}
+static void kwq_signal(Kwq *k, int qi, uint32_t updateval) {  // ksyn_signal: den ersten Wartenden der Liste wecken
+	Kwe *e = k->q[qi].head; kq_remove(k, &k->q[qi], e); e->retval = updateval; e->woke = 1;
+}
+static void kwq_find_rw_lowest(Kwq *k, int flags, uint32_t premgen, int *typep, uint32_t lowest[]) {
+	uint32_t numbers[2] = {0}; int typenum[2] = {0}, count = 0, type = 0;
+	if (k->q[KQ_READ].count != 0 || (flags & KW_UNLOCK_PREPOST_READLOCK)) {
+		uint32_t fr; type |= RW_SHFT_READ;
+		if (k->q[KQ_READ].count != 0) { fr = k->q[KQ_READ].firstnum; if ((flags & KW_UNLOCK_PREPOST_READLOCK) && seq_lower(premgen, fr)) fr = premgen; } else fr = premgen;
+		lowest[KQ_READ] = fr; numbers[count] = fr; typenum[count++] = RW_TYPE_READ;
+	} else lowest[KQ_READ] = 0;
+	if (k->q[KQ_WRITE].count != 0 || (flags & KW_UNLOCK_PREPOST_WRLOCK)) {
+		uint32_t fw; type |= RW_SHFT_WRITE;
+		if (k->q[KQ_WRITE].count != 0) { fw = k->q[KQ_WRITE].firstnum; if ((flags & KW_UNLOCK_PREPOST_WRLOCK) && seq_lower(premgen, fw)) fw = premgen; } else fw = premgen;
+		lowest[KQ_WRITE] = fw; numbers[count] = fw; typenum[count++] = RW_TYPE_WRITE;
+	} else lowest[KQ_WRITE] = 0;
+	uint32_t low = numbers[0]; int lowtype = typenum[0];
+	for (int i = 1; i < count; i++) if (seq_lower(numbers[i], low)) { low = numbers[i]; lowtype = typenum[i]; }
+	*typep = type | lowtype;
+}
+// Zuteilung beim Entsperren (oder wenn alle vorgemerkten Wartenden da sind): setzt *updatep, *blockp = 0 wenn der aufrufende Wartende selbst die Sperre bekommt
+static int kwq_handle_unlock(Kwq *k, uint32_t rw_wc, uint32_t *updatep, int flags, int *blockp, uint32_t premgen) {
+	uint32_t lowest[KQ_MAX], updatebits = 0, numneeded = 0, limitrdnum; int rwtype, block = 1, allreaders = 0, curthreturns = 0;
+	k->lastseqword = rw_wc; k->lastunlockseq = rw_wc & RW_COUNT_MASK; k->kflags &= ~KWF_OVERLAP_GUARD;
+	kwq_find_rw_lowest(k, flags, premgen, &rwtype, lowest);
+	uint32_t low_writer = lowest[KQ_WRITE];
+	switch (rwtype & 0xff) {
+	case RW_TYPE_READ: {
+		Kq *kq = &k->q[KQ_READ];
+		if ((rwtype & RW_SHFT_MASK) && (rwtype & RW_SHFT_WRITE)) updatebits |= RWL_WBIT | RWL_KBIT;
+		limitrdnum = 0;
+		if (rwtype & RW_SHFT_WRITE) {
+			limitrdnum = low_writer; numneeded = kq_count_tolowest(kq, limitrdnum);
+			if ((flags & KW_UNLOCK_PREPOST_READLOCK) && seq_lower(premgen, limitrdnum)) { curthreturns = 1; numneeded += 1; }
+		} else {
+			allreaders = 1; k->kflags |= KWF_OVERLAP_GUARD; numneeded += kq->count;
+			if (flags & KW_UNLOCK_PREPOST_READLOCK) { curthreturns = 1; numneeded += 1; }
+		}
+		updatebits += numneeded << RW_COUNT_SHIFT;
+		k->nextseqword = (rw_wc & RW_COUNT_MASK) + updatebits;
+		if (curthreturns) block = 0;
+		while (kq->count != 0 && (allreaders || seq_lower(kq->firstnum, limitrdnum))) kwq_signal(k, KQ_READ, updatebits);  // ksyn_wakeupreaders
+		break; }
+	case RW_TYPE_WRITE:
+		updatebits |= RW_INC | RWL_KBIT | RWL_EBIT;
+		if ((flags & KW_UNLOCK_PREPOST_WRLOCK) && low_writer == premgen) {  // der Vormerker selbst ist der niedrigste Schreiber
+			block = 0; if (k->q[KQ_WRITE].count != 0) updatebits |= RWL_WBIT;
+		} else {
+			if (k->q[KQ_WRITE].count > 1 || (flags & KW_UNLOCK_PREPOST_WRLOCK)) updatebits |= RWL_WBIT;
+			kwq_signal(k, KQ_WRITE, updatebits);
+		}
+		k->nextseqword = (rw_wc & RW_COUNT_MASK) + updatebits;
+		break;
+	}
+	*updatep = updatebits; if (blockp) *blockp = block;
+	return 0;
+}
+static int rw_lock(int type, uint64_t addr, uint32_t lgen, uint32_t ugen, uint32_t rw_wc, uint32_t *retval) {  // _psynch_rw_rdlock/wrlock
+	uint32_t lockseq = lgen & RW_COUNT_MASK; int qi = type == RW_TYPE_READ ? KQ_READ : KQ_WRITE, prepost_type = type == RW_TYPE_READ ? KW_UNLOCK_PREPOST_READLOCK : KW_UNLOCK_PREPOST_WRLOCK;
+	pthread_mutex_lock(&wmx);
+	Kwq *k = kwq_find(addr, lgen, ugen, rw_wc);
+	kwq_check_init(k, lgen);
+	// Überlappung der Leser zuerst (zählt nicht gegen prepost.count): weitere Leser dürfen in dieselbe Zuteilung
+	if (type == RW_TYPE_READ && (k->kflags & KWF_OVERLAP_GUARD) && !(rw_wc & RWS_SAVEMASK) && !(lgen & RWL_WBIT) &&
+	    (seq_lower_eq(rw_wc, k->nextseqword) || seq_higher_eq(k->lastseqword, rw_wc))) {
+		k->nextseqword += RW_INC; *retval = RW_INC | ((k->nextseqword & RW_BIT_MASK) | RWL_MBIT);
+		pthread_mutex_unlock(&wmx); return 0;
+	}
+	// _kwq_handle_preposted_wakeup
+	if (k->prepost.count != 0 && seq_lower_eq(lockseq, k->prepost.lseq)) {
+		k->prepost.count--;
+		if (k->prepost.count == 0) {
+			uint32_t pp_l = k->prepost.lseq, pp_s = k->prepost.sseq, ub = 0; int block = 0;
+			kwq_clear_prepost(k); k->kflags &= ~KWF_INITCLEARED;
+			kwq_handle_unlock(k, pp_s, &ub, prepost_type | KW_UNLOCK_PREPOST, &block, lockseq); pthread_cond_broadcast(&wcv); (void)pp_l;
+			if (!block) { *retval = ub; pthread_mutex_unlock(&wmx); return 0; }
+		}
+	}
+	Kwe w; memset(&w, 0, sizeof w);
+	int r = kq_insert(k, qi, &w, lgen);
+	if (r) { pthread_mutex_unlock(&wmx); return r; }
+	BLOCKING_BEGIN;
+	while (!w.woke) {
+		if (__atomic_load_n(&sig_pending, __ATOMIC_SEQ_CST) & ~(gmask << 1)) { kq_remove(k, &k->q[qi], &w); r = EINTR; break; }
+		struct timespec slice; clock_gettime(CLOCK_REALTIME, &slice); slice.tv_nsec += 20000000; if (slice.tv_nsec >= 1000000000) { slice.tv_sec++; slice.tv_nsec -= 1000000000; }
+		pthread_cond_timedwait(&wcv, &wmx, &slice);
+	}
+	if (!r) *retval = w.retval;
+	pthread_mutex_unlock(&wmx); BLOCKING_END; return r;
+}
+static int rw_unlock(uint64_t addr, uint32_t lgen, uint32_t ugen, uint32_t rw_wc, uint32_t *retval) {  // _psynch_rw_unlock
+	uint32_t curgen = lgen & RW_COUNT_MASK, updatebits = 0, count = 0; int error = 0, clearedkflags = 0;
+	pthread_mutex_lock(&wmx);
+	Kwq *k = kwq_find(addr, lgen, ugen, rw_wc);
+	int isinit = kwq_check_init(k, lgen);
+	if (k->lastunlockseq != RWL_INIT && seq_lower(ugen, k->lastunlockseq)) goto out;  // veraltete Meldung
+	int diff = find_diff(lgen, ugen);  // L - U = Zahl der Wartenden (und Besitzer), die bei uns ankommen müssen
+	if (find_seq_till(k, curgen, diff, &count) == 0 && (count == 0 || count < (uint32_t)diff)) {  // noch nicht alle da: vormerken
+		if ((k->prepost.sseq & RWS_SBIT) || seq_higher_eq(rw_wc, k->prepost.sseq)) {
+			k->prepost.count = diff - count; k->prepost.lseq = curgen; k->prepost.sseq = rw_wc;
+			updatebits = lgen;  // keine Zuteilung jetzt
+		}
+		goto out;
+	}
+	if (isinit && (k->kflags & KWF_INITCLEARED)) { k->kflags &= ~KWF_INITCLEARED; clearedkflags = 1; }
+	kwq_clear_prepost(k);
+	error = kwq_handle_unlock(k, rw_wc, &updatebits, 0, 0, 0);
+out:
+	(void)clearedkflags;
+	if (!error) *retval = updatebits;
+	pthread_cond_broadcast(&wcv); pthread_mutex_unlock(&wmx); return error;
 }
 
 static unsigned long nsys;
@@ -514,13 +747,13 @@ static void do_syscall(uc_engine *u, void *ud) {
 	}  // bsdthread_register(threadstart, wqthread, ...)
 	if (nr == 360) {  // bsdthread_create(func, arg, stack, pthread, flags): neue Unicorn-Maschine + Host-Thread
 		uint64_t port = 0x2000 + nsys;
-		Th *t = calloc(1, sizeof *t); t->pc = thread_entry;
+		Th *t = calloc(1, sizeof *t); t->pc = thread_entry; t->tid = next_tid++;
 		t->rsp = (a[2] - 128) & ~15ULL; t->rdi = a[3]; t->rsi = port; t->rdx = a[0]; t->rcx = a[1]; t->r8 = a[2]; t->r9 = a[4] | 0x10000000; t->gs = a[3] + tsd_offset;
 		{ uint32_t p32 = (uint32_t)port; if (mts_offset) uc_mem_write(u, a[3] + tsd_offset + mts_offset, &p32, 4); }  // der Kernel trägt den Mach-Thread-Port ins pthread ein
 		pthread_t pt; pthread_attr_t pa; pthread_attr_init(&pa); pthread_attr_setdetachstate(&pa, PTHREAD_CREATE_DETACHED);
 		pthread_create(&pt, &pa, thread_main, t); res = a[3]; goto done;
 	}
-	if (nr == 361) { pthread_mutex_lock(&wmx); if (ndead < 256) dead[ndead++] = (uint32_t)a[2]; pthread_mutex_unlock(&wmx); ulock_wake(); for (int q = 0; q < 64; q++) if (eth[q] && eth[q]->u == u) eth[q]->done = 1; uc_emu_stop(u); res = 0; goto done; }  // bsdthread_terminate: Gast-Thread endet
+	if (nr == 361) { pthread_mutex_lock(&wmx); add_dead((uint32_t)a[2]); pthread_mutex_unlock(&wmx); ulock_wake(); for (int q = 0; q < 64; q++) if (eth[q] && eth[q]->u == u) eth[q]->done = 1; uc_emu_stop(u); res = 0; goto done; }  // bsdthread_terminate: Gast-Thread endet
 	if (nr == 334) {  // __semwait_signal(cond_sem, mutex_sem, timeout, relative, sec, nsec): so schläft libc (usleep, nanosleep, sleep)
 		if (!a[2]) { res = 0; goto done; }
 		struct timespec ts; if (a[3]) { ts.tv_sec = (time_t)a[4]; ts.tv_nsec = (long)a[5]; }
@@ -545,6 +778,12 @@ static void do_syscall(uc_engine *u, void *ud) {
 	if (nr == 304) { cv_wake(a[0], 0); res = 0; goto done; }  // __psynch_cvsignal
 	if (nr == 303) { cv_wake(a[0], 1); res = 0; goto done; }  // __psynch_cvbroad
 	if (nr == 312) { res = 0; goto done; }                    // __psynch_cvclrprepost
+	if (nr == 306 || nr == 307 || nr == 308) {  // __psynch_rw_rdlock/wrlock/unlock(rwlock, lgenval, ugenval, rw_wc, flags): Rückgabe = updatebits
+		uint32_t rv = 0; int r = nr == 308 ? rw_unlock(a[0], (uint32_t)a[1], (uint32_t)a[2], (uint32_t)a[3], &rv) : rw_lock(nr == 306 ? RW_TYPE_READ : RW_TYPE_WRITE, a[0], (uint32_t)a[1], (uint32_t)a[2], (uint32_t)a[3], &rv);
+		if (r) { err = r; res = r; } else res = rv;
+		goto done;
+	}
+	if (nr == 297 || nr == 298 || nr == 299 || nr == 300 || nr == 309) { err = ESRCH; res = ESRCH; goto done; }  // longrdlock, yieldwrlock, downgrade, upgrade, unlock2: auch im PureDarwin-Kern nicht umgesetzt
 	if (nr == 515 || nr == 544) {  // __ulock_wait(op, addr, value, timeout_us) / __ulock_wait2(op, addr, value, timeout_ns, value2)
 		int op = (int)(a[0] & 0xff), noerr = (a[0] & 0x01000000) != 0, rem = 0;
 		int r = ulock_wait(a[1], op == 5 || op == 6, op == 5 || op == 6 ? a[2] : (uint32_t)a[2], nr == 515 ? a[3] : a[3] / 1000, &rem);
@@ -662,7 +901,7 @@ static void do_syscall(uc_engine *u, void *ud) {
 	if (nr == 90) { res = dup2((int)a[0], (int)a[1]); if (res < 0) { err = errno; res = errno; } goto done; }
 	if (nr == 39) { res = getppid(); goto done; }
 	if (nr == 37) { res = kill((pid_t)a[0], (int)a[1]); if (res < 0) { err = errno; res = errno; } goto done; }
-	if (nr == 372) { res = 1; goto done; }  // thread_selfid
+	if (nr == 372) { Th *th = th_of(u); res = th ? th->tid : 1; goto done; }  // thread_selfid
 	if (nr == 73) { unmap_all(a[0], (a[1] + 0xfff) & ~0xfffULL); res = 0; goto done; }
 	if (nr == 74) { res = 0; goto done; }  // mprotect: Gastspeicher bleibt RWX (Eigenschaft von ucrun, siehe Studie)
 	const Sc *s = 0;
@@ -774,7 +1013,7 @@ int main(int argc, char **argv) {
 	sp -= np * 8; sp &= ~15ULL; uc_mem_write(uc, sp, ptrs, np * 8);
 	uc_reg_write(uc, UC_X86_REG_RSP, &sp);
 	t0 = now();
-	main_th.u = uc; main_th.pc = entry; eth[63] = &main_th;
+	main_th.u = uc; main_th.pc = entry; main_th.tid = 1; eth[63] = &main_th;
 	if (getenv("UCRUN_RING")) { uc_hook ch; uc_hook_add(uc, &ch, UC_HOOK_CODE, on_code, &main_th, 1, 0); }
 	e = run_engine(&main_th);
 	if (e) { uint64_t rip; uc_reg_read(uc, UC_X86_REG_RIP, &rip); fprintf(stderr, "ucrun: %s bei rip %#llx\n", uc_strerror(e), (unsigned long long)rip); if (getenv("UCRUN_RING")) { fprintf(stderr, "  letzte Befehle:"); for (unsigned q = main_th.n > 48 ? main_th.n - 48 : 0; q < main_th.n; q++) fprintf(stderr, " %llx", (unsigned long long)main_th.ring[q & 63]); fputc(10, stderr); } return 4; }
