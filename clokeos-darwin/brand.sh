@@ -151,6 +151,7 @@ hb_cmds=
 if [ "$CLOKE_FLAVOR" = desktop ]; then
   "$HERE/libcompat/build.sh" "$tmp/stage"
   "$HERE/macapps/carbon.sh" "$tmp/stage"   # Carbon-Hülle und Carbon-Funktionen in CoreServices (Logic Pros OMF)
+  "$HERE/wine/build.sh" "$tmp/stage"
   for n in curl date false find grep openssl printf readlink sed stat sw_vers tail true whoami xargs tar gzip \
            gunzip xz uname id ls mkdir rm cp mv ln chmod chown touch cat head sort uniq tr wc cut tee basename \
            dirname mktemp diff cmp awk file hostname which ps sysctl expr dd df du ssh ssh-keygen sleep kill \
