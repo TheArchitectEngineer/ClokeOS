@@ -23,6 +23,8 @@
 #include <pthread.h>
 #include <sys/wait.h>
 #include <unicorn/unicorn.h>
+#include "jit/jit.h"     // JIT (UCRUN_JIT=1): siehe jit/ und Studie Abschnitt 14
+#include "jit/ucsync.h"
 
 #define STACK_TOP 0x7ffee0100000ULL
 #define STACK_SIZE 0x800000ULL
@@ -31,6 +33,7 @@
 
 extern char **environ;
 static uc_engine *uc;
+static int jit_on;  // UCRUN_JIT=1 und statisches Programm: Hauptthread läuft im Block-JIT, Gastspeicher mit festem Versatz (jit/jit.c)
 static int trace, warn;  // trace: UCRUN_TRACE; warn: UCRUN_WARN (nicht umgesetzte Systemaufrufe melden)
 
 // --- Gastspeicher: Host-Speicher, in jede Unicorn-Maschine (ein Gast-Thread = eine Maschine) per uc_mem_map_ptr eingeblendet ---
@@ -47,6 +50,7 @@ static void unmap_all(uint64_t g, uint64_t n) {
 	for (int i = 0, cnt = nregs; i < cnt; i++) {
 		Reg r = regs[i]; uint64_t b = r.g + r.n, ue = g + n;
 		if (r.g >= ue || b <= g) continue;
+			if (jit_on) { uint64_t fa = r.g > g ? r.g : g, fe = b < ue ? b : ue; jit_guest_free(fa, fe - fa); jit_invalidate(fa, fe - fa); }  // JIT
 		if (r.g < g) { regs[i].n = g - r.g; if (b > ue && nregs < 1024) regs[nregs++] = (Reg){ue, b - ue, r.h + (ue - r.g)}; }
 		else if (b > ue) { regs[i] = (Reg){ue, b - ue, r.h + (ue - r.g)}; }
 		else regs[i].n = 0;
@@ -56,8 +60,8 @@ static void unmap_all(uint64_t g, uint64_t n) {
 }
 static uc_err map_all(uint64_t g, uint64_t n) {
 	pthread_mutex_lock(&big);
-	uint8_t *h = mmap(0, n, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
-	uc_err e = h == MAP_FAILED ? UC_ERR_NOMEM : UC_ERR_OK;
+	uint8_t *h = jit_on ? jit_guest_alloc(g, n) : mmap(0, n, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);  // JIT: Host-Adresse = Gast + Versatz
+	uc_err e = (h == MAP_FAILED || !h) ? UC_ERR_NOMEM : UC_ERR_OK;
 	for (int i = 0; !e && i < neng; i++) e = uc_mem_map_ptr(engs[i], g, n, UC_PROT_ALL, h);
 	if (!e && nregs < 1024) regs[nregs++] = (Reg){g, n, h};
 	pthread_mutex_unlock(&big);
@@ -148,7 +152,9 @@ static int deliver_pending(Th *t, uint64_t *pc) {
 	}
 	return 0;
 }
+#include "jit/ucglue.inc"
 static uc_err run_engine(Th *t) {
+	if (jit_on && t == &main_th) return jit_run_loop(t);  // JIT
 	uint64_t pc = t->pc; uc_err e = UC_ERR_OK;
 	for (;;) {
 		gil_lock();
@@ -531,7 +537,7 @@ out:
 }
 
 static unsigned long nsys;
-static uint64_t mmap_next = MMAP_BASE;
+static uint64_t mmap_next = MMAP_BASE, stack_top = STACK_TOP;  // JIT-Modus verschiebt beides unter JIT_GUEST_LIMIT
 static double t0;
 
 static const char *xroot = "";
@@ -767,7 +773,7 @@ static void do_syscall(uc_engine *u, void *ud) {
 	  for (unsigned q = 0; q < sizeof nc / sizeof *nc; q++) if (nc[q].from == (int)nr) { nr = nc[q].to; break; } }
 	if (trace) fprintf(stderr, "ucrun: sys %llu(%#llx, %#llx, %#llx)\n", (unsigned long long)nr, (unsigned long long)a[0], (unsigned long long)a[1], (unsigned long long)a[2]);
 	if (nr == 1) {
-		if (getenv("UCRUN_STATS")) fprintf(stderr, "ucrun: %.3f s, %lu Systemaufrufe\n", now() - t0, nsys);
+		if (getenv("UCRUN_STATS")) { fprintf(stderr, "ucrun: %.3f s, %lu Systemaufrufe\n", now() - t0, nsys); jit_report(); }
 		exit((int)a[0]);
 	}
 	if (nr == 197) {  // mmap(addr, len, prot, flags, fd, off): anonym oder Datei (Inhalt wird kopiert, kein Teilen)
@@ -1007,6 +1013,7 @@ int main(int argc, char **argv) {
 	}
 	struct mach_header_64 *mh = (void *)file;
 	if (mh->magic != MH_MAGIC_64 || mh->cputype != 0x01000007) { fprintf(stderr, "ucrun: %s ist kein x86_64-Mach-O\n", argv[1]); return 126; }
+	jit_choose(file, argv[1]);  // JIT: UCRUN_JIT=1 und kein dyld nötig -> JIT-Speichermodell
 	uc_err e = UC_ERR_OK; uc = new_engine(); if (!uc) { fprintf(stderr, "uc_open fehlgeschlagen\n"); return 3; }
 	uint64_t entry = 0, mh_addr = 0; int dynamic = 0;
 	if (load_image(file, 0, &entry, &mh_addr, &dynamic)) return 3;
@@ -1029,14 +1036,14 @@ int main(int argc, char **argv) {
 		map_all(0x7fffffe00000ULL, sizeof cp);
 		uc_mem_write(uc, 0x7fffffe00000ULL, cp, sizeof cp);
 	}
-	map_all(STACK_TOP - STACK_SIZE, STACK_SIZE);
+	map_all(stack_top - STACK_SIZE, STACK_SIZE);
 	// Stapel wie ihn der Kernel für ein Programm mit LC_UNIXTHREAD baut: argc, argv[], 0, envp[], 0, apple[], 0, Strings
 	// Umgebung des Gastes: ohne DYLD_INSERT_LIBRARIES des Hosts (die arm64-Bibliothek passt nicht zum x86_64-dyld)
 	static char *genv[1024]; int ne = 0;
 	for (int i = 0; environ[i] && ne < 1000; i++) if (strncmp(environ[i], "DYLD_INSERT_LIBRARIES=", 22)) genv[ne++] = environ[i];
 	// libpthread soll Mutexe über __ulock (os_unfair_lock-Stil) statt über psynch machen: die Nachbildung von psynch_mutexwait/drop (Kernel-Warteschlange mit Sequenzzählern) entfällt
 	{ int have = 0; for (int i = 0; i < ne; i++) if (!strncmp(genv[i], "PTHREAD_MUTEX_USE_ULOCK=", 24)) have = 1; if (!have) genv[ne++] = "PTHREAD_MUTEX_USE_ULOCK=1"; }
-	uint64_t sp = STACK_TOP - 0x1000, ptrs[512]; int np = 0;
+	uint64_t sp = stack_top - 0x1000, ptrs[512]; int np = 0;
 	int ng = argc - 1; char **gv = argv + 1;
 	uint64_t pstr[600]; int ns = 0;
 	for (int i = 0; i < ng + ne + 1; i++) {
@@ -1053,6 +1060,7 @@ int main(int argc, char **argv) {
 	ptrs[np++] = 0; ptrs[np++] = pstr[ns - 1]; ptrs[np++] = 0;
 	sp -= np * 8; sp &= ~15ULL; uc_mem_write(uc, sp, ptrs, np * 8);
 	uc_reg_write(uc, UC_X86_REG_RSP, &sp);
+	jit_start(entry, sp);  // JIT
 	t0 = now();
 	main_th.u = uc; main_th.pc = entry; main_th.tid = 1; eth[63] = &main_th;
 	if (getenv("UCRUN_RING")) { uc_hook ch; uc_hook_add(uc, &ch, UC_HOOK_CODE, on_code, &main_th, 1, 0); }

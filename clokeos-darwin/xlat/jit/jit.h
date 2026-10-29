@@ -30,11 +30,12 @@ typedef struct JitCtx {
 	uint64_t fb_end;           // 248  JIT_FALLBACK/FAULT: Adresse hinter dem letzten Befehl, den Unicorn ausführen soll (uc_emu_start 'until')
 } JitCtx;
 
-#define JIT_GUEST_LIMIT 0x400000000000ULL  // Gastadressen müssen darunter liegen (siehe jit_guest_alloc)
+#define JIT_GUEST_LIMIT 0x200000000000ULL  // Gastadressen müssen darunter liegen (siehe jit_guest_alloc)
 
 int jit_init(JitCtx *c);                          // 0 = ok
 uint8_t *jit_guest_alloc(uint64_t g, uint64_t n); // Host-Speicher für Gastbereich [g, g+n), genullt; 0 bei Fehler
 void jit_guest_free(uint64_t g, uint64_t n);
+void jit_invalidate(uint64_t g, uint64_t n);      // übersetzte Blöcke verwerfen, falls [g, g+n) Code enthielt
 int jit_run(JitCtx *c);                           // läuft ab c->rip bis zu einem Ereignis (JIT_SYSCALL/FALLBACK/PENDING/FAULT)
 void jit_flush(void);                             // alle übersetzten Blöcke verwerfen (Code im Gast geändert/entladen)
 void jit_stats(uint64_t *blocks, uint64_t *translated_insns, uint64_t *fallbacks);

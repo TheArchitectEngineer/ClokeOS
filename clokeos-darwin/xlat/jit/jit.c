@@ -716,6 +716,7 @@ static Blk btab[BTAB]; static int nblk;
 typedef struct { uint32_t *start; uint32_t i0, i1; } BRange;
 static BRange *branges; static uint32_t nbr, cbr; static IMap *imap; static uint32_t nim, cim;
 static int flushed;
+static uint64_t code_lo = ~0ULL, code_hi;
 uint64_t jit_flush_epoch;
 
 static Blk *blk_lookup(uint64_t pc) {
@@ -729,7 +730,7 @@ static Blk *blk_add(uint64_t pc, uint32_t *code, int nf) {
 }
 
 void jit_flush(void) {
-	jit_flush_epoch++; memset(btab, 0, sizeof btab); nblk = 0; cp = code_blocks; nbr = nim = 0; flushed = 1;
+	code_lo = ~0ULL; code_hi = 0; jit_flush_epoch++; memset(btab, 0, sizeof btab); nblk = 0; cp = code_blocks; nbr = nim = 0; flushed = 1;
 	if (gctx) memset((void *)gctx->jcache, 0, 4096 * 16);
 }
 
@@ -752,7 +753,7 @@ static Blk *translate(uint64_t pc) {
 			I->count = 1;
 			if (I->len > 0 && !I->branchy) {
 				uint64_t c2 = cur + I->len;
-				for (int k = 0; k < 24; k++) {
+				for (int k = 0; k < 160; k++) {
 					Insn t; safe_decode(c2, &t);
 					if (t.op != OP_FB || t.len <= 0) break;
 					I->len += t.len; I->count++; c2 += t.len; if (t.branchy) break;
@@ -779,6 +780,7 @@ static Blk *translate(uint64_t pc) {
 		if (rd) L = 1; else if (wr) L = 0;
 	}
 	cur_live_in = L;
+	if (pc < code_lo) code_lo = pc; if (cur + 16 > code_hi) code_hi = cur + 16; if (pc + 1 > code_hi) code_hi = pc + 1; for (int i = 0; i < n; i++) { if (ins[i].pc < code_lo) code_lo = ins[i].pc; if (ins[i].pc + 16 > code_hi) code_hi = ins[i].pc + 16; }
 	if (nbr == cbr) { cbr = cbr ? cbr * 2 : 4096; branges = realloc(branges, cbr * sizeof *branges); }
 	uint32_t *start = cp; branges[nbr].start = start; branges[nbr].i0 = nim;
 	fs = FS_CTX; nslow = 0; nexs = 0; trunc_ = 0;
@@ -922,6 +924,7 @@ int jit_run(JitCtx *c) {
 		else if (!site) { uint64_t *e = (uint64_t *)c->jcache + 2 * (pc & 4095); e[0] = pc; e[1] = (uint64_t)b->code; }
 	}
 }
+void jit_invalidate(uint64_t g, uint64_t n) { if (code_hi && g < code_hi && g + n > code_lo) jit_flush(); }
 void jit_stats(uint64_t *blocks, uint64_t *insns, uint64_t *fbs) { *blocks = st_blocks; *insns = st_insns; *fbs = st_fb; }
 
 uint64_t jit_eflags_of(const JitCtx *c) {

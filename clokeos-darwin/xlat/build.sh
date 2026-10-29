@@ -53,6 +53,6 @@ if [ -d "$uni/src" ]; then
   fi
   b="$uni/build-arm64"
   clang -target arm64-apple-macos11.0 -isysroot "$(xcrun --show-sdk-path)" -O1 -fno-stack-check -nostdlib \
-    -Wl,-platform_version,macos,11.0,11.5 -Wl,-no_fixup_chains -I"$uni/src/include" -o "$out/ucrun" ucrun.c \
+    -Wl,-platform_version,macos,11.0,11.5 -Wl,-no_fixup_chains -I"$uni/src/include" -o "$out/ucrun" ucrun.c jit/jit.c \
     "$b/libunicorn-static.a" "$b/libx86_64-softmmu.a" "$b/libaarch64-softmmu.a" "$b/libunicorn-common.a" "$libs/libSystem.B.dylib"
 fi

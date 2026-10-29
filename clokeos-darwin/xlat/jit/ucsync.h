@@ -25,13 +25,15 @@ static void jit_from_uc(uc_engine *u, JitCtx *c) {
 // Unicorn setzt die 'until'-Prüfung beim Übersetzen in den Block ein; ein früher für denselben Anfang übersetzter Block (anderes Ende)
 // würde darüber hinauslaufen -> beim ersten Mal je Bereich die Unicorn-Blöcke dort verwerfen.
 static struct { uint64_t a, b; } jit_seen[4096]; static uint64_t jit_seen_epoch = ~0ULL;
+static unsigned long jit_nfb, jit_nrm;
 static uc_err jit_uc_fallback(uc_engine *u, JitCtx *c) {
+	jit_nfb++;
 	if (jit_seen_epoch != jit_flush_epoch) { memset(jit_seen, 0, sizeof jit_seen); jit_seen_epoch = jit_flush_epoch; }
 	uint64_t a = c->rip, b = c->fb_end; uc_err e;
 	jit_to_uc(u, c);
 	if (b) {
 		unsigned h = (unsigned)((a * 0x9E3779B97F4A7C15ULL ^ b) >> 40) & 4095;
-		if (jit_seen[h].a != a || jit_seen[h].b != b) { uc_ctl_remove_cache(u, a, b + 1); jit_seen[h].a = a; jit_seen[h].b = b; }
+		if (jit_seen[h].a != a || jit_seen[h].b != b) { jit_nrm++; uc_ctl_remove_cache(u, a, b + 1); jit_seen[h].a = a; jit_seen[h].b = b; }
 		e = uc_emu_start(u, a, b, 0, 0);
 	} else e = uc_emu_start(u, a, 0, 0, c->count ? c->count : 1);
 	if (e) return e;
