@@ -19,7 +19,7 @@
 #include <sys/time.h>
 #include <unistd.h>
 
-enum { K_EVENTFD = 1, K_EPOLL, K_TIMERFD, K_SIGNALFD };
+enum { K_EVENTFD = 1, K_EPOLL, K_TIMERFD, K_SIGNALFD, K_SEQPKT };
 #define FDX_MAX 4096
 #define L_O_NONBLOCK 04000
 #define L_CLOEXEC 02000000
@@ -449,6 +449,7 @@ int tux_fdx_read(int fd, void *buf, size_t n, long *ret)
 	case K_TIMERFD: *ret = timerfd_read(fd, o, buf, n); return 1;
 	case K_SIGNALFD: *ret = signalfd_read(fd, o, buf, n); return 1;
 	case K_EPOLL: *ret = -EINVAL; return 1;
+	case K_SEQPKT: return tux_seq_read(fd, buf, n, ret);
 	}
 	return 0;
 }
@@ -459,6 +460,20 @@ int tux_fdx_write(int fd, const void *buf, size_t n, long *ret)
 	if (!o) return 0;
 	switch (o->kind) {
 	case K_EVENTFD: *ret = eventfd_write(o, buf, n); return 1;
+	case K_SEQPKT: return tux_seq_write(fd, buf, n, ret);
 	default: *ret = -EINVAL; return 1;
 	}
+}
+
+// SOCK_SEQPACKET (Rahmen über Stromsocket, siehe sock.c)
+int tux_fdx_kind(int fd)
+{
+	obj *o = get(fd, 0);
+	return o ? o->kind : 0;
+}
+void tux_fdx_mark_seqpkt(int fd)
+{
+	obj *o = calloc(1, sizeof *o);
+	o->kind = K_SEQPKT;
+	attach(fd, o);
 }

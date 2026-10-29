@@ -136,6 +136,7 @@ static void guest_to_host(const char *g, char *host)
 	else snprintf(host, PATH_MAX, "%s%s", !strcmp(tux_root, "/") ? "" : tux_root, g);
 }
 
+void tux_host_to_guest(const char *h, char *g);
 static void host_to_guest(const char *h, char *g)
 {
 	size_t n = strlen(tux_root);
@@ -148,6 +149,8 @@ static void pop_comp(char *cur)
 	char *s = strrchr(cur, '/');
 	if (s) *s = 0;
 }
+
+void tux_host_to_guest(const char *h, char *g) { host_to_guest(h, g); }
 
 int tux_resolve(int dirfd, const char *path, int follow, char *host, char *guest)
 {
@@ -1182,6 +1185,24 @@ static long syscall_inner(tux_regs *r)
 		    (uint32_t *)a4, (uint32_t)a5);
 	}
 	case N_fallocate: return -EOPNOTSUPP;
+	case N_socket: return tux_socket(a0, a1, a2);
+	case N_socketpair: return tux_socketpair(a0, a1, a2, (int *)a3);
+	case N_bind: return tux_bind((int)a0, (void *)a1, (uint32_t)a2);
+	case N_listen: return tux_listen((int)a0, (int)a1);
+	case N_accept: return tux_accept((int)a0, (void *)a1, (uint32_t *)a2, 0);
+	case N_accept4: return tux_accept((int)a0, (void *)a1, (uint32_t *)a2, a3);
+	case N_connect: return tux_connect((int)a0, (void *)a1, (uint32_t)a2);
+	case N_getsockname: return tux_getsockname((int)a0, (void *)a1, (uint32_t *)a2);
+	case N_getpeername: return tux_getpeername((int)a0, (void *)a1, (uint32_t *)a2);
+	case N_sendto: return tux_sendto((int)a0, (void *)a1, a2, a3, (void *)a4, (uint32_t)a5);
+	case N_recvfrom: return tux_recvfrom((int)a0, (void *)a1, a2, a3, (void *)a4, (uint32_t *)a5);
+	case N_setsockopt: return tux_setsockopt((int)a0, a1, a2, (void *)a3, (uint32_t)a4);
+	case N_getsockopt: return tux_getsockopt((int)a0, a1, a2, (void *)a3, (uint32_t *)a4);
+	case N_shutdown: return tux_shutdown((int)a0, (int)a1);
+	case N_sendmsg: return tux_sendmsg((int)a0, (void *)a1, a2);
+	case N_recvmsg: return tux_recvmsg((int)a0, (void *)a1, a2);
+	case N_sendmmsg: return tux_sendmmsg((int)a0, (void *)a1, (unsigned)a2, a3);
+	case N_recvmmsg: return tux_recvmmsg((int)a0, (void *)a1, (unsigned)a2, a3);
 	case N_eventfd2: return tux_eventfd((unsigned)a0, a1);
 #ifdef TUX_X86_64
 	case N_eventfd: return tux_eventfd((unsigned)a0, 0);

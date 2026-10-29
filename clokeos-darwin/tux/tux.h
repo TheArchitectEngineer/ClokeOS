@@ -82,6 +82,30 @@ long tux_signalfd(int fd, uint64_t mask, long flags);
 int tux_fdx_read(int fd, void *buf, size_t n, long *ret);
 int tux_fdx_write(int fd, const void *buf, size_t n, long *ret);
 void tux_fdx_dup(int oldfd, int newfd);
+int tux_fdx_kind(int fd);
+void tux_fdx_mark_seqpkt(int fd);
+int tux_seq_read(int fd, void *buf, size_t n, long *ret);
+int tux_seq_write(int fd, const void *buf, size_t n, long *ret);
+void tux_host_to_guest(const char *h, char *g);
+
+// Sockets (sock.c)
+long tux_socket(long domain, long type, long proto);
+long tux_socketpair(long domain, long type, long proto, int *sv);
+long tux_bind(int fd, const void *a, uint32_t al);
+long tux_connect(int fd, const void *a, uint32_t al);
+long tux_listen(int fd, int backlog);
+long tux_accept(int fd, void *a, uint32_t *alp, long flags);
+long tux_getsockname(int fd, void *a, uint32_t *alp);
+long tux_getpeername(int fd, void *a, uint32_t *alp);
+long tux_shutdown(int fd, int how);
+long tux_sendto(int fd, const void *buf, size_t n, long flags, const void *a, uint32_t al);
+long tux_recvfrom(int fd, void *buf, size_t n, long flags, void *a, uint32_t *alp);
+long tux_sendmsg(int fd, void *lm, long flags);
+long tux_recvmsg(int fd, void *lm, long flags);
+long tux_sendmmsg(int fd, void *vec, unsigned vlen, long flags);
+long tux_recvmmsg(int fd, void *vec, unsigned vlen, long flags);
+long tux_setsockopt(int fd, long level, long name, const void *val, uint32_t len);
+long tux_getsockopt(int fd, long level, long name, void *val, uint32_t *len);
 void tux_fdx_close(int fd);
 
 // Thread-Zeiger des Linux-Programms (TLS), pro Thread

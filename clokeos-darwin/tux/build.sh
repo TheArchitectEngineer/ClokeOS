@@ -36,7 +36,7 @@ extra=()
 cd "$here/tux"
 clang -target "$target" -isysroot "$(xcrun --show-sdk-path)" -std=gnu11 -O2 -fno-stack-check -Wall -Wno-unused-function \
   -Wno-deprecated-declarations -nostdlib -Wl,-platform_version,macos,11.0,11.5 -Wl,-no_fixup_chains ${extra[@]+"${extra[@]}"} \
-  -o "$out/tux" tux.c sys.c sig.c thr.c fdx.c "$libs/libSystem.B.dylib"
+  -o "$out/tux" tux.c sys.c sig.c thr.c fdx.c sock.c "$libs/libSystem.B.dylib"
 strip -x "$out/tux" 2>/dev/null || true
 nm -u "$out/tux" | sort > "$out/tux.undefined"
 file "$out/tux"
