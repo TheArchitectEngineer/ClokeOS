@@ -191,6 +191,57 @@ static int ulock_wait(uint64_t addr, uint32_t val, uint64_t timeout_us) {
 	pthread_mutex_unlock(&wmx); BLOCKING_END; return r;
 }
 static void ulock_wake(void) { pthread_mutex_lock(&wmx); pthread_cond_broadcast(&wcv); pthread_mutex_unlock(&wmx); }
+
+// --- Bedingungsvariablen (psynch_cv*) und Mach-Semaphore, nachgebildet mit einer globalen Warteschlange ---
+// Threads wechseln praktisch nur an blockierenden Aufrufen (GIL), deshalb genügt eine einfache Nachbildung ohne die Zählerwörter (lgen/ugen/sgen) des Kernels.
+typedef struct CvW { uint64_t addr; int woke; struct CvW *next; } CvW;
+static CvW *cvq_head, *cvq_tail;
+static struct { uint32_t port; int64_t value; } sems[256]; static int nsems;
+static void abs_deadline(struct timespec *ts, int64_t sec, int64_t nsec) {  // sec > 1e8: absolute Echtzeit, sonst relativ
+	if (sec > 100000000) { ts->tv_sec = sec; ts->tv_nsec = nsec; }
+	else { clock_gettime(CLOCK_REALTIME, ts); ts->tv_sec += sec; ts->tv_nsec += nsec; if (ts->tv_nsec >= 1000000000) { ts->tv_sec++; ts->tv_nsec -= 1000000000; } }
+}
+// 0 = geweckt, ETIMEDOUT, EINTR (Signal wartet)
+static int cv_wait(uint64_t addr, int has_timeout, int64_t sec, int64_t nsec) {
+	struct timespec ts; if (has_timeout) abs_deadline(&ts, sec, nsec);
+	CvW w = {addr, 0, 0}; int r = 0;
+	BLOCKING_BEGIN; pthread_mutex_lock(&wmx);
+	if (cvq_tail) cvq_tail->next = &w; else cvq_head = &w; cvq_tail = &w;
+	while (!w.woke) {
+		if (__atomic_load_n(&sig_pending, __ATOMIC_SEQ_CST) & ~(gmask << 1)) { r = EINTR; break; }
+		struct timespec slice; clock_gettime(CLOCK_REALTIME, &slice); slice.tv_nsec += 20000000; if (slice.tv_nsec >= 1000000000) { slice.tv_sec++; slice.tv_nsec -= 1000000000; }
+		if (has_timeout && (ts.tv_sec < slice.tv_sec || (ts.tv_sec == slice.tv_sec && ts.tv_nsec < slice.tv_nsec))) slice = ts;
+		int cr = pthread_cond_timedwait(&wcv, &wmx, &slice);
+		if (cr && has_timeout) { struct timespec n; clock_gettime(CLOCK_REALTIME, &n); if (n.tv_sec > ts.tv_sec || (n.tv_sec == ts.tv_sec && n.tv_nsec >= ts.tv_nsec)) { r = ETIMEDOUT; break; } }
+	}
+	CvW **pp = &cvq_head, *prev = 0; for (; *pp; prev = *pp, pp = &(*pp)->next) if (*pp == &w) { *pp = w.next; if (cvq_tail == &w) cvq_tail = prev; break; }
+	pthread_mutex_unlock(&wmx); BLOCKING_END; return r;
+}
+static void cv_wake(uint64_t addr, int all) {
+	pthread_mutex_lock(&wmx);
+	for (CvW *w = cvq_head; w; w = w->next) if (w->addr == addr && !w->woke) { w->woke = 1; if (!all) break; }
+	pthread_cond_broadcast(&wcv); pthread_mutex_unlock(&wmx);
+}
+static int sem_index(uint32_t port) { for (int i = 0; i < nsems; i++) if (sems[i].port == port) return i; return -1; }
+static int sem_wait(uint32_t port, int has_timeout, int64_t sec, int64_t nsec) {  // 0, 3 = KERN_INVALID_ARGUMENT, 49 = KERN_OPERATION_TIMED_OUT, 14 = KERN_ABORTED (Signal)
+	struct timespec ts; if (has_timeout) abs_deadline(&ts, sec, nsec);
+	int r = 0; BLOCKING_BEGIN; pthread_mutex_lock(&wmx);
+	int i = sem_index(port); if (i < 0) r = 3;
+	while (!r && sems[i].value <= 0) {
+		if (__atomic_load_n(&sig_pending, __ATOMIC_SEQ_CST) & ~(gmask << 1)) { r = 14; break; }
+		struct timespec slice; clock_gettime(CLOCK_REALTIME, &slice); slice.tv_nsec += 20000000; if (slice.tv_nsec >= 1000000000) { slice.tv_sec++; slice.tv_nsec -= 1000000000; }
+		if (has_timeout && (ts.tv_sec < slice.tv_sec || (ts.tv_sec == slice.tv_sec && ts.tv_nsec < slice.tv_nsec))) slice = ts;
+		if (pthread_cond_timedwait(&wcv, &wmx, &slice) && has_timeout) { struct timespec n; clock_gettime(CLOCK_REALTIME, &n); if (n.tv_sec > ts.tv_sec || (n.tv_sec == ts.tv_sec && n.tv_nsec >= ts.tv_nsec)) { r = 49; break; } }
+	}
+	if (!r) sems[i].value--;
+	pthread_mutex_unlock(&wmx); BLOCKING_END; return r;
+}
+static int sem_signal(uint32_t port, int all) {
+	pthread_mutex_lock(&wmx); int i = sem_index(port), r = 0;
+	if (i < 0) r = 3; else { sems[i].value += all ? 1000000 : 1; pthread_cond_broadcast(&wcv); }
+	pthread_mutex_unlock(&wmx); return r;
+}
+
 static unsigned long nsys;
 static uint64_t mmap_next = MMAP_BASE;
 static double t0;
@@ -359,6 +410,12 @@ static void do_syscall(uc_engine *u, void *ud) {
 		case 12: unmap_all(a[1], (a[2] + 0xfff) & ~0xfffULL); break;  // mach_vm_deallocate
 		case 14: break;                // mach_vm_protect: Gastspeicher bleibt RWX
 		case 18: case 19: break;       // mach_port_deallocate / mod_refs
+		case 33: res = sem_signal((uint32_t)a[0], 0); break;        // semaphore_signal_trap
+		case 34: res = sem_signal((uint32_t)a[0], 1); break;        // semaphore_signal_all_trap
+		case 36: res = sem_wait((uint32_t)a[0], 0, 0, 0); break;    // semaphore_wait_trap
+		case 37: sem_signal((uint32_t)a[0], 0); res = sem_wait((uint32_t)a[1], 0, 0, 0); break;  // semaphore_wait_signal_trap
+		case 38: res = sem_wait((uint32_t)a[0], 1, (int64_t)a[1], (int64_t)a[2]); break;        // semaphore_timedwait_trap
+		case 39: sem_signal((uint32_t)a[0], 0); res = sem_wait((uint32_t)a[1], 1, (int64_t)a[2], (int64_t)a[3]); break;
 		case 31: {  // mach_msg_trap: nur Nachrichten an den Host-Port, als kleine MIG-Server
 			uint8_t m[0x40]; uc_mem_read(u, a[0], m, 0x40); uint32_t id = *(uint32_t *)(m + 20);
 			if (trace) fprintf(stderr, "ucrun: mach_msg id %u an Port %#x flavor %u count %u\n", id, *(uint32_t *)(m + 8), *(uint32_t *)(m + 32), *(uint32_t *)(m + 36));
@@ -373,7 +430,11 @@ static void do_syscall(uc_engine *u, void *ud) {
 					mig_reply(u, a[0], 300, 0, p, sizeof p);
 				} else mig_reply(u, a[0], 300, 4, 0, 0);
 			} else if (id == 3409) { mig_reply_port(u, a[0], 3509, 0);   // task_get_special_port: kein Bootstrap-Server -> MACH_PORT_NULL
-			} else if (id == 3418) { mig_reply_port(u, a[0], 3518, 0x1005); // semaphore_create
+			} else if (id == 3418) {  // semaphore_create(task, policy, value): neuer Port-Name
+				int32_t pol = *(int32_t *)(m + 32), val = *(int32_t *)(m + 36); (void)pol; uint32_t port = 0x1000005;
+				pthread_mutex_lock(&wmx); if (nsems < 256) { port = 0x5003 + 4 * nsems; sems[nsems].port = port; sems[nsems].value = val; nsems++; } pthread_mutex_unlock(&wmx);
+				mig_reply_port(u, a[0], 3518, port);
+			} else if (id == 3419) { mig_reply(u, a[0], 3519, 0, 0, 0);  // semaphore_destroy
 			} else if (id == 206) { mig_reply_port(u, a[0], 306, 0x1004); // host_get_clock_service
 			} else { fprintf(stderr, "ucrun: mach_msg id %u nicht umgesetzt\n", id); mig_reply(u, a[0], id + 100, 5, 0, 0); }
 			break; }
@@ -386,7 +447,7 @@ static void do_syscall(uc_engine *u, void *ud) {
 	}
 	if ((rax >> 24) != 2) { fprintf(stderr, "ucrun: Systemaufruf-Klasse %llu (Mach-Falle?) nicht umgesetzt: %#llx\n", (unsigned long long)(rax >> 24), (unsigned long long)rax); err = ENOSYS; res = ENOSYS; goto done; }
 	uint64_t nr = rax & 0xffffff;
-	{ static const struct { int from, to; } nc[] = {{396, 3}, {397, 4}, {398, 5}, {399, 6}, {400, 7}, {406, 92}, {410, 111}, {414, 153}, {415, 154}};  // *_nocancel-Varianten (libc-Abbruchpunkte)
+	{ static const struct { int from, to; } nc[] = {{423, 334}, {396, 3}, {397, 4}, {398, 5}, {399, 6}, {400, 7}, {406, 92}, {410, 111}, {414, 153}, {415, 154}};  // *_nocancel-Varianten (libc-Abbruchpunkte)
 	  for (unsigned q = 0; q < sizeof nc / sizeof *nc; q++) if (nc[q].from == (int)nr) { nr = nc[q].to; break; } }
 	if (trace) fprintf(stderr, "ucrun: sys %llu(%#llx, %#llx, %#llx)\n", (unsigned long long)nr, (unsigned long long)a[0], (unsigned long long)a[1], (unsigned long long)a[2]);
 	if (nr == 1) {
@@ -418,6 +479,30 @@ static void do_syscall(uc_engine *u, void *ud) {
 	if (nr == 361) { pthread_mutex_lock(&wmx); if (ndead < 256) dead[ndead++] = (uint32_t)a[2]; pthread_mutex_unlock(&wmx); ulock_wake(); for (int q = 0; q < 64; q++) if (eth[q] && eth[q]->u == u) eth[q]->done = 1; uc_emu_stop(u); res = 0; goto done; }  // bsdthread_terminate: Gast-Thread endet
 	if (nr == 515 || nr == 544) { int r = ulock_wait(a[1], (uint32_t)a[2], nr == 515 ? a[3] : a[3] / 1000); if (r) { err = r; res = r; } else res = 0; goto done; }  // __ulock_wait(2)
 	// psynch (libpthread-Mutex im Konfliktfall): Warten wird als kurzes Schlafen mit EINTR nachgebildet, libpthread versucht es dann selbst erneut
+	if (nr == 334) {  // __semwait_signal(cond_sem, mutex_sem, timeout, relative, sec, nsec): so schläft libc (usleep, nanosleep, sleep)
+		if (!a[2]) { res = 0; goto done; }
+		struct timespec ts; if (a[3]) { ts.tv_sec = (time_t)a[4]; ts.tv_nsec = (long)a[5]; }
+		else { clock_gettime(CLOCK_REALTIME, &ts); struct timespec target = {(time_t)a[4], (long)a[5]}; ts.tv_sec = target.tv_sec - ts.tv_sec; ts.tv_nsec = target.tv_nsec - ts.tv_nsec; if (ts.tv_nsec < 0) { ts.tv_sec--; ts.tv_nsec += 1000000000; } if (ts.tv_sec < 0) ts.tv_sec = ts.tv_nsec = 0; }
+		BLOCKING_BEGIN;
+		struct timespec rem = ts; int intr = 0;
+		while (rem.tv_sec > 0 || rem.tv_nsec > 0) {  // in 10-ms-Stücken, damit Signale das Schlafen unterbrechen
+			struct timespec step = {0, 10000000}; if (rem.tv_sec == 0 && rem.tv_nsec < step.tv_nsec) step.tv_nsec = rem.tv_nsec;
+			nanosleep(&step, 0);
+			rem.tv_nsec -= step.tv_nsec; if (rem.tv_nsec < 0) { if (rem.tv_sec > 0) { rem.tv_sec--; rem.tv_nsec += 1000000000; } else rem.tv_nsec = 0; }
+			if (rem.tv_sec > 0 && rem.tv_nsec >= 1000000000) { rem.tv_sec++; rem.tv_nsec -= 1000000000; }
+			if (__atomic_load_n(&sig_pending, __ATOMIC_SEQ_CST) & ~(gmask << 1)) { intr = 1; break; }
+		}
+		BLOCKING_END; err = intr ? EINTR : ETIMEDOUT; res = err; goto done;
+	}
+	if (nr == 305) {  // __psynch_cvwait(cv, cvlsgen, cvugen, mutex, mugen, flags, sec, nsec): sec/nsec liegen auf dem Stapel (7./8. Argument)
+		uint64_t sp, st[3] = {0, 0, 0}; uc_reg_read(u, UC_X86_REG_RSP, &sp); uc_mem_read(u, sp, st, 24);
+		uint32_t flags = (uint32_t)a[5]; int hasto = st[1] != 0 || st[2] != 0 || 0;  // sec==0 && nsec==0: kein Zeitlimit
+		int r = cv_wait(a[0], hasto, (int64_t)st[1], (int64_t)st[2]); (void)flags;
+		if (r) { err = r; res = r; } else res = 0; goto done;
+	}
+	if (nr == 304) { cv_wake(a[0], 0); res = 0; goto done; }  // __psynch_cvsignal
+	if (nr == 303) { cv_wake(a[0], 1); res = 0; goto done; }  // __psynch_cvbroad
+	if (nr == 312) { res = 0; goto done; }                    // __psynch_cvclrprepost
 	if (nr == 301) { BLOCKING_BEGIN; usleep(20); BLOCKING_END; err = EINTR; res = EINTR; goto done; }  // __psynch_mutexwait
 	if (nr == 302) { res = 0; goto done; }                               // __psynch_mutexdrop
 	if (nr == 516) { ulock_wake(); res = 0; goto done; }  // __ulock_wake
