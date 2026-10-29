@@ -38,7 +38,7 @@ else
 fi
 # arm64-Testprogramme: freistehend (statisch) und dynamisch gegen die arm64-libSystem aus dem Image (xlat/xroot-a64.sh holt sie)
 clang -target arm64-apple-macos11.0 -O2 -ffreestanding -fno-builtin -fno-stack-protector -nostdlib -static -Wl,-e,_start -o "$out/a64-sys" a64-sys.c
-ar_="$WORK/a64root/usr/lib"
+ar_="${A64_ROOT:-$WORK/a64root}/usr/lib"
 if [ -f "$ar_/libSystem.B.dylib" ]; then
   for t in hello-dyn; do
     clang -target arm64-apple-macos11.0 -isysroot "$sdk" -O1 -nostdlib -Wl,-platform_version,macos,11.0,11.5 -Wl,-no_fixup_chains -Wl,-e,_main \

@@ -194,17 +194,29 @@ static int fake_sysctl_name(const char *name, void *ob, size_t *ol) {
 	return 0;
 }
 
+static uint64_t ring[64]; static unsigned ringn; static int use_ring;
+static void on_code(uc_engine *u, uint64_t addr, uint32_t size, void *ud) { (void)u; (void)size; (void)ud; ring[ringn++ & 63] = addr; }
+static void dump_ring(void) {
+	if (!use_ring) return;
+	fprintf(stderr, "  letzte Befehle (alt -> neu):");
+	for (unsigned q = ringn > 40 ? ringn - 40 : 0; q < ringn; q++) { uint32_t w = 0; uc_mem_read(uc, ring[q & 63], &w, 4); fprintf(stderr, " %llx:%08x", (unsigned long long)ring[q & 63], w); }
+	fputc(10, stderr);
+}
 static void do_syscall(uc_engine *u, uint32_t intno, void *ud) {
 	(void)u; (void)ud;
 	if (intno != 2) {
 		uint64_t pc; uc_reg_read(uc, UC_ARM64_REG_PC, &pc);
-		fprintf(stderr, "a64run: Ausnahme %u bei pc %#llx\n", intno, (unsigned long long)pc); uc_emu_stop(uc); return;
+		uint32_t insn = 0; uc_mem_read(uc, pc, &insn, 4);
+		fprintf(stderr, "a64run: Ausnahme %u bei pc %#llx, Befehl %08x, x0-x3 %#llx %#llx %#llx %#llx\n", intno, (unsigned long long)pc, insn,
+			(unsigned long long)X(0), (unsigned long long)X(1), (unsigned long long)X(2), (unsigned long long)X(3));
+		fprintf(stderr, "  x8-x12 %#llx %#llx %#llx %#llx %#llx\n", (unsigned long long)X(8), (unsigned long long)X(9), (unsigned long long)X(10), (unsigned long long)X(11), (unsigned long long)X(12)); dump_ring(); uc_emu_stop(uc); return;
 	}
-	uint64_t x16 = X(16), a[8], x1v = 0; int64_t res = 0; int err = 0; nsys++;
+	uint64_t x16 = X(16); if (x16 != 0x80000000ULL && (x16 >> 32) == 0 && (int32_t)x16 < 0) x16 = (uint64_t)(int64_t)(int32_t)x16;  // mov w16, #-3 füllt die obere Hälfte mit 0
+	uint64_t a[8], x1v = 0; int64_t res = 0; int err = 0; nsys++;
 	for (int i = 0; i < 8; i++) a[i] = X(i);
 	if ((int64_t)x16 < 0) {  // Mach-Fallen
 		int64_t tn = -(int64_t)x16;
-		if (trace) fprintf(stderr, "a64run: mach trap %lld(%#llx, %#llx, %#llx)\n", (long long)tn, (unsigned long long)a[0], (unsigned long long)a[1], (unsigned long long)a[2]);
+		if (trace) fprintf(stderr, "a64run: mach trap %lld(%#llx, %#llx, %#llx, %#llx, %#llx, %#llx)\n", (long long)tn, (unsigned long long)a[0], (unsigned long long)a[1], (unsigned long long)a[2], (unsigned long long)a[3], (unsigned long long)a[4], (unsigned long long)a[5]);
 		switch (tn) {
 		case 3: { struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts); res = ts.tv_sec * 1000000000ULL + ts.tv_nsec; break; }  // mach_absolute_time (Commpage ohne Zeitbasis)
 		case 4: { struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts); res = ts.tv_sec * 1000000000ULL + ts.tv_nsec; break; }  // mach_continuous_time
@@ -241,6 +253,8 @@ static void do_syscall(uc_engine *u, uint32_t intno, void *ud) {
 					mig_reply(a[0], 300, 0, p, sizeof p);
 				} else mig_reply(a[0], 300, 4, 0, 0);
 			} else if (id == 3409) { mig_reply_port(a[0], 3509, 0);   // task_get_special_port: kein Bootstrap-Server -> MACH_PORT_NULL
+			} else if (id == 3418) { static uint32_t sport = 0x5003; mig_reply_port(a[0], 3518, sport); sport += 4;  // semaphore_create (Threads fehlen noch: nur ein Name)
+			} else if (id == 3419) { mig_reply(a[0], 3519, 0, 0, 0);  // semaphore_destroy
 			} else if (id == 206) { mig_reply_port(a[0], 306, 0x1004); // host_get_clock_service
 			} else { if (trace || warn) fprintf(stderr, "a64run: mach_msg id %u nicht umgesetzt\n", id); mig_reply(a[0], id + 100, 5, 0, 0); }
 			break; }
@@ -299,6 +313,7 @@ static void do_syscall(uc_engine *u, uint32_t intno, void *ud) {
 	if (nr == 202) {  // sysctl(name, namelen, oldp, oldlenp, newp, newlen)
 		int mib[16]; uint32_t nl = a[1] > 16 ? 16 : a[1]; uc_mem_read(uc, a[0], mib, nl * 4);
 		size_t ol = 0; if (a[3]) uc_mem_read(uc, a[3], &ol, 8);
+		if (trace) fprintf(stderr, "a64run: sysctl mib %d.%d.%d len %u oldlen %zu\n", mib[0], nl > 1 ? mib[1] : 0, nl > 2 ? mib[2] : 0, nl, ol);
 		char *ob = a[2] ? calloc(1, ol ? ol : 1) : 0; void *nb = 0;
 		if (a[4]) { nb = malloc(a[5]); uc_mem_read(uc, a[4], nb, a[5]); }
 		if (nl >= 2 && mib[0] == 6 && mib[1] == 1 && ob && ol >= 6) { memcpy(ob, "arm64", 6); ol = 6; res = 0; }          // hw.machine
@@ -397,6 +412,7 @@ int main(int argc, char **argv) {
 	uc_hook_add(uc, &h1, UC_HOOK_INTR, do_syscall, 0, 1, 0);
 	uc_hook_add(uc, &h2, UC_HOOK_MEM_UNMAPPED, on_fault, 0, 1, 0);
 	(void)h3; (void)on_insn_sys;
+	if (getenv("A64_RING")) { use_ring = 1; uc_hook ch; uc_hook_add(uc, &ch, UC_HOOK_CODE, on_code, 0, 1, 0); }
 	uint64_t entry = 0, mh_addr = 0; int dynamic = 0;
 	if (load_image(file, 0, &entry, &mh_addr, &dynamic)) return 3;
 	if (dynamic) {  // wie der Kernel: dyld des Gastes laden, es lädt Programm und Bibliotheken selbst
@@ -412,6 +428,7 @@ int main(int argc, char **argv) {
 		uint8_t cp[PAGE]; memset(cp, 0, sizeof cp); uint64_t caps = 0x1fULL; uint16_t ver = 3; uint8_t ncpu = 1; uint64_t mem = 4ULL << 30;
 		memcpy(cp, "commpage 64-bit", 16); memcpy(cp + 0x10, &caps, 8); memcpy(cp + 0x1e, &ver, 2); cp[0x22] = ncpu;
 		cp[0x34] = cp[0x35] = cp[0x36] = ncpu; memcpy(cp + 0x38, &mem, 8);
+		cp[0x24] = cp[0x25] = cp[0x37] = 14;  // Seitengröße 16 KiB: Benutzer-Seitenverschiebung (32/64 Bit) und Kern-Seitenverschiebung; libSystem leitet vm_page_size daraus ab
 		// +0x90 = user_timebase: 0 -> libSystem fragt den Kern (Falle -3), +0xC120.. gettimeofday-Daten bleiben 0 (Rückfall auf den Systemaufruf)
 		map_range(COMMPAGE, PAGE); uc_mem_write(uc, COMMPAGE, cp, sizeof cp);
 	}
