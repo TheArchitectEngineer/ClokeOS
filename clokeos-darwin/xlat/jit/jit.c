@@ -835,6 +835,7 @@ static Blk *translate(uint64_t pc) {
 	pthread_jit_write_protect_np(1);
 	st_blocks++;
 	if (trace_jit) fprintf(stderr, "jit: Block %#llx: %d Befehle, %d Wörter, nf=%d\n", (unsigned long long)pc, n, (int)(cp - start), b->nf);
+	if (trace_jit > 1) { fprintf(stderr, "jit: Code"); for (uint32_t *w = start; w < cp; w++) fprintf(stderr, " %08x", *w); fputc(10, stderr); }
 	return b;
 }
 
@@ -892,7 +893,7 @@ static void fault_handler(int sig, siginfo_t *si, void *uc_) {
 
 int jit_init(JitCtx *c) {
 	if (!code_base) {
-		trace_jit = getenv("UCRUN_JIT_TRACE") != 0;
+		trace_jit = getenv("UCRUN_JIT_TRACE") ? atoi(getenv("UCRUN_JIT_TRACE")) : 0;
 		void *p = mmap(0, CODE_SIZE, PROT_READ | PROT_WRITE | PROT_EXEC, MAP_PRIVATE | MAP_ANON | MAP_JIT, -1, 0);
 		if (p == MAP_FAILED) return -1;
 		code_base = p; code_end = code_base + CODE_SIZE / 4; cp = code_base;

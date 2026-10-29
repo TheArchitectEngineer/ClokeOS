@@ -124,7 +124,7 @@ static void gen_one(Buf *B) {
 		int k = rn(4); op[0] = 0x0f; op[1] = k == 0 ? 0xb6 : k == 1 ? 0xb7 : k == 2 ? 0xbe : 0xbf; if (sz == 1) sz = 4, p66 = 0, w = 0;
 		emit_rm(B, p66, w, op, 2, reg, mem, rm, (k & 1) == 0, 0, 0); break; }
 	case 18: { op[0] = 0x63; emit_rm(B, 0, 1, op, 1, reg, mem, rm, 0, 0, 0); break; }
-	case 19: { op[0] = 0x86 + (sz > 1); emit_rm(B, p66, w, op, 1, reg, mem, rm, sz == 1, 0, 0); break; }
+	case 19: { op[0] = 0x86 + (sz > 1); mem = 0; /* xchg mit Speicher: Unicorn rechnet bei unausgerichteten Adressen falsch (atomarer Pfad) */ emit_rm(B, p66, w, op, 1, reg, mem, rm, sz == 1, 0, 0); break; }
 	case 20: { int k = rn(4); if (k == 0) { put8(B, 0x99); } else if (k == 1) { put8(B, 0x48); put8(B, 0x99); } else if (k == 2) put8(B, 0x98); else { put8(B, 0x48); put8(B, 0x98); } break; }
 	case 21: { int cc = pick_cc(); if (cc < 0) { put8(B, 0x90); break; } op[0] = 0x0f; op[1] = 0x90 + cc; emit_rm(B, 0, 0, op, 2, 0, mem, rm, 1, 0, 0); break; }
 	case 22: { int cc = pick_cc(); if (cc < 0) { put8(B, 0x90); break; } op[0] = 0x0f; op[1] = 0x40 + cc; if (sz == 1) sz = 4, p66 = 0, w = 0; emit_rm(B, p66, w, op, 2, reg, mem, rm, 0, 0, 0); break; }
@@ -169,7 +169,7 @@ static int gen_seq(Buf *B, uint64_t slot) {
 // "add eax,1" im jcc-Rumpf verändert Flags auf beiden Seiten gleich
 
 static uc_engine *uc; static uint8_t *code_h, *data_h;
-static uint8_t data_init[DATA_N], data_jit[DATA_N], data_uc[DATA_N];
+static uint8_t code_init[CODE_N], data_init[DATA_N], data_jit[DATA_N], data_uc[DATA_N];
 static uint64_t pool64(void) {
 	static const uint64_t p[] = {0, 1, ~0ULL, 0x7f, 0x80, 0xff, 0x100, 0x7fff, 0x8000, 0xffff, 0x7fffffffULL, 0x80000000ULL, 0xffffffffULL, 0x7fffffffffffffffULL, 0x8000000000000000ULL, 2, 3, 31, 63};
 	return rn(3) ? p[rn(19)] : rn(2) ? rnd() : (uint64_t)rn(1000);
@@ -201,15 +201,17 @@ int main(int argc, char **argv) {
 		if (B.ptr & (1u << 7)) r0[7] = DATA + 0x3000 + rn(64);
 		if (B.idx & 2) r0[1] = rn(20);
 		for (size_t i = 0; i < DATA_N; i += 8) { uint64_t v = rn(5) ? rnd() : 0; if (i >= 0x3f00 && i < 0x4200 && rn(2)) v = 0; memcpy(data_h + i, &v, 8); }
-		memcpy(data_init, data_h, DATA_N);
+		memcpy(data_init, data_h, DATA_N); memcpy(code_init, code_h, CODE_N);
 		// 1. Unicorn allein
 		for (int i = 0; i < 16; i++) uc_reg_write(uc, jit_ucreg[i], &r0[i]);
 		uc_reg_write(uc, UC_X86_REG_EFLAGS, &ef0);
 		uc_err e = uc_emu_start(uc, pc, end, 0, 0);
 		if (e) { skipped++; if (verbose) printf("skip %ld: %s\n", it, uc_strerror(e)); continue; }
 		{ uint64_t rp; uc_reg_read(uc, UC_X86_REG_RIP, &rp); if (rp != end) { skipped++; continue; } }
+		if (memcmp(code_h, code_init, CODE_N)) { skipped++; memcpy(code_h, code_init, CODE_N); continue; }  // Befehl hat den eigenen Code überschrieben (SMC wird nicht verglichen)
 		uint64_t ru[16], efu; for (int i = 0; i < 16; i++) uc_reg_read(uc, jit_ucreg[i], &ru[i]);
 		uc_reg_read(uc, UC_X86_REG_EFLAGS, &efu); memcpy(data_uc, data_h, DATA_N);
+		if (getenv("JT_ONLY") && atol(getenv("JT_ONLY")) == it) setenv("UCRUN_JIT_TRACE", "2", 1);
 		// 2. JIT (mit Rückfall)
 		memcpy(data_h, data_init, DATA_N);
 		memcpy(c.r, r0, sizeof r0); c.rip = pc; jit_set_eflags(&c, ef0); int fb = 0, bad = 0;
