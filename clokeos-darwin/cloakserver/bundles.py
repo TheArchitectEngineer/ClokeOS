@@ -107,26 +107,30 @@ def generic_icon(name, hue):
 
 
 def linux_icon():
-    """Icon für Linux.app: ein Pinguin auf dunklem Grund (eigene Zeichnung)."""
+    """Icon für Linux.app: Pinguin auf dunkelblauem Grund (nach der Vorlage des Nutzers nachgezeichnet)."""
     return '''<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">
 <defs>
-<linearGradient id="bg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#3b4a66"/><stop offset="1" stop-color="#171d2b"/></linearGradient>
-<linearGradient id="body" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#2b2f3a"/><stop offset="1" stop-color="#0d0f14"/></linearGradient>
-<linearGradient id="belly" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ffffff"/><stop offset="1" stop-color="#d9dde6"/></linearGradient>
-<linearGradient id="beak" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ffc233"/><stop offset="1" stop-color="#f08a12"/></linearGradient>
+<linearGradient id="bg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#36496b"/><stop offset="1" stop-color="#1b2540"/></linearGradient>
+<linearGradient id="body" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#2a2d3b"/><stop offset="1" stop-color="#14161f"/></linearGradient>
+<linearGradient id="fl" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#4a4f62"/><stop offset=".3" stop-color="#232634"/><stop offset="1" stop-color="#0f1118"/></linearGradient>
+<linearGradient id="belly" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ffffff"/><stop offset="1" stop-color="#d8dbe6"/></linearGradient>
+<linearGradient id="or" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ffc13a"/><stop offset="1" stop-color="#f29a1a"/></linearGradient>
 </defs>
 <rect x="4" y="4" width="56" height="56" rx="13" fill="url(#bg)"/>
-<rect x="4.5" y="4.5" width="55" height="55" rx="12.5" fill="none" stroke="#fff" stroke-opacity=".25"/>
-<ellipse cx="32" cy="55" rx="16" ry="2.6" fill="#000" fill-opacity=".35"/>
-<path d="M20.5 51c-3 .4-5.200-1.100-3.600-3 1.700-2 6-2.200 7.800-.4zM43.500 51c3 .4 5.200-1.100 3.600-3-1.700-2-6-2.200-7.800-.4z" fill="url(#beak)"/>
-<path d="M32 8c-7 0-11 5.500-11 13 0 3.400-3.800 6.600-5.500 12-1.700 5.500-.6 13 4.500 16.500 3.200 2.200 7 2.700 12 2.700s8.800-.5 12-2.700c5.100-3.500 6.200-11 4.500-16.500-1.700-5.400-5.500-8.600-5.500-12 0-7.500-4-13-11-13z" fill="url(#body)"/>
-<path d="M32 25c-5.200 0-9.200 4.600-9.200 11.500 0 7.400 3.800 13 9.200 13s9.200-5.600 9.200-13C41.200 29.600 37.200 25 32 25z" fill="url(#belly)"/>
-<ellipse cx="27.300" cy="17.500" rx="3.300" ry="3.700" fill="#fff"/><ellipse cx="36.700" cy="17.500" rx="3.300" ry="3.700" fill="#fff"/>
-<circle cx="28.100" cy="18.200" r="1.700" fill="#111"/><circle cx="35.900" cy="18.200" r="1.700" fill="#111"/>
-<circle cx="28.600" cy="17.600" r=".55" fill="#fff"/><circle cx="36.400" cy="17.600" r=".55" fill="#fff"/>
-<path d="M32 20.500c-3 0-5.500 1.700-5.500 3.200 0 1.600 2.700 3 5.500 3s5.500-1.400 5.500-3c0-1.500-2.500-3.200-5.500-3.200z" fill="url(#beak)"/>
-<path d="M26.800 23.800c1.600 1 3.300 1.400 5.200 1.400s3.600-.4 5.200-1.400" fill="none" stroke="#c9680a" stroke-width=".8" stroke-linecap="round"/>
-<path d="M21 28c-4 3.500-5 10-3 15 1.200 3 3.800 3.600 4.600 1.400.9-2.600.4-9 1.600-13.500zM43 28c4 3.500 5 10 3 15-1.200 3-3.800 3.600-4.600 1.400-.9-2.600-.4-9-1.600-13.500z" fill="#15181f"/>
+<rect x="4.4" y="4.4" width="55.2" height="55.2" rx="12.6" fill="none" stroke="#8a95ad" stroke-opacity=".55" stroke-width=".8"/>
+<ellipse cx="32" cy="55" rx="16" ry="2.6" fill="#0c1020" fill-opacity=".6"/>
+<path d="M32 8C25.400 8 20.800 12.500 20.600 19.500c-.100 3.300-1.800 5.800-2.600 8.800-1.100 4.400-.700 10.200 2.500 14.200 2.200 2.800 5.200 4.600 8 5.600 2.100.8 6.900.8 9 0 2.800-1 5.800-2.800 8-5.600 3.200-4 3.600-9.800 2.500-14.200-.8-3-2.500-5.500-2.600-8.800C43.200 12.500 38.600 8 32 8z" fill="url(#body)"/>
+<path d="M21.600 25.200C16.200 26.600 12.600 33 10.200 43.600c-.3 1.400 1 1.700 2 .6 3.800-4.400 7.600-10.600 10.200-16.200z" fill="url(#fl)" stroke="#555b70" stroke-width=".35"/>
+<path d="M42.400 25.200C47.800 26.600 51.400 33 53.800 43.600c.3 1.400-1 1.700-2 .6-3.800-4.400-7.600-10.600-10.200-16.200z" fill="url(#fl)" stroke="#555b70" stroke-width=".35"/>
+<path d="M32 26.200c-5.500 0-10.900 5.200-10.900 13.500 0 6.200 3.200 10.800 10.900 10.800s10.900-4.600 10.900-10.800c0-8.300-5.400-13.500-10.900-13.500z" fill="url(#belly)"/>
+<path d="M27.500 26.300c1.200 1.600 2.800 2.400 4.500 2.400s3.300-.8 4.500-2.400c-1.400-.6-2.900-.9-4.500-.9s-3.100.3-4.500.9z" fill="#c3c7d2"/>
+<ellipse cx="27.300" cy="17.300" rx="3.400" ry="3.700" fill="#fff"/><ellipse cx="36.700" cy="17.300" rx="3.400" ry="3.700" fill="#fff"/>
+<circle cx="28" cy="18.100" r="1.700" fill="#0d0e14"/><circle cx="36" cy="18.100" r="1.700" fill="#0d0e14"/>
+<circle cx="28.500" cy="17.500" r=".55" fill="#fff"/><circle cx="36.500" cy="17.500" r=".55" fill="#fff"/>
+<path d="M26.200 23.200c0-1.500 2.600-3 5.800-3s5.800 1.500 5.800 3c0 1.700-2.600 3.100-5.800 3.100s-5.800-1.400-5.800-3.100z" fill="url(#or)"/>
+<path d="M26.600 23.700c1.700.9 3.400 1.300 5.400 1.300s3.700-.4 5.400-1.300" fill="none" stroke="#c9680a" stroke-width=".9" stroke-linecap="round"/>
+<path d="M18.2 54.600c-.5-.9 0-1.700 1-1.900l2.600-.5c.900-.2 1.500-.9 2.300-1.300 1.400-.6 3.800-.4 5.200.4l.3 3.900c-1 .3-1.800-.1-2.500-.5-.8.700-1.700.7-2.600.2-.9.700-1.900.6-2.700 0-1 .3-2.700.3-3.600-.3z" fill="url(#or)"/>
+<path d="M45.800 54.600c.5-.9 0-1.700-1-1.900l-2.600-.5c-.9-.2-1.500-.9-2.300-1.300-1.400-.6-3.800-.4-5.200.4l-.3 3.900c1 .3 1.800-.1 2.500-.5.800.7 1.700.7 2.600.2.900.7 1.900.6 2.700 0 1 .3 2.700.3 3.600-.3z" fill="url(#or)"/>
 </svg>
 '''
 
