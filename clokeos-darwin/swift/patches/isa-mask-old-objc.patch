@@ -1,0 +1,13 @@
+diff --git a/stdlib/public/runtime/Private.h b/stdlib/public/runtime/Private.h
+index 3fa503d..7d5f1de 100644
+--- a/stdlib/public/runtime/Private.h
++++ b/stdlib/public/runtime/Private.h
+@@ -122,7 +122,7 @@ public:
+ #    if __has_feature(ptrauth_calls) || TARGET_OS_SIMULATOR
+ #      define SWIFT_ISA_MASK SWIFT_ISA_MASK_PTRAUTH
+ #    else
+-#      if TARGET_OS_OSX
++#      if TARGET_OS_OSX && !defined(CLOKEOS_OLD_OBJC_ISA)
+ #      define SWIFT_ISA_MASK 0x00007ffffffffff8ULL
+ #      else
+ #      define SWIFT_ISA_MASK 0x0000000ffffffff8ULL
