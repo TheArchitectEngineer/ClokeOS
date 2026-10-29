@@ -77,20 +77,52 @@ static uint32_t *g2h32(uint64_t a) {
 // --- Threads (bsdthread_create) und ulock-Warteschlange ---
 static uint64_t thread_entry, tsd_offset, mts_offset;  // von bsdthread_register: Einsprung neuer Threads (libpthread)
 static pthread_mutex_t wmx = PTHREAD_MUTEX_INITIALIZER; static pthread_cond_t wcv = PTHREAD_COND_INITIALIZER;
-typedef struct { uc_engine *u; uint64_t pc; } Th;
+typedef struct { uc_engine *u; uint64_t pc; uint64_t ring[64]; unsigned n; volatile int done; uint64_t rsp, rdi, rsi, rdx, rcx, r8, r9, gs; } Th;
+static pthread_mutex_t gm = PTHREAD_MUTEX_INITIALIZER; static pthread_cond_t gc = PTHREAD_COND_INITIALIZER; static unsigned g_next, g_serving;  // fairer Ticket-Sperre
+static void gil_lock(void) { pthread_mutex_lock(&gm); unsigned my = g_next++; while (g_serving != my) pthread_cond_wait(&gc, &gm); pthread_mutex_unlock(&gm); }
+static void gil_unlock(void) { pthread_mutex_lock(&gm); g_serving++; pthread_cond_broadcast(&gc); pthread_mutex_unlock(&gm); }  // immer nur eine Maschine rechnet (Unicorn-Speicherabbild ist nicht thread-sicher); Zeitscheiben + Blockieren geben ihn frei
+static Th *eth[64];
+static Th main_th;
+static uint64_t slice_us = 1000000;  // Zeitscheibe 1 s: Wechsel praktisch nur an blockierenden Aufrufen, damit Mutexe nie umkämpft sind (psynch ist nicht nachgebildet)
+#define BLOCKING_BEGIN gil_unlock()
+#define BLOCKING_END gil_lock()
+// Läuft in Zeitscheiben (ca. 1 ms), bis der Thread endet; liefert den letzten Fehler
+static uc_err run_engine(Th *t) {
+	uint64_t pc = t->pc; uc_err e = UC_ERR_OK;
+	for (;;) {
+		gil_lock();
+		e = uc_emu_start(t->u, pc, 0, slice_us, 0);
+		uc_reg_read(t->u, UC_X86_REG_RIP, &pc);
+		gil_unlock();
+		if (e || t->done) return e;
+		sched_yield();
+	}
+}
+static void on_code(uc_engine *u, uint64_t addr, uint32_t size, void *ud) { Th *t = ud; t->ring[t->n++ & 63] = addr; }
 static void *thread_main(void *p) {
-	Th *t = p; uc_err e = uc_emu_start(t->u, t->pc, 0, 0, 0);
-	if (e) { uint64_t rip; uc_reg_read(t->u, UC_X86_REG_RIP, &rip); { uint8_t b[16] = {0}; uc_mem_read(t->u, rip, b, 16); fprintf(stderr, "ucrun: Thread: %s bei rip %#llx, Bytes:", uc_strerror(e), (unsigned long long)rip); for (int q = 0; q < 16; q++) fprintf(stderr, " %02x", b[q]); fputc(10, stderr); uint64_t r1, r2, r3; uc_reg_read(t->u, UC_X86_REG_RDI, &r1); uc_reg_read(t->u, UC_X86_REG_RAX, &r2); uc_reg_read(t->u, UC_X86_REG_RSP, &r3); fprintf(stderr, "  rdi %#llx rax %#llx rsp %#llx\n", (unsigned long long)r1, (unsigned long long)r2, (unsigned long long)r3); uc_x86_msr m = {0xC0000101, 0}; uc_reg_read(t->u, UC_X86_REG_MSR, &m); fprintf(stderr, "  gs_base %#llx\n", (unsigned long long)m.value); uint64_t ra[3] = {0}; uc_mem_read(t->u, r3, ra, 24); fprintf(stderr, "  [rsp] %#llx %#llx %#llx\n", (unsigned long long)ra[0], (unsigned long long)ra[1], (unsigned long long)ra[2]); } exit(4); }
+	Th *t = p;
+	// Maschine im neuen Host-Thread anlegen (Apple-JIT-Speicher ist an den Thread gebunden, der ihn anlegt)
+	gil_lock(); t->u = new_engine();
+	for (int q = 0; q < 64; q++) if (!eth[q]) { eth[q] = t; break; }
+	if (getenv("UCRUN_RING")) { uc_hook ch; uc_hook_add(t->u, &ch, UC_HOOK_CODE, on_code, t, 1, 0); }
+	{ uc_x86_msr m = {0xC0000101, t->gs}; uc_reg_write(t->u, UC_X86_REG_MSR, &m); }
+	uc_reg_write(t->u, UC_X86_REG_RSP, &t->rsp); uc_reg_write(t->u, UC_X86_REG_RDI, &t->rdi); uc_reg_write(t->u, UC_X86_REG_RSI, &t->rsi);
+	uc_reg_write(t->u, UC_X86_REG_RDX, &t->rdx); uc_reg_write(t->u, UC_X86_REG_RCX, &t->rcx); uc_reg_write(t->u, UC_X86_REG_R8, &t->r8); uc_reg_write(t->u, UC_X86_REG_R9, &t->r9);
+	gil_unlock();
+	uc_err e = run_engine(t);
+	if (e) { uint64_t rip; uc_reg_read(t->u, UC_X86_REG_RIP, &rip); { uint8_t b[16] = {0}; uc_mem_read(t->u, rip, b, 16); fprintf(stderr, "ucrun: Thread: %s bei rip %#llx, Bytes:", uc_strerror(e), (unsigned long long)rip); for (int q = 0; q < 16; q++) fprintf(stderr, " %02x", b[q]); fputc(10, stderr); if (getenv("UCRUN_RING")) { fprintf(stderr, "  letzte Befehle:"); for (unsigned q = t->n > 40 ? t->n - 40 : 0; q < t->n; q++) fprintf(stderr, " %llx", (unsigned long long)t->ring[q & 63]); fputc(10, stderr); } uint64_t r1, r2, r3; uc_reg_read(t->u, UC_X86_REG_RDI, &r1); uc_reg_read(t->u, UC_X86_REG_RAX, &r2); uc_reg_read(t->u, UC_X86_REG_RSP, &r3); fprintf(stderr, "  rdi %#llx rax %#llx rsp %#llx\n", (unsigned long long)r1, (unsigned long long)r2, (unsigned long long)r3); uc_x86_msr m = {0xC0000101, 0}; uc_reg_read(t->u, UC_X86_REG_MSR, &m); fprintf(stderr, "  gs_base %#llx\n", (unsigned long long)m.value); uint64_t ra[3] = {0}; uc_mem_read(t->u, r3, ra, 24); fprintf(stderr, "  [rsp] %#llx %#llx %#llx\n", (unsigned long long)ra[0], (unsigned long long)ra[1], (unsigned long long)ra[2]); } exit(4); }
 	free(t); return 0;
 }
+static uint32_t dead[256]; static int ndead;  // Mach-Thread-Ports beendeter Gast-Threads (Eigner von UL_UNFAIR_LOCK-Wörtern)
+static int is_dead(uint32_t v) { for (int i = 0; i < ndead; i++) if (dead[i] == v) return 1; return 0; }
 static int ulock_wait(uint64_t addr, uint32_t val, uint64_t timeout_us) {
 	struct timespec ts; if (timeout_us) { clock_gettime(CLOCK_REALTIME, &ts); ts.tv_sec += timeout_us / 1000000; ts.tv_nsec += (timeout_us % 1000000) * 1000; if (ts.tv_nsec >= 1000000000) { ts.tv_sec++; ts.tv_nsec -= 1000000000; } }
 	uint32_t *p = g2h32(addr); if (!p) return EFAULT;
-	pthread_mutex_lock(&wmx); int r = 0;
-	while (__atomic_load_n(p, __ATOMIC_SEQ_CST) == val) {
+	BLOCKING_BEGIN; pthread_mutex_lock(&wmx); int r = 0;
+	while (__atomic_load_n(p, __ATOMIC_SEQ_CST) == val && !is_dead(val & ~3u)) {
 		if (timeout_us) { if (pthread_cond_timedwait(&wcv, &wmx, &ts)) { r = ETIMEDOUT; break; } } else pthread_cond_wait(&wcv, &wmx);
 	}
-	pthread_mutex_unlock(&wmx); return r;
+	pthread_mutex_unlock(&wmx); BLOCKING_END; return r;
 }
 static void ulock_wake(void) { pthread_mutex_lock(&wmx); pthread_cond_broadcast(&wcv); pthread_mutex_unlock(&wmx); }
 static int trace;
@@ -254,22 +286,21 @@ static void do_syscall(uc_engine *u, void *ud) {
 		uint32_t mo = 0; if (a[3] && a[4] >= 36) uc_mem_read(u, a[3] + 32, &mo, 4); mts_offset = mo; res = 0; goto done;
 	}  // bsdthread_register(threadstart, wqthread, ...)
 	if (nr == 360) {  // bsdthread_create(func, arg, stack, pthread, flags): neue Unicorn-Maschine + Host-Thread
-		uc_engine *ne = new_engine(); if (!ne) { err = ENOMEM; res = ENOMEM; goto done; }
-		uint64_t sp = ((a[2] - 128) & ~15ULL) - 8, port = 0x2000 + nsys, flg = a[4] | 0x10000000, z = 0, gs = a[3] + tsd_offset;
-		{ uc_x86_msr m = {0xC0000101, gs}; uc_reg_write(ne, UC_X86_REG_MSR, &m); }  // IA32_GS_BASE
+		uint64_t port = 0x2000 + nsys;
+		Th *t = calloc(1, sizeof *t); t->pc = thread_entry;
+		t->rsp = (a[2] - 128) & ~15ULL; t->rdi = a[3]; t->rsi = port; t->rdx = a[0]; t->rcx = a[1]; t->r8 = a[2]; t->r9 = a[4] | 0x10000000; t->gs = a[3] + tsd_offset;
 		{ uint32_t p32 = (uint32_t)port; if (mts_offset) uc_mem_write(u, a[3] + tsd_offset + mts_offset, &p32, 4); }  // der Kernel trägt den Mach-Thread-Port ins pthread ein
-		uc_reg_write(ne, UC_X86_REG_RSP, &sp); uc_reg_write(ne, UC_X86_REG_RDI, &a[3]); uc_reg_write(ne, UC_X86_REG_RSI, &port);
-		uc_reg_write(ne, UC_X86_REG_RDX, &a[0]); uc_reg_write(ne, UC_X86_REG_RCX, &a[1]); uc_reg_write(ne, UC_X86_REG_R8, &a[2]); uc_reg_write(ne, UC_X86_REG_R9, &flg);
-		(void)z;
-		Th *t = malloc(sizeof *t); t->u = ne; t->pc = thread_entry;
 		pthread_t pt; pthread_attr_t pa; pthread_attr_init(&pa); pthread_attr_setdetachstate(&pa, PTHREAD_CREATE_DETACHED);
 		pthread_create(&pt, &pa, thread_main, t); res = a[3]; goto done;
 	}
-	if (nr == 361) { ulock_wake(); uc_emu_stop(u); res = 0; goto done; }  // bsdthread_terminate: Gast-Thread endet
+	if (nr == 361) { pthread_mutex_lock(&wmx); if (ndead < 256) dead[ndead++] = (uint32_t)a[2]; pthread_mutex_unlock(&wmx); ulock_wake(); for (int q = 0; q < 64; q++) if (eth[q] && eth[q]->u == u) eth[q]->done = 1; uc_emu_stop(u); res = 0; goto done; }  // bsdthread_terminate: Gast-Thread endet
 	if (nr == 515 || nr == 544) { int r = ulock_wait(a[1], (uint32_t)a[2], nr == 515 ? a[3] : a[3] / 1000); if (r) { err = r; res = r; } else res = 0; goto done; }  // __ulock_wait(2)
+	// psynch (libpthread-Mutex im Konfliktfall): Warten wird als kurzes Schlafen mit EINTR nachgebildet, libpthread versucht es dann selbst erneut
+	if (nr == 301) { BLOCKING_BEGIN; usleep(20); BLOCKING_END; err = EINTR; res = EINTR; goto done; }  // __psynch_mutexwait
+	if (nr == 302) { res = 0; goto done; }                               // __psynch_mutexdrop
 	if (nr == 516) { ulock_wake(); res = 0; goto done; }  // __ulock_wake
 	switch (nr) {  // Systemaufrufe, die nur beim Start nach dem Zustand des Systems fragen
-	case 483: case 381: case 520: case 521: case 48: case 46: case 329: res = 0; goto done;                 // csrctl, bsdthread_register, __mac_syscall
+	case 483: case 381: case 520: case 521: case 48: case 46: case 329: case 331: res = 0; goto done;                 // csrctl, bsdthread_register, __mac_syscall
 	case 54: err = 25; res = 25; goto done;                              // ioctl: ENOTTY (Terminal-Abfragen der libc)
 	case 274: err = 2; res = 2; goto done;                               // __sysctlbyname: ENOENT
 	case 294: case 336: case 287: err = EINVAL; res = EINVAL; goto done; // shared_region_check_np (kein Cache), proc_info, ...
@@ -395,8 +426,8 @@ int main(int argc, char **argv) {
 	sp -= np * 8; sp &= ~15ULL; uc_mem_write(uc, sp, ptrs, np * 8);
 	uc_reg_write(uc, UC_X86_REG_RSP, &sp);
 	t0 = now();
-	e = uc_emu_start(uc, entry, 0, getenv("UCRUN_TIMEOUT_MS") ? atoll(getenv("UCRUN_TIMEOUT_MS")) * 1000 : 0, 0);
-	if (!e && getenv("UCRUN_TIMEOUT_MS")) { uint64_t rip; uc_reg_read(uc, UC_X86_REG_RIP, &rip); fprintf(stderr, "ucrun: Zeitlimit, rip %#llx\n", (unsigned long long)rip); }
+	main_th.u = uc; main_th.pc = entry; eth[63] = &main_th;
+	e = run_engine(&main_th);
 	if (e) { uint64_t rip; uc_reg_read(uc, UC_X86_REG_RIP, &rip); fprintf(stderr, "ucrun: %s bei rip %#llx\n", uc_strerror(e), (unsigned long long)rip); return 4; }
 	return 0;
 }
