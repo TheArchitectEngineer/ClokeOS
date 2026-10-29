@@ -105,6 +105,27 @@ device clock with a safety offset of a few tens of frames. What we have is far f
 
 ## 3. Smallest proof
 
+**Result: first sound works on x86_64 (QEMU TCG), with a two-line driver fix.** The captured WAV of a 2 s
+sine written to `/dev/dsp0` contains a 480 Hz tone with the written peak (20000), 2.03 s long, measured
+from QEMU's `wav` backend. Fix: `kext/audio/ravynhda-amp.patch` (against the pinned PDSRC revision).
+Cause, found with QEMU's `hda-duplex,debug=2` verb trace and `hw/audio/hda-codec.c`: QEMU keeps the amp
+state **per stream**, the DAC and its output pin share it, and `RavynHDAudio` (a) sent gain 0 (the minimum, not
+0 dB; the 0 dB step is the *offset* in the amp capabilities, 74 here) and (b) then sent the same amp verb to
+the pin, which has no amplifier, which overwrote the DAC's gain again. The patch reads the capabilities
+(parameter 0x12), programs the offset, and skips widgets without an amp. It also shrinks the `dsp0_write`
+stack buffer to 2 KB (see the `___chkstk_darwin` note below). Not verified on real hardware, where
+`SET_AMP_GAIN_MUTE` semantics are the same by spec but codecs differ.
+
+How it was done (not scripted yet): compile `RavynHDAudio` from the pinned PDSRC tarball with the
+`cflags`/link line of `kext/build.sh` (Kernel.framework headers from `~/ClokeOS-work/sysroot/kc-*`), run
+`kc-builder` with the `pd-rebuild-kc` list but this kext substituted, `kcfix.py`, copy the result to
+`EFI/BOOT/kernel` of a cloned x86_64 image with `mcopy`, boot with
+`-audiodev wav,id=snd0,path=out.wav,out.frequency=48000 -device intel-hda -device hda-duplex,audiodev=snd0`,
+write 16-bit stereo 48 kHz PCM to `/dev/dsp0`. The patch is not yet applied by `kext/build.sh`/`brand.sh`,
+so images still carry the silent driver.
+
+### Earlier attempts (kept for the record)
+
 **Done (x86_64 only, TCG):** booted the unmodified PureDarwin desktop image with
 `-device intel-hda -device hda-output,audiodev=snd0` and `-audiodev wav,out.frequency=48000`, then wrote a
 3 s, 440 Hz, 12000-peak s16le stereo sine to `/dev/dsp0` from the guest's `python3`.

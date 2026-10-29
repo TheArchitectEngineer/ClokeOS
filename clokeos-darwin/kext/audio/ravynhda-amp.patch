@@ -1,0 +1,32 @@
+--- a/src/Kernel/Extensions/RavynHDAudio/RavynHDAudio.cpp	2026-10-29 09:38:29
++++ b/src/Kernel/Extensions/RavynHDAudio/RavynHDAudio.cpp	2026-10-29 09:38:29
+@@ -337,8 +337,18 @@
+     sendVerb(codecAddr, pinNid, VERB_SET_EAPD_BTL, 0x02);
+ 
+     // Unmute the DAC's output amp, 0 dB gain, both channels.
+-    sendVerb(codecAddr, dacNid, VERB_SET_AMP_GAIN_MUTE_ID4, 0xB000);
+-    sendVerb(codecAddr, pinNid, VERB_SET_AMP_GAIN_MUTE_ID4, 0xB000);
++    uint32_t afgCaps = sendVerb(codecAddr, afgNid, VERB_GET_PARAM, 0x12);
++    uint32_t dacCaps = sendVerb(codecAddr, dacNid, VERB_GET_PARAM, 0x12);
++    uint32_t pinCaps = sendVerb(codecAddr, pinNid, VERB_GET_PARAM, 0x12);
++    uint32_t dacGain = (dacCaps ? dacCaps : afgCaps) & 0x7F;
++    uint32_t pinGain = (pinCaps ? pinCaps : afgCaps) & 0x7F;
++    IOLog("RavynHDAudio: out amp caps afg=0x%08x dac=0x%08x pin=0x%08x -> gain %u/%u\n",
++          afgCaps, dacCaps, pinCaps, dacGain, pinGain);
++    sendVerb(codecAddr, dacNid, VERB_SET_AMP_GAIN_MUTE_ID4, 0xB000 | dacGain);
++    // Nur Widgets mit Ausgangsverstaerker bekommen den Verb (QEMUs Codec teilt den Zustand je Strom und
++    // wuerde sonst den Gain des DAC mit dem 0 des Pins ueberschreiben).
++    if (pinCaps)
++        sendVerb(codecAddr, pinNid, VERB_SET_AMP_GAIN_MUTE_ID4, 0xB000 | pinGain);
+ 
+     // Route stream tag 1 (matches SD_CTL's stream number field, set in
+     // setupOutputStream) / channel 0 to the DAC, and program its format.
+@@ -827,7 +837,7 @@
+     if (!gDsp0Driver)
+         return ENXIO;
+ 
+-    uint8_t buf[4096];
++    uint8_t buf[2048];
+     int total = 0;
+     while (uio_resid(uio) > 0) {
+         user_ssize_t resid = uio_resid(uio);
