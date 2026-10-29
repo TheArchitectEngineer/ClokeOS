@@ -1041,6 +1041,8 @@ int main(int argc, char **argv) {
 	// Umgebung des Gastes: ohne DYLD_INSERT_LIBRARIES des Hosts (die arm64-Bibliothek passt nicht zum x86_64-dyld)
 	static char *genv[1024]; int ne = 0;
 	for (int i = 0; environ[i] && ne < 1000; i++) if (strncmp(environ[i], "DYLD_INSERT_LIBRARIES=", 22)) genv[ne++] = environ[i];
+	// XLAT_INSERT=<x86_64-dylib>: wird dem Gast als DYLD_INSERT_LIBRARIES gegeben (die Variable selbst gilt dem arm64-dyld von ucrun)
+	if (getenv("XLAT_INSERT") && ne < 1000) { static char ins[1100]; snprintf(ins, sizeof ins, "DYLD_INSERT_LIBRARIES=%s", getenv("XLAT_INSERT")); genv[ne++] = ins; }
 	// libpthread soll Mutexe über __ulock (os_unfair_lock-Stil) statt über psynch machen: die Nachbildung von psynch_mutexwait/drop (Kernel-Warteschlange mit Sequenzzählern) entfällt
 	{ int have = 0; for (int i = 0; i < ne; i++) if (!strncmp(genv[i], "PTHREAD_MUTEX_USE_ULOCK=", 24)) have = 1; if (!have) genv[ne++] = "PTHREAD_MUTEX_USE_ULOCK=1"; }
 	uint64_t sp = stack_top - 0x1000, ptrs[512]; int np = 0;
@@ -1065,6 +1067,6 @@ int main(int argc, char **argv) {
 	main_th.u = uc; main_th.pc = entry; main_th.tid = 1; eth[63] = &main_th;
 	if (getenv("UCRUN_RING")) { uc_hook ch; uc_hook_add(uc, &ch, UC_HOOK_CODE, on_code, &main_th, 1, 0); }
 	e = run_engine(&main_th);
-	if (e) { uint64_t rip; uc_reg_read(uc, UC_X86_REG_RIP, &rip); fprintf(stderr, "ucrun: %s bei rip %#llx\n", uc_strerror(e), (unsigned long long)rip); if (getenv("UCRUN_RING")) { fprintf(stderr, "  letzte Befehle:"); for (unsigned q = main_th.n > 48 ? main_th.n - 48 : 0; q < main_th.n; q++) fprintf(stderr, " %llx", (unsigned long long)main_th.ring[q & 63]); fputc(10, stderr); } return 4; }
+	if (e) { uint64_t rip; uc_reg_read(uc, UC_X86_REG_RIP, &rip); { uint8_t b[16] = {0}; uc_mem_read(uc, rip, b, 16); fprintf(stderr, "ucrun: %s bei rip %#llx, Bytes:", uc_strerror(e), (unsigned long long)rip); for (int q = 0; q < 16; q++) fprintf(stderr, " %02x", b[q]); fputc(10, stderr); } if (getenv("UCRUN_RING")) { fprintf(stderr, "  letzte Befehle:"); for (unsigned q = main_th.n > 48 ? main_th.n - 48 : 0; q < main_th.n; q++) fprintf(stderr, " %llx", (unsigned long long)main_th.ring[q & 63]); fputc(10, stderr); } return 4; }
 	return 0;
 }
