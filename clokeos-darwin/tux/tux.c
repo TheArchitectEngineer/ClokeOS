@@ -319,7 +319,7 @@ long tux_thread_spawn(tux_regs *r, unsigned long fl, uint64_t stack, uint64_t pt
 	if (e) {
 		free(s->t);
 		free(s);
-		return -EAGAIN;
+		return -tux_errno(EAGAIN);
 	}
 	return tid;
 }
@@ -347,14 +347,14 @@ static int map_elf(const char *hostpath, elfinfo *ei)
 	Ehdr eh;
 	if (pread(fd, &eh, sizeof eh, 0) != sizeof eh || memcmp(eh.ident, "\177ELF", 4) != 0) {
 		close(fd);
-		return -ENOEXEC;
+		return -tux_errno(ENOEXEC);
 	}
 	if (eh.ident[4] != 2 || eh.ident[5] != 1 || eh.machine != TUX_EM || (eh.type != 2 && eh.type != 3) ||
 	    eh.phentsize != sizeof(Phdr)) {
 		fprintf(stderr, "tux: kein %s-Linux-Programm (Klasse %d, Maschine %d, Typ %d)\n", TUX_NAME, eh.ident[4],
 		    eh.machine, eh.type);
 		close(fd);
-		return -ENOEXEC;
+		return -tux_errno(ENOEXEC);
 	}
 	Phdr *ph = malloc(eh.phnum * sizeof(Phdr));
 	if (pread(fd, ph, eh.phnum * sizeof(Phdr), eh.phoff) != (ssize_t)(eh.phnum * sizeof(Phdr))) die("Programmkopf unlesbar");

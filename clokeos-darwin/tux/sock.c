@@ -61,7 +61,7 @@ extern void tux_host_to_guest(const char *h, char *g);
 static int addr_l2d(const void *lv, socklen_t ll, struct sockaddr_storage *d, socklen_t *dl, int follow)
 {
 	const uint8_t *l = lv;
-	if (ll < 2) return -EINVAL;
+	if (ll < 2) return -tux_errno(EINVAL);
 	int fam = *(const uint16_t *)l;
 	memset(d, 0, sizeof *d);
 	switch (fam) {
@@ -80,14 +80,14 @@ static int addr_l2d(const void *lv, socklen_t ll, struct sockaddr_storage *d, so
 			int r = tux_resolve(-100, gp, follow, host, NULL);
 			if (r < 0) return r;
 		}
-		if (strlen(host) >= sizeof u->sun_path) return -ENAMETOOLONG;
+		if (strlen(host) >= sizeof u->sun_path) return -tux_errno(ENAMETOOLONG);
 		strcpy(u->sun_path, host);
 		u->sun_len = (uint8_t)(offsetof(struct sockaddr_un, sun_path) + strlen(host) + 1);
 		*dl = u->sun_len;
 		return 0;
 	}
 	case 2: {
-		if (ll < 8) return -EINVAL;
+		if (ll < 8) return -tux_errno(EINVAL);
 		struct sockaddr_in *s = (struct sockaddr_in *)d;
 		s->sin_len = sizeof *s;
 		s->sin_family = AF_INET;
@@ -97,7 +97,7 @@ static int addr_l2d(const void *lv, socklen_t ll, struct sockaddr_storage *d, so
 		return 0;
 	}
 	case 10: {
-		if (ll < 24) return -EINVAL;
+		if (ll < 24) return -tux_errno(EINVAL);
 		struct sockaddr_in6 *s = (struct sockaddr_in6 *)d;
 		s->sin6_len = sizeof *s;
 		s->sin6_family = AF_INET6;
@@ -108,7 +108,7 @@ static int addr_l2d(const void *lv, socklen_t ll, struct sockaddr_storage *d, so
 		*dl = sizeof *s;
 		return 0;
 	}
-	default: return -EAFNOSUPPORT;
+	default: return -tux_errno(EAFNOSUPPORT);
 	}
 }
 
@@ -226,9 +226,9 @@ long tux_setsockopt(int fd, long level, long name, const void *val, socklen_t le
 	if (level == 1 && (name == 16 || name == 12 || name == 38 || name == 35)) return 0;   // PASSCRED & Co. gibt es nicht
 	if (level == 6 && (name == 3 || name == 12 || name == 13 || name == 18)) return 0;     // CORK, QUICKACK, ...
 	int dl, dn;
-	if (opt_l2d((int)level, (int)name, &dl, &dn) < 0) return -ENOPROTOOPT;
+	if (opt_l2d((int)level, (int)name, &dl, &dn) < 0) return -tux_errno(ENOPROTOOPT);
 	if (level == 1 && (name == 20 || name == 21)) {   // timeval: bei Linux 2 x 64 Bit
-		if (len < 16) return -EINVAL;
+		if (len < 16) return -tux_errno(EINVAL);
 		struct timeval tv = {((const int64_t *)val)[0], (int)((const int64_t *)val)[1]};
 		return setsockopt(fd, dl, dn, &tv, sizeof tv) ? err() : 0;
 	}
@@ -251,7 +251,7 @@ long tux_getsockopt(int fd, long level, long name, void *val, socklen_t *len)
 		return 0;
 	}
 	int dl, dn;
-	if (opt_l2d((int)level, (int)name, &dl, &dn) < 0) return -ENOPROTOOPT;
+	if (opt_l2d((int)level, (int)name, &dl, &dn) < 0) return -tux_errno(ENOPROTOOPT);
 	if (level == 1 && (name == 20 || name == 21)) {
 		struct timeval tv;
 		socklen_t tl = sizeof tv;
@@ -315,7 +315,7 @@ static long seq_send(int fd, const struct iovec *iov, int iovcnt, void *ctl, soc
 	size_t total = 0;
 	for (int i = 0; i < iovcnt; i++) total += iov[i].iov_len;
 	uint8_t *buf = malloc(4 + total);
-	if (!buf) return -ENOMEM;
+	if (!buf) return -tux_errno(ENOMEM);
 	uint32_t n32 = (uint32_t)total;
 	memcpy(buf, &n32, 4);
 	size_t o = 4;
@@ -356,7 +356,7 @@ static long seq_recv(int fd, const struct iovec *iov, int iovcnt, void *ctl, soc
 	if (r == 0) return 0;   // Gegenstelle zu
 	if (r < 4 && recv_all(fd, hb + r, 4 - r) < 0) return err();
 	uint8_t *body = malloc(n32 ? n32 : 1);
-	if (!body) return -ENOMEM;
+	if (!body) return -tux_errno(ENOMEM);
 	if (n32 && recv_all(fd, body, n32) < 0) { long e = err(); free(body); return e; }
 	size_t cap = 0, o = 0;
 	for (int i = 0; i < iovcnt; i++) cap += iov[i].iov_len;
@@ -447,14 +447,14 @@ static uint64_t ctl_d2l(const void *dc, socklen_t dl, void *lc, uint64_t lcap, i
 long tux_socket(long domain, long type, long proto)
 {
 	int d = dom_l2d((int)domain);
-	if (d < 0) return -EAFNOSUPPORT;
+	if (d < 0) return -tux_errno(EAFNOSUPPORT);
 	int t = type & 0xf;
 	int seq = 0;
 	if (t == 5) {
-		if (d != AF_UNIX) return -ESOCKTNOSUPPORT;
+		if (d != AF_UNIX) return -tux_errno(ESOCKTNOSUPPORT);
 		t = SOCK_STREAM;
 		seq = 1;
-	} else if (t != 1 && t != 2 && t != 3) return -EINVAL;
+	} else if (t != 1 && t != 2 && t != 3) return -tux_errno(EINVAL);
 	int fd = socket(d, t, (int)proto);
 	if (fd < 0) return err();
 	if (type & L_O_NONBLOCK) fcntl(fd, F_SETFL, O_NONBLOCK);
@@ -466,10 +466,10 @@ long tux_socket(long domain, long type, long proto)
 long tux_socketpair(long domain, long type, long proto, int *sv)
 {
 	int d = dom_l2d((int)domain);
-	if (d != AF_UNIX) return -EAFNOSUPPORT;
+	if (d != AF_UNIX) return -tux_errno(EAFNOSUPPORT);
 	int t = type & 0xf, seq = 0;
 	if (t == 5) { t = SOCK_STREAM; seq = 1; }
-	else if (t != 1 && t != 2) return -EINVAL;
+	else if (t != 1 && t != 2) return -tux_errno(EINVAL);
 	int fds[2];
 	if (socketpair(d, t, 0, fds)) return err();
 	for (int i = 0; i < 2; i++) {

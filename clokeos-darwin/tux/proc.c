@@ -294,7 +294,8 @@ static void gen_proc_self(const char *name)
 	else if (!strcmp(name, "cmdline")) put(".p/cmdline", g_cmdline ? g_cmdline : "", g_cmdlen);
 	else if (!strcmp(name, "environ")) put(".p/environ", g_environ ? g_environ : "", g_envlen);
 	else if (!strcmp(name, "comm")) { char b[64]; int n = snprintf(b, sizeof b, "%s\n", comm_name()); put(".p/comm", b, n); }
-	else if (!strcmp(name, "mounts")) puts_(".p/mounts", "rootfs / rootfs rw 0 0\n");
+	else if (!strcmp(name, "mounts")) puts_(".p/mounts", "/dev/root / ext4 rw 0 0\n");
+	else if (!strcmp(name, "mountinfo")) puts_(".p/mountinfo", "1 0 8:1 / / rw - ext4 /dev/root rw\n");
 	else if (!strcmp(name, "exe") || !strcmp(name, "cwd") || !strcmp(name, "root")) {
 		char host[PATH_MAX];
 		const char *g = !strcmp(name, "exe") ? tux_exe : !strcmp(name, "cwd") ? tux_cwd : "/";
@@ -325,7 +326,7 @@ static void gen_top(const char *name)
 		int n = snprintf(b, sizeof b, "Linux version 6.1.0-tux (tux@clokeos) (%s) #1 ClokeOS tux\n", TUX_NAME);
 		put("version", b, n);
 	} else if (!strcmp(name, "filesystems")) puts_("filesystems", "nodev\ttmpfs\nnodev\tproc\n\text4\n");
-	else if (!strcmp(name, "mounts")) puts_("mounts", "rootfs / rootfs rw 0 0\n");
+	else if (!strcmp(name, "mounts")) puts_("mounts", "/dev/root / ext4 rw 0 0\n");
 	else if (!strcmp(name, "stat")) puts_("stat", "cpu  0 0 0 0 0 0 0 0 0 0\nintr 0\nctxt 0\nbtime 0\nprocesses 1\nprocs_running 1\nprocs_blocked 0\n");
 	else if (!strcmp(name, "cmdline")) puts_("cmdline", "tux\n");
 	else if (!strcmp(name, "sys")) {
@@ -398,7 +399,7 @@ int tux_proc_prepare(const char *rest, char *rootout)
 		gen_proc_self("status");
 	} else if (!strcmp(first, "self") || !strcmp(first, "thread-self") || atoi(first) == (int)getpid()) {
 		if (!*second) {
-			const char *all[] = {"maps", "status", "stat", "statm", "cmdline", "environ", "comm", "mounts", "limits", "fd", "exe", "cwd", "root", "task"};
+			const char *all[] = {"maps", "status", "stat", "statm", "cmdline", "environ", "comm", "mounts", "mountinfo", "limits", "fd", "exe", "cwd", "root", "task"};
 			for (unsigned i = 0; i < sizeof all / sizeof *all; i++) gen_proc_self(all[i]);
 		} else gen_proc_self(second);
 		if (!strcmp(first, "thread-self")) put_link("thread-self", ".p");

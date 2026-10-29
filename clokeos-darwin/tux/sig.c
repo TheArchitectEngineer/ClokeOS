@@ -38,9 +38,9 @@ static uint64_t host_to_guest_set(const sigset_t *d)
 
 long tux_sigprocmask(long how, const uint64_t *set, uint64_t *old, size_t size)
 {
-	if (size != 8) return -EINVAL;
+	if (size != 8) return -tux_errno(EINVAL);
 	sigset_t cur, ns;
-	if (pthread_sigmask(SIG_BLOCK, NULL, &cur)) return -EINVAL;
+	if (pthread_sigmask(SIG_BLOCK, NULL, &cur)) return -tux_errno(EINVAL);
 	if (old) *old = host_to_guest_set(&cur);
 	if (!set) return 0;
 	int h;
@@ -48,10 +48,10 @@ long tux_sigprocmask(long how, const uint64_t *set, uint64_t *old, size_t size)
 	case 0: h = SIG_BLOCK; break;
 	case 1: h = SIG_UNBLOCK; break;
 	case 2: h = SIG_SETMASK; break;
-	default: return -EINVAL;
+	default: return -tux_errno(EINVAL);
 	}
 	tux_guest_to_host_sigset(*set, &ns);
-	return pthread_sigmask(h, &ns, NULL) ? -EINVAL : 0;
+	return pthread_sigmask(h, &ns, NULL) ? -tux_errno(EINVAL) : 0;
 }
 
 struct gact { uint64_t handler, flags, mask; };
@@ -116,10 +116,10 @@ void tux_signals_init(void)
 
 long tux_sigaction(long sig, const void *actp, void *oldp, size_t size)
 {
-	if (size != 8 || sig <= 0 || sig > 64) return -EINVAL;
+	if (size != 8 || sig <= 0 || sig > 64) return -tux_errno(EINVAL);
 	int ds = tux_sig_l2d((int)sig);
-	if (ds < 0) return actp ? (sig == 16 || sig == 30 ? 0 : -EINVAL) : 0;
-	if (sig == 9 || sig == 19) return actp ? -EINVAL : 0;
+	if (ds < 0) return actp ? (sig == 16 || sig == 30 ? 0 : -tux_errno(EINVAL)) : 0;
+	if (sig == 9 || sig == 19) return actp ? -tux_errno(EINVAL) : 0;
 	// Kernel-Aufbau: arm64 handler, flags, mask; x86_64 handler, flags, restorer, mask
 	const uint64_t *a = actp;
 	uint64_t *o = oldp;
@@ -157,6 +157,6 @@ long tux_sigaction(long sig, const void *actp, void *oldp, size_t size)
 	if (n.flags & L_SA_NOCLDSTOP) sa.sa_flags |= SA_NOCLDSTOP;
 	// SIGSEGV/SIGBUS behalten ihre eigene Behandlung, wenn das Programm nur SIG_DFL will
 	if (ds == SIGSEGV || ds == SIGBUS) { if (n.handler == 0) { tux_signals_init(); return 0; } }
-	if (sigaction(ds, &sa, NULL)) return -EINVAL;
+	if (sigaction(ds, &sa, NULL)) return -tux_errno(EINVAL);
 	return 0;
 }

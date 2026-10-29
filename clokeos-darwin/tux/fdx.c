@@ -131,11 +131,11 @@ long tux_eventfd(unsigned initval, long flags)
 
 static long eventfd_read(int fd, obj *o, void *buf, size_t n)
 {
-	if (n < 8) return -EINVAL;
+	if (n < 8) return -tux_errno(EINVAL);
 	uint64_t v;
 	ssize_t r = read(fd, &v, 8);   // blockiert wie das Original, wenn der Zähler 0 ist
 	if (r < 0) return err();
-	if (r != 8) return -EIO;
+	if (r != 8) return -tux_errno(EIO);
 	if (!o->sem) {
 		int avail = 0;
 		if (ioctl(fd, FIONREAD, &avail) == 0 && avail >= 8) {
@@ -155,16 +155,16 @@ static long eventfd_read(int fd, obj *o, void *buf, size_t n)
 
 static long eventfd_write(obj *o, const void *buf, size_t n)
 {
-	if (n < 8) return -EINVAL;
+	if (n < 8) return -tux_errno(EINVAL);
 	uint64_t v;
 	memcpy(&v, buf, 8);
-	if (v == ~0ULL) return -EINVAL;
+	if (v == ~0ULL) return -tux_errno(EINVAL);
 	if (!v) return 8;
 	if (o->sem) {
 		for (uint64_t i = 0; i < v && i < 4096; i++) { uint64_t one = 1; if (write(o->wfd, &one, 8) < 0) break; }
 		return 8;
 	}
-	if (write(o->wfd, &v, 8) < 0) return errno == EAGAIN ? -EAGAIN : err();
+	if (write(o->wfd, &v, 8) < 0) return errno == EAGAIN ? -tux_errno(EAGAIN) : err();
 	return 8;
 }
 
@@ -213,13 +213,13 @@ static int ep_apply(int kq, int fd, uint32_t ev, int add)
 long tux_epoll_ctl(int epfd, int op, int fd, const void *evp)
 {
 	obj *o = get(epfd, K_EPOLL);
-	if (!o || fd == epfd) return -EINVAL;
-	if (fd < 0) return -EBADF;
-	if (fcntl(fd, F_GETFL) < 0) return -EBADF;
+	if (!o || fd == epfd) return -tux_errno(EINVAL);
+	if (fd < 0) return -tux_errno(EBADF);
+	if (fcntl(fd, F_GETFL) < 0) return -tux_errno(EBADF);
 	uint32_t ev = 0;
 	uint64_t data = 0;
 	if (op != 2) {
-		if (!evp) return -EFAULT;
+		if (!evp) return -tux_errno(EFAULT);
 		ep_event e;
 		memcpy(&e, evp, sizeof e);
 		ev = e.events;
@@ -229,23 +229,23 @@ long tux_epoll_ctl(int epfd, int op, int fd, const void *evp)
 	pthread_mutex_lock(&lock);
 	reg_t *r = find_reg(o, fd);
 	if (op == 1) {         // ADD
-		if (r) ret = -EEXIST;
-		else if (ep_apply(epfd, fd, ev, 1) < 0) ret = (errno == ENOTSUP || errno == EINVAL || errno == EOPNOTSUPP) ? -EPERM : err();
+		if (r) ret = -tux_errno(EEXIST);
+		else if (ep_apply(epfd, fd, ev, 1) < 0) ret = (errno == ENOTSUP || errno == EINVAL || errno == EOPNOTSUPP) ? -tux_errno(EPERM) : err();
 		else {
 			if (o->nregs == o->capregs) { o->capregs = o->capregs ? o->capregs * 2 : 16; o->regs = realloc(o->regs, o->capregs * sizeof(reg_t)); }
 			o->regs[o->nregs++] = (reg_t){fd, ev, data};
 		}
 	} else if (op == 2) {  // DEL
-		if (!r) ret = -ENOENT;
+		if (!r) ret = -tux_errno(ENOENT);
 		else { ep_apply(epfd, fd, 0, 0); *r = o->regs[--o->nregs]; }
 	} else if (op == 3) {  // MOD
-		if (!r) ret = -ENOENT;
+		if (!r) ret = -tux_errno(ENOENT);
 		else {
 			ep_apply(epfd, fd, 0, 0);
 			if (ep_apply(epfd, fd, ev, 1) < 0) ret = err();
 			else { r->events = ev; r->data = data; }
 		}
-	} else ret = -EINVAL;
+	} else ret = -tux_errno(EINVAL);
 	pthread_mutex_unlock(&lock);
 	return ret;
 }
@@ -255,8 +255,8 @@ static int is_sock(int fd) { struct stat st; return fstat(fd, &st) == 0 && S_ISS
 long tux_epoll_wait(int epfd, void *out, int max, long timeout_ms, const uint64_t *sigmask)
 {
 	obj *o = get(epfd, K_EPOLL);
-	if (!o) return fcntl(epfd, F_GETFL) < 0 ? -EBADF : -EINVAL;
-	if (max <= 0) return -EINVAL;
+	if (!o) return fcntl(epfd, F_GETFL) < 0 ? -tux_errno(EBADF) : -tux_errno(EINVAL);
+	if (max <= 0) return -tux_errno(EINVAL);
 	struct kevent kev[256];
 	int nk = max * 2 > 256 ? 256 : max * 2;
 	struct timespec ts, *tp = NULL;
@@ -329,7 +329,7 @@ static int timer_arm(int kq, int64_t ns, int oneshot)
 long tux_timerfd_settime(int fd, long flags, const int64_t *nv, int64_t *old)
 {
 	obj *o = get(fd, K_TIMERFD);
-	if (!o) return -EINVAL;
+	if (!o) return -tux_errno(EINVAL);
 	if (old) {
 		int64_t rem = 0;
 		if (o->t_value) { rem = o->t_start + o->t_value - now_ns(CLOCK_MONOTONIC); if (rem < 1) rem = o->t_interval ? 1 : 0; }
@@ -359,7 +359,7 @@ long tux_timerfd_settime(int fd, long flags, const int64_t *nv, int64_t *old)
 long tux_timerfd_gettime(int fd, int64_t *cur)
 {
 	obj *o = get(fd, K_TIMERFD);
-	if (!o) return -EINVAL;
+	if (!o) return -tux_errno(EINVAL);
 	int64_t rem = 0;
 	if (o->t_value) {
 		int64_t el = now_ns(CLOCK_MONOTONIC) - o->t_start;
@@ -374,12 +374,12 @@ long tux_timerfd_gettime(int fd, int64_t *cur)
 
 static long timerfd_read(int fd, obj *o, void *buf, size_t n)
 {
-	if (n < 8) return -EINVAL;
+	if (n < 8) return -tux_errno(EINVAL);
 	struct kevent k;
 	struct timespec zero = {0, 0};
 	int r = kevent(fd, NULL, 0, &k, 1, nonblocking(fd) ? &zero : NULL);
 	if (r < 0) return err();
-	if (r == 0) return -EAGAIN;
+	if (r == 0) return -tux_errno(EAGAIN);
 	uint64_t cnt = k.data > 0 ? (uint64_t)k.data : 1;
 	if (o->t_rearm) { o->t_rearm = 0; o->t_start = now_ns(CLOCK_MONOTONIC); o->t_value = o->t_interval; timer_arm(fd, o->t_interval, 0); }
 	memcpy(buf, &cnt, 8);
@@ -399,7 +399,7 @@ long tux_signalfd(int fd, uint64_t mask, long flags)
 		o->kind = K_SIGNALFD;
 		fd = kq;
 		if (attach(kq, o) < 0) return err();
-	} else if (!(o = get(fd, K_SIGNALFD))) return -EINVAL;
+	} else if (!(o = get(fd, K_SIGNALFD))) return -tux_errno(EINVAL);
 	for (int s = 1; s < 65; s++) {
 		int d = tux_sig_l2d(s);
 		if (d < 0) continue;
@@ -415,13 +415,13 @@ long tux_signalfd(int fd, uint64_t mask, long flags)
 
 static long signalfd_read(int fd, obj *o, void *buf, size_t n)
 {
-	if (n < 128) return -EINVAL;
+	if (n < 128) return -tux_errno(EINVAL);
 	struct kevent kev[32];
 	struct timespec zero = {0, 0};
 	int max = n / 128 > 32 ? 32 : (int)(n / 128);
 	int r = kevent(fd, NULL, 0, kev, max, nonblocking(fd) ? &zero : NULL);
 	if (r < 0) return err();
-	if (r == 0) return -EAGAIN;
+	if (r == 0) return -tux_errno(EAGAIN);
 	for (int i = 0; i < r; i++) {
 		uint8_t *p = (uint8_t *)buf + i * 128;
 		memset(p, 0, 128);
@@ -448,7 +448,7 @@ int tux_fdx_read(int fd, void *buf, size_t n, long *ret)
 	case K_EVENTFD: *ret = eventfd_read(fd, o, buf, n); return 1;
 	case K_TIMERFD: *ret = timerfd_read(fd, o, buf, n); return 1;
 	case K_SIGNALFD: *ret = signalfd_read(fd, o, buf, n); return 1;
-	case K_EPOLL: *ret = -EINVAL; return 1;
+	case K_EPOLL: *ret = -tux_errno(EINVAL); return 1;
 	case K_SEQPKT: return tux_seq_read(fd, buf, n, ret);
 	}
 	return 0;
@@ -461,7 +461,7 @@ int tux_fdx_write(int fd, const void *buf, size_t n, long *ret)
 	switch (o->kind) {
 	case K_EVENTFD: *ret = eventfd_write(o, buf, n); return 1;
 	case K_SEQPKT: return tux_seq_write(fd, buf, n, ret);
-	default: *ret = -EINVAL; return 1;
+	default: *ret = -tux_errno(EINVAL); return 1;
 	}
 }
 

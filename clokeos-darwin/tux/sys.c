@@ -157,7 +157,7 @@ int tux_resolve(int dirfd, const char *path, int follow, char *host, char *guest
 {
 	static __thread char w1[2 * PATH_MAX], w2[2 * PATH_MAX];
 	char cur[PATH_MAX];
-	if (!path[0]) return -ENOENT;
+	if (!path[0]) return -tux_errno(ENOENT);
 	size_t plen = strlen(path);
 	int want_dir = path[plen - 1] == '/';
 	cur[0] = 0;
@@ -166,12 +166,12 @@ int tux_resolve(int dirfd, const char *path, int follow, char *host, char *guest
 		if (dirfd == AT_FDCWD_L) strlcpy(base, tux_cwd, sizeof base);
 		else {
 			char hp[PATH_MAX];
-			if (fcntl(dirfd, F_GETPATH, hp) < 0) return -EBADF;
+			if (fcntl(dirfd, F_GETPATH, hp) < 0) return -tux_errno(EBADF);
 			host_to_guest(hp, base);
 		}
 		if (strcmp(base, "/")) strlcpy(cur, base, sizeof cur);
 	}
-	if (plen >= sizeof w1) return -ENAMETOOLONG;
+	if (plen >= sizeof w1) return -tux_errno(ENAMETOOLONG);
 	char *work = w1, *other = w2;
 	strlcpy(work, path, sizeof w1);
 	char *p = work;
@@ -186,7 +186,7 @@ int tux_resolve(int dirfd, const char *path, int follow, char *host, char *guest
 		*p = 0;
 		if (!strcmp(comp, ".")) { *p = save; continue; }
 		if (!strcmp(comp, "..")) { pop_comp(cur); *p = save; continue; }
-		if (strlen(cur) + cl + 2 >= sizeof cur) return -ENAMETOOLONG;
+		if (strlen(cur) + cl + 2 >= sizeof cur) return -tux_errno(ENAMETOOLONG);
 		strlcat(cur, "/", sizeof cur);
 		strlcat(cur, comp, sizeof cur);
 		*p = save;
@@ -222,12 +222,12 @@ int tux_resolve(int dirfd, const char *path, int follow, char *host, char *guest
 			guest_to_host(cur, hp);
 			ssize_t n = readlink(hp, tgt, sizeof tgt - 1);
 			if (n >= 0) {
-				if (++links > 40) return -ELOOP;
+				if (++links > 40) return -tux_errno(ELOOP);
 				tgt[n] = 0;
 				pop_comp(cur);
 				if (tgt[0] == '/') cur[0] = 0;
 				// neuer Rest = Ziel + noch nicht gelesener Teil
-				if (strlen(tgt) + strlen(p) + 2 >= sizeof w1) return -ENAMETOOLONG;
+				if (strlen(tgt) + strlen(p) + 2 >= sizeof w1) return -tux_errno(ENAMETOOLONG);
 				snprintf(other, sizeof w1, "%s%s%s", tgt, "/", p);
 				char *tmp = work; work = other; other = tmp;
 				p = work;
@@ -448,7 +448,7 @@ static long do_ioctl(int fd, unsigned long req, void *arg)
 	case 0x5410: return E(tcsetpgrp(fd, *(int *)arg));
 	case 0x540E: return E(ioctl(fd, TIOCSCTTY, 0));
 	case 0x5422: return E(ioctl(fd, TIOCNOTTY, 0));
-	case 0x5429: { return -ENOTTY;   /* tcgetsid fehlt in PureDarwins libSystem */ }
+	case 0x5429: { return -tux_errno(ENOTTY);   /* tcgetsid fehlt in PureDarwins libSystem */ }
 	case 0x541B: return E(ioctl(fd, FIONREAD, arg));
 	case 0x5421: return E(ioctl(fd, FIONBIO, arg));
 	case 0x5450: return E(fcntl(fd, F_SETFD, 0));            // FIONCLEX
@@ -460,7 +460,7 @@ static long do_ioctl(int fd, unsigned long req, void *arg)
 	case 0x5409: return E(tcsendbreak(fd, 0));
 	default:
 		if (tux_trace) fprintf(stderr, "tux: ioctl 0x%lx nicht übersetzt\n", req);
-		return -ENOTTY;
+		return -tux_errno(ENOTTY);
 	}
 }
 
@@ -487,8 +487,8 @@ static long do_execve(const char *path, char **argv, char **envp)
 	if (e < 0) return e;
 	struct stat st;
 	if (stat(host, &st) != 0) return ERR();
-	if (S_ISDIR(st.st_mode)) return -EACCES;
-	if (access(host, X_OK) != 0) return -EACCES;
+	if (S_ISDIR(st.st_mode)) return -tux_errno(EACCES);
+	if (access(host, X_OK) != 0) return -tux_errno(EACCES);
 	// tux mit denselben Einstellungen noch einmal starten; der Gast sieht argv unverändert
 	char *nargv[1040];
 	int k = 0;
@@ -525,7 +525,7 @@ static long do_getdents64(int fd, void *buf, size_t cnt)
 	static __thread char dbuf[16384];
 	// Darwin (getdirentries64, Nummer 344) liefert Einträge mit 64-Bit-Inode. Ein Linux-Eintrag ist höchstens
 	// ein Viertel größer als der von Darwin, also nur so viel anfordern, dass alles in den Puffer passt.
-	if (cnt < 600) return -EINVAL;
+	if (cnt < 600) return -tux_errno(EINVAL);
 	size_t ask = cnt * 3 / 4 - 16;
 	if (ask > sizeof dbuf) ask = sizeof dbuf;
 	long basep = 0;
@@ -555,7 +555,7 @@ static long do_getdents64(int fd, void *buf, size_t cnt)
 // Hauptschalter
 static long sys_mmap(uint64_t addr, uint64_t len, int prot, int flags, int fd, int64_t off)
 {
-	if (!len) return -EINVAL;
+	if (!len) return -tux_errno(EINVAL);
 	len = (len + tux_page - 1) & ~(tux_page - 1);
 	int hf = 0;
 	if (flags & 0x10) hf |= MAP_FIXED;
@@ -566,12 +566,12 @@ static long sys_mmap(uint64_t addr, uint64_t len, int prot, int flags, int fd, i
 	if (flags & 0x20) {
 		void *p = tux_mmap(want, len, prot, hf | MAP_ANON);
 		if (p == MAP_FAILED) return ERR();
-		if ((flags & 0x100000) && addr && p != want) { munmap(p, len); return -EEXIST; }
+		if ((flags & 0x100000) && addr && p != want) { munmap(p, len); return -tux_errno(EEXIST); }
 		return (long)p;
 	}
 	if ((flags & 1) && (prot & PROT_WRITE)) {
 		// geteilte beschreibbare Abbildung: Darwin macht sie selbst
-		if (off & (tux_page - 1)) return -EINVAL;
+		if (off & (tux_page - 1)) return -tux_errno(EINVAL);
 		void *p = mmap(want, len, prot, hf, fd, off);
 		return p == MAP_FAILED ? ERR() : (long)p;
 	}
@@ -579,7 +579,7 @@ static long sys_mmap(uint64_t addr, uint64_t len, int prot, int flags, int fd, i
 	// anonymen Speicher anlegen, die Datei hineinlesen und (bei Code) die Systemaufruf-Befehle umschreiben
 	void *p = tux_mmap(want, len, PROT_READ | PROT_WRITE, (hf & ~MAP_SHARED) | MAP_PRIVATE | MAP_ANON);
 	if (p == MAP_FAILED) return ERR();
-	if ((flags & 0x100000) && addr && p != want) { munmap(p, len); return -EEXIST; }
+	if ((flags & 0x100000) && addr && p != want) { munmap(p, len); return -tux_errno(EEXIST); }
 	size_t got = 0;
 	while (got < len) {
 		ssize_t n = pread(fd, (char *)p + got, len - got, off + got);
@@ -594,7 +594,7 @@ static long sys_mmap(uint64_t addr, uint64_t len, int prot, int flags, int fd, i
 
 static long sys_mprotect(uint64_t addr, uint64_t len, int prot)
 {
-	if (addr & (tux_page - 1)) return -EINVAL;
+	if (addr & (tux_page - 1)) return -tux_errno(EINVAL);
 	len = (len + tux_page - 1) & ~(tux_page - 1);
 	if (prot & PROT_EXEC) {
 		// Code, der erst jetzt ausführbar wird, umschreiben
@@ -629,7 +629,7 @@ static long fcntl_l2d(int fd, long cmd, long arg)
 	case 1031: case 1032: return 65536;  // F_SETPIPE_SZ, F_GETPIPE_SZ
 	case 1033: return 0;                 // F_ADD_SEALS: Siegel gibt es nicht, tun als ob
 	case 1034: return 0;                 // F_GET_SEALS
-	default: return -EINVAL;
+	default: return -tux_errno(EINVAL);
 	}
 }
 
@@ -664,7 +664,7 @@ static long syscall_inner(tux_regs *r)
 	case N_dup2: { if (a0 != a1) tux_fdx_close((int)a1); long n = E(dup2((int)a0, (int)a1)); if (n >= 0 && a0 != a1) tux_fdx_dup((int)a0, (int)a1); return n; }
 #endif
 	case N_dup3: {
-		if (a0 == a1) return -EINVAL;
+		if (a0 == a1) return -tux_errno(EINVAL);
 		tux_fdx_close((int)a1);
 		long n = E(dup2((int)a0, (int)a1));
 		if (n >= 0) tux_fdx_dup((int)a0, (int)a1);
@@ -681,7 +681,7 @@ static long syscall_inner(tux_regs *r)
 	case N_fchown: return E(fchown((int)a0, a1, a2));
 	case N_fchdir: {
 		char hp[PATH_MAX];
-		if (fcntl((int)a0, F_GETPATH, hp) < 0) return -EBADF;
+		if (fcntl((int)a0, F_GETPATH, hp) < 0) return -tux_errno(EBADF);
 		host_to_guest(hp, tux_cwd);
 		return 0;
 	}
@@ -690,14 +690,14 @@ static long syscall_inner(tux_regs *r)
 		PATH_(AT_FDCWD_L, a0, 1);
 		struct stat st;
 		if (stat(host, &st) != 0) return ERR();
-		if (!S_ISDIR(st.st_mode)) return -ENOTDIR;
+		if (!S_ISDIR(st.st_mode)) return -tux_errno(ENOTDIR);
 		tux_resolve(AT_FDCWD_L, (const char *)a0, 1, host, g);
 		strlcpy(tux_cwd, g, sizeof tux_cwd);
 		return 0;
 	}
 	case N_getcwd: {
 		size_t n = strlen(tux_cwd) + 1;
-		if (n > a1) return -ERANGE;
+		if (n > a1) return -tux_errno(ERANGE);
 		memcpy((void *)a0, tux_cwd, n);
 		return n;
 	}
@@ -741,17 +741,17 @@ static long syscall_inner(tux_regs *r)
 		return E(n);
 	}
 	case N_select: goto select_common;
-	case N_getdents: return -ENOSYS;
+	case N_getdents: return -tux_errno(ENOSYS);
 	case N_fork: case N_vfork: {
 		pid_t p = fork();
 		if (p == 0) tux_threads_after_fork();
 		return p < 0 ? ERR() : p;
 	}
-	case N_pause: { sigset_t s; sigemptyset(&s); sigsuspend(&s); return -EINTR; }
+	case N_pause: { sigset_t s; sigemptyset(&s); sigsuspend(&s); return -tux_errno(EINTR); }
 	case N_alarm: return alarm((unsigned)a0);
 	case N_getpgrp: return getpgrp();
 	case N_time: { time_t t = time(NULL); if (a0) *(int64_t *)a0 = t; return t; }
-	case N_utimes: return -ENOSYS;
+	case N_utimes: return -tux_errno(ENOSYS);
 	case N_arch_prctl: return tux_arch_prctl(r, a0, a1);
 #endif
 	case N_openat: { PATH_(a0, a1, !(a2 & L_O_NOFOLLOW)); return E(open(host, open_flags(a2), (mode_t)a3)); }
@@ -777,8 +777,8 @@ static long syscall_inner(tux_regs *r)
 		long e = tux_resolve((int)a2, (const char *)a3, 0, h2, NULL);
 		if (e < 0) return e;
 		if (nr == N_renameat2 && a4) {
-			if (a4 & 1) { struct stat s; if (lstat(h2, &s) == 0) return -EEXIST; }   // RENAME_NOREPLACE
-			else return -EINVAL;
+			if (a4 & 1) { struct stat s; if (lstat(h2, &s) == 0) return -tux_errno(EEXIST); }   // RENAME_NOREPLACE
+			else return -tux_errno(EINVAL);
 		}
 		return E(rename(host, h2));
 	}
@@ -819,8 +819,13 @@ static long syscall_inner(tux_regs *r)
 		int fdn;
 		if ((sscanf(path, "/proc/self/fd/%d", &fdn) == 1) || (sscanf(path, "/proc/%*d/fd/%d", &fdn) == 1)) {
 			char hp[PATH_MAX], gp[PATH_MAX];
-			if (fcntl(fdn, F_GETPATH, hp) < 0) return -ENOENT;
-			host_to_guest(hp, gp);
+			if (fcntl(fdn, F_GETPATH, hp) < 0) {
+				// Pipe, Socket usw. haben keinen Pfad; Linux zeigt dort pipe:[Nummer] und socket:[Nummer]
+				struct stat fst;
+				if (fstat(fdn, &fst) < 0) return -tux_errno(ENOENT);
+				snprintf(gp, sizeof gp, "%s:[%llu]", S_ISSOCK(fst.st_mode) ? "socket" : S_ISFIFO(fst.st_mode) ? "pipe" : "anon_inode",
+				    (unsigned long long)fst.st_ino);
+			} else host_to_guest(hp, gp);
 			size_t n = strlen(gp);
 			if (n > sz) n = sz;
 			memcpy(buf, gp, n);
@@ -919,7 +924,7 @@ static long syscall_inner(tux_regs *r)
 	case N_mremap: {
 		size_t os = (a1 + tux_page - 1) & ~(tux_page - 1), ns = (a2 + tux_page - 1) & ~(tux_page - 1);
 		if (ns <= os) { if (ns < os) munmap((char *)a0 + ns, os - ns); return a0; }
-		if (!(a3 & 1)) return -ENOMEM;
+		if (!(a3 & 1)) return -tux_errno(ENOMEM);
 		void *p = tux_mmap(NULL, ns, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE);
 		if (p == MAP_FAILED) return ERR();
 		memcpy(p, (void *)a0, os);
@@ -957,7 +962,7 @@ static long syscall_inner(tux_regs *r)
 		int n = getgroups(NGROUPS_MAX, g);
 		if (n < 0) return ERR();
 		if (a0 == 0) return n;
-		if ((long)a0 < n) return -EINVAL;
+		if ((long)a0 < n) return -tux_errno(EINVAL);
 		memcpy((void *)a1, g, n * sizeof(gid_t));
 		return n;
 	}
@@ -965,10 +970,10 @@ static long syscall_inner(tux_regs *r)
 	case N_umask: return umask(a0);
 	case N_set_tid_address: tux_cur()->clear_tid = a0; return tux_cur()->tid;
 	case N_set_robust_list: return 0;
-	case N_rseq: return -ENOSYS;
+	case N_rseq: return -tux_errno(ENOSYS);
 	case N_sched_yield: sched_yield(); return 0;
 	case N_sched_getaffinity: {
-		if (a1 < 8) return -EINVAL;
+		if (a1 < 8) return -tux_errno(EINVAL);
 		memset((void *)a2, 0, a1);
 		*(uint8_t *)a2 = 1;
 		return 8;
@@ -981,7 +986,7 @@ static long syscall_inner(tux_regs *r)
 		case 15: return 0;                                  // PR_SET_NAME
 		case 16: memcpy((void *)a1, "tux\0\0\0\0\0", 8); return 0;   // PR_GET_NAME
 		case 1: case 36: case 38: return 0;                // PDEATHSIG, CHILD_SUBREAPER, NO_NEW_PRIVS
-		default: return -EINVAL;
+		default: return -tux_errno(EINVAL);
 		}
 	}
 	case N_clone: {
@@ -1004,7 +1009,7 @@ static long syscall_inner(tux_regs *r)
 		if ((fl & 0x100) && ptid) *(int *)ptid = p;   // CLONE_PARENT_SETTID
 		return p;
 	}
-	case N_clone3: return -ENOSYS;
+	case N_clone3: return -tux_errno(ENOSYS);
 	case N_execve: {
 		char **argv = (char **)a1, **envp = (char **)a2;
 		return do_execve((const char *)a0, argv, envp);
@@ -1026,7 +1031,7 @@ static long syscall_inner(tux_regs *r)
 	case N_exit_group: _exit((int)a0);
 	case N_kill: {
 		int s = (int)a1;
-		if (s) { s = tux_sig_l2d(s); if (s < 0) return -EINVAL; }
+		if (s) { s = tux_sig_l2d(s); if (s < 0) return -tux_errno(EINVAL); }
 		return E(kill((pid_t)a0, s));
 	}
 	case N_tkill: return tux_tgkill(0, a0, a1);
@@ -1045,19 +1050,19 @@ static long syscall_inner(tux_regs *r)
 		sigset_t s;
 		tux_guest_to_host_sigset(*(uint64_t *)a0, &s);
 		sigsuspend(&s);
-		return -EINTR;
+		return -tux_errno(EINTR);
 	}
 	case N_sigaltstack: return 0;
 	case N_rt_sigreturn: return 0;
 	// Zeit
 	case N_clock_gettime: {
 		int c = clock_l2d(a0);
-		if (c < 0) return -EINVAL;
+		if (c < 0) return -tux_errno(EINVAL);
 		return E(clock_gettime((clockid_t)c, (struct timespec *)a1));
 	}
 	case N_clock_getres: {
 		int c = clock_l2d(a0);
-		if (c < 0) return -EINVAL;
+		if (c < 0) return -tux_errno(EINVAL);
 		if (!a1) return 0;
 		{ struct timespec *t = (void *)a1; t->tv_sec = 0; t->tv_nsec = 1000; return 0; }   /* PureDarwins libSystem hat kein clock_getres */
 	}
@@ -1086,13 +1091,13 @@ static long syscall_inner(tux_regs *r)
 			if (t.tv_sec < 0) return 0;
 		}
 		int rc = nanosleep(&t, &rem);
-		if (rc && errno == EINTR) { if (a3 && !(a1 & 1)) *(struct timespec *)a3 = rem; return -EINTR; }
+		if (rc && errno == EINTR) { if (a3 && !(a1 & 1)) *(struct timespec *)a3 = rem; return -tux_errno(EINTR); }
 		return E(rc);
 	}
 	case N_setitimer: case N_getitimer: {
 		struct itimerval nv, ov;
 		if (nr == N_getitimer) {
-			return -ENOSYS;   /* getitimer fehlt in PureDarwins libSystem */
+			return -tux_errno(ENOSYS);   /* getitimer fehlt in PureDarwins libSystem */
 			int64_t *o = (int64_t *)a1;
 			tv_to_l(&ov.it_interval, o);
 			tv_to_l(&ov.it_value, o + 2);
@@ -1196,7 +1201,7 @@ static long syscall_inner(tux_regs *r)
 		return tux_futex((uint32_t *)a0, (int)a1, (uint32_t)a2, (cmd == 0 || cmd == 9) ? tp : (const struct timespec *)a3,
 		    (uint32_t *)a4, (uint32_t)a5);
 	}
-	case N_fallocate: return -EOPNOTSUPP;
+	case N_fallocate: return -tux_errno(EOPNOTSUPP);
 	case N_socket: return tux_socket(a0, a1, a2);
 	case N_socketpair: return tux_socketpair(a0, a1, a2, (int *)a3);
 	case N_bind: return tux_bind((int)a0, (void *)a1, (uint32_t)a2);
@@ -1237,7 +1242,7 @@ static long syscall_inner(tux_regs *r)
 	case N_signalfd4: return tux_signalfd((int)a0, *(uint64_t *)a1, a3);
 	default:
 		if (tux_trace) fprintf(stderr, "tux: Systemaufruf %ld nicht übersetzt (a0=%llx)\n", nr, (unsigned long long)a0);
-		return -ENOSYS;
+		return -tux_errno(ENOSYS);
 	}
 }
 
@@ -1282,8 +1287,8 @@ void tux_tls_free(void)
 long tux_arch_prctl(tux_regs *r, long code, uint64_t addr)
 {
 	if (code == 0x1003) { *(uint64_t *)addr = tux_cur()->ldt_cur; return 0; }
-	if (code != 0x1002) return -EINVAL;
-	if (addr >> 32) { if (tux_trace) fprintf(stderr, "tux: TLS-Adresse %llx über 4 GiB\n", (unsigned long long)addr); return -ENOMEM; }
+	if (code != 0x1002) return -tux_errno(EINVAL);
+	if (addr >> 32) { if (tux_trace) fprintf(stderr, "tux: TLS-Adresse %llx über 4 GiB\n", (unsigned long long)addr); return -tux_errno(ENOMEM); }
 	int n;
 	ldt_set(addr, &n);
 	if (n < 0) return ERR();
@@ -1299,5 +1304,5 @@ long tux_arch_prctl(tux_regs *r, long code, uint64_t addr)
 void tux_ldt_init(void) {}
 void tux_tls_new(uint64_t tls) { if (tls) tux_set_tp(tls); }
 void tux_tls_free(void) {}
-long tux_arch_prctl(tux_regs *r, long code, uint64_t addr) { return -EINVAL; }
+long tux_arch_prctl(tux_regs *r, long code, uint64_t addr) { return -tux_errno(EINVAL); }
 #endif

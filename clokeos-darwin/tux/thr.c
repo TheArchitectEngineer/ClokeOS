@@ -97,14 +97,14 @@ void tux_thread_exit(int code)
 long tux_tgkill(long pid, long tid, long sig)
 {
 	int s = sig ? tux_sig_l2d((int)sig) : 0;
-	if (sig && s < 0) return -EINVAL;
+	if (sig && s < 0) return -tux_errno(EINVAL);
 	if (pid > 0 && pid != getpid()) return kill((pid_t)pid, s) ? -tux_errno(errno) : 0;
 	pthread_t pt = 0;
 	pthread_mutex_lock(&tl);
 	for (tux_thr *t = threads; t; t = t->next)
 		if (t->tid == tid) { pt = t->pt; break; }
 	pthread_mutex_unlock(&tl);
-	if (!pt) return -ESRCH;
+	if (!pt) return -tux_errno(ESRCH);
 	if (!s) return 0;
 	int e = pthread_kill(pt, s);
 	return e ? -tux_errno(e) : 0;
@@ -163,14 +163,14 @@ static long futex_wait(uint32_t *addr, uint32_t val, const struct timespec *to, 
 	pthread_mutex_lock(&fm);
 	if (__atomic_load_n(addr, __ATOMIC_SEQ_CST) != val) {
 		pthread_mutex_unlock(&fm);
-		return -EAGAIN;
+		return -tux_errno(EAGAIN);
 	}
 	if (wq_tail) wq_tail->next = &w; else wq = &w;
 	wq_tail = &w;
 	long ret = 0;
 	while (!w.woken) {
 		int e = to ? pthread_cond_timedwait_relative_np(&w.cv, &fm, &rel) : pthread_cond_wait(&w.cv, &fm);
-		if (e == ETIMEDOUT && !w.woken) { ret = -ETIMEDOUT; break; }
+		if (e == ETIMEDOUT && !w.woken) { ret = -tux_errno(ETIMEDOUT); break; }
 	}
 	wq_remove(&w);
 	pthread_mutex_unlock(&fm);
@@ -194,7 +194,7 @@ long tux_futex(uint32_t *uaddr, int op, uint32_t val, const struct timespec *to,
 		pthread_mutex_lock(&fm);
 		if (cmd == 4 && __atomic_load_n(uaddr, __ATOMIC_SEQ_CST) != val3) {
 			pthread_mutex_unlock(&fm);
-			return -EAGAIN;
+			return -tux_errno(EAGAIN);
 		}
 		int c = wake_locked(uaddr, (int)val, ~0u);
 		long max = (long)(uintptr_t)to;   // bei REQUEUE steht hier die Höchstzahl
@@ -216,7 +216,7 @@ long tux_futex(uint32_t *uaddr, int op, uint32_t val, const struct timespec *to,
 			case 2: nw = old | oparg; break;
 			case 3: nw = old & ~oparg; break;
 			case 4: nw = old ^ oparg; break;
-			default: return -ENOSYS;
+			default: return -tux_errno(ENOSYS);
 			}
 		} while (!__atomic_compare_exchange_n(uaddr2, &old, nw, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST));
 		pthread_mutex_lock(&fm);
@@ -235,6 +235,6 @@ long tux_futex(uint32_t *uaddr, int op, uint32_t val, const struct timespec *to,
 		pthread_mutex_unlock(&fm);
 		return c;
 	}
-	default: return -ENOSYS;
+	default: return -tux_errno(ENOSYS);
 	}
 }
