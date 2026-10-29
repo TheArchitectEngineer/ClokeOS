@@ -15,7 +15,7 @@ ClokeOS starts as a macOS-like system and grows towards running software from ot
 | **Mac** (default interface "ClokeOS") | macOS-like desktop (CloakServer), Mac apps on Darling's frameworks (with many gaps), Fundus, Launchpad, Spotlight, System Settings, recovery and installer | bash and Homebrew, a modern browser |
 | **Windows** | the **NT interface**: a Windows-like desktop with taskbar, Start menu, tray and desktop icons (System Settings > Appearance > Interface) | `.exe` programs through Wine 11.0 (x86_64 only): own tree `/NT` as drive C:, `wine` on the PATH, double-click in Fundus, "Wine" app; 64-bit and 32-bit console programs and notepad run in the VM | Windows programs on arm64 (needs the translation layer), more tested programs |
 | **Linux** | first version (arm64 and x86_64) | programs in their own tree `/TUX` (Alpine: musl, BusyBox) run through `tux`, a user-space loader that translates Linux system calls; BusyBox `sh`, `ls`, `cat` work on both; threads and sockets are still missing (see [Linux programs](#linux-programs-tux)) |
-| **Other CPU** | images for x86_64 and arm64 | a translation layer between arm64 and x86_64 in both directions, like Rosetta 2; a feasibility study comes first |
+| **Other CPU** | images for x86_64 and arm64 | a translation layer between arm64 and x86_64 in both directions, like Rosetta 2; see the [feasibility study](clokeos-darwin/docs/translation-study.md) |
 
 ![The NT interface: square windows with the buttons on the right, a taskbar with the Start button, the running apps, speaker, network and clock, and icons on the desktop](clokeos-darwin/screenshots/nt-desktop.png)
 
