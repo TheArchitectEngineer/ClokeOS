@@ -259,12 +259,12 @@ output; Apple's Accelerate for comparison): vadd 17.6 vs 18.7 GElem/s (memory bo
 Apple's version is much faster on the host (sgemm 626 GFLOPS via the matrix coprocessor, FFT 6.6 µs, dotpr 20
 GElem/s), so these are correctness-first numbers; a real-time DSP load needs SIMD kernels and a split-radix or
 radix-4 FFT. In the x86_64 QEMU TCG VM (`acctest bench`; absolute numbers say little): vadd x1.9, dotpr x1.8, sve
-x2.3, conv x1.7, sgemm x1.4 vs naive.
+x2.3, conv x1.7, sgemm x1.4 vs naive. In the arm64 VM (HVF, near native): vadd x1.6, dotpr x15, sve x19, conv x6.4, sgemm 11.7 vs 1.8 GFLOPS (x6.4), FFT 4096 35 µs.
 
 **Tested:** native host (x86_64 and arm64 build against Apple's SDK; Mac run is arm64); `acctest` self-tests
 (naive references: elementwise ops, FFT vs direct DFT, mmul, conv, biquad, BLAS, LU/SVD/eigen residuals) in the
-x86_64 ClokeOS VM: **all pass** (plain PureDarwin minimal image plus the framework via `CLOKE_EXTRA_STAGE`, which
+x86_64 and the arm64 ClokeOS VM: **all pass** (plain PureDarwin minimal image plus the framework via `CLOKE_EXTRA_STAGE`, which
 `brand.sh` now accepts). Run: `DYLD_FRAMEWORK_PATH=/Library/ClokeOS/MacFrameworks /Library/ClokeOS/Probe/acctest`
 (`dump`, `bench` as arguments). **Not tested:** Logic itself, the `vDSP_*` calls with its real data and strides,
 thread safety of the FFT setup (read-only after creation, so it should be fine), the full dump comparison inside
-a VM (only the self-tests ran there), real hardware.
+a VM (only the self-tests ran there; the arm64 VM used the minimal arm64 image the same way), real hardware.
