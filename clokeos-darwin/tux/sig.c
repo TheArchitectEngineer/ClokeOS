@@ -84,6 +84,16 @@ static void tramp(int dsig, siginfo_t *si, void *uc)
 		sa.sa_handler = SIG_DFL;
 		sigaction(dsig, &sa, NULL);
 	}
+#ifdef TUX_X86_64
+	{
+		// Beim Eintritt in den Handler ist FS zurückgesetzt; glibc liest den Stapelschutzwert aus %fs:0x28 (Abstürze bei Adresse 0x28)
+		int idx = tux_cur()->ldt_idx;
+		if (idx >= 0) {
+			unsigned short sel = (unsigned short)((idx << 3) | 7);
+			__asm__ volatile("mov %0, %%fs" :: "r"(sel));
+		}
+	}
+#endif
 	if (g.handler > 1) {
 		if (g.flags & L_SA_SIGINFO) ((void (*)(int, void *, void *))g.handler)(ls, &lsi, luc);
 		else ((void (*)(int))g.handler)(ls);
