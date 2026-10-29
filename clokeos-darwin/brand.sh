@@ -357,6 +357,13 @@ if [ "$CLOKE_ARCH" = x86_64 ] || [ "$CLOKE_FLAVOR" = desktop ]; then
   mcopy -n -i "$esp" ::/EFI/BOOT/kernel "$tmp/kernel"
   python3 -I "$HERE/kcfix.py" "$tmp/kernel"
   [ "$CLOKE_ARCH" = x86_64 ] && [ "$CLOKE_FLAVOR" = desktop ] && cp "$WORK/out/kernel" "$tmp/kernel"
+  # Optional: eigener Kernel (CLOKEOS_KERNEL=Pfad, arm64), z. B. Darwin 20.6.0 laut docs/kernel-20.6.md
+  if [ -n "${CLOKEOS_KERNEL:-}" ]; then
+    [ "$CLOKE_ARCH" = arm64 ] && [ -f "$CLOKEOS_KERNEL" ] ||
+      { echo "CLOKEOS_KERNEL: nur arm64, Datei muss existieren ($CLOKEOS_KERNEL)" >&2; exit 1; }
+    cp "$CLOKEOS_KERNEL" "$tmp/kernel"
+    python3 -I "$HERE/kcfix.py" "$tmp/kernel"
+  fi
   if [ "$CLOKE_ARCH" = x86_64 ] && [ "$CLOKE_FLAVOR" = desktop ] && [ -f "$WORK/out/kernel-up" ]; then
     mcopy -o -i "$esp" "$WORK/out/kernel-up" ::/EFI/BOOT/kernel-up # U beim Einschalten: ein Kern
   fi

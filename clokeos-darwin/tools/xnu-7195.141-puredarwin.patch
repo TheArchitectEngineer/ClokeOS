@@ -1,0 +1,2368 @@
+diff --git a/cmake/kext.cmake b/cmake/kext.cmake
+index 89e56e11..0eef1387 100644
+--- a/cmake/kext.cmake
++++ b/cmake/kext.cmake
+@@ -44,13 +44,16 @@ function(add_kext_bundle name)
+     endif()
+ 
+ 
+-    if(CMAKE_HOST_APPLE)
++    if(CMAKE_HOST_APPLE AND NOT DEFINED ENV{PD_KEXT_LD})
+         # Real Apple ld rejects a plain MH_BUNDLE (-bundle) unless it links
+         # libSystem, which a kext must not do. Kexts need the dedicated
+         # MH_KEXT_BUNDLE output (-kext), which has no such requirement.
+         target_link_options(${name} PRIVATE "LINKER:-kext")
+     else()
+         target_link_options(${name} PRIVATE "LINKER:-bundle")
++        if(DEFINED ENV{PD_KEXT_LD})
++            target_link_options(${name} PRIVATE -fuse-ld=$ENV{PD_KEXT_LD} -L$ENV{PD_KEXT_STUB} -lSystem)
++        endif()
+         if(CMAKE_HOST_SYSTEM_NAME STREQUAL "Linux")
+             # ld64 requires libSystem to accept -bundle; the SDK .tbd stub satisfies
+             # the check without adding a real runtime dependency.
+diff --git a/src/Kernel/xnu/bsd/dev/arm64/sysctl.c b/src/Kernel/xnu/bsd/dev/arm64/sysctl.c
+index 70c3bf46..564bfaf9 100644
+--- a/src/Kernel/xnu/bsd/dev/arm64/sysctl.c
++++ b/src/Kernel/xnu/bsd/dev/arm64/sysctl.c
+@@ -268,6 +268,7 @@ SYSCTL_QUAD(_machdep, OID_AUTO, tlto,
+     CTLFLAG_RW | CTLFLAG_LOCKED, &TLockTimeOut,
+     "Ticket spinlock timeout (MATUs): use with care");
+ 
++
+ /*
+  * macro to generate a sysctl machdep.cpu.sysreg_* for a given system register
+  * using __builtin_arm_rsr64.
+diff --git a/src/Kernel/xnu/bsd/kern/kern_descrip.c b/src/Kernel/xnu/bsd/kern/kern_descrip.c
+index 9979753f..7100b3bd 100644
+--- a/src/Kernel/xnu/bsd/kern/kern_descrip.c
++++ b/src/Kernel/xnu/bsd/kern/kern_descrip.c
+@@ -90,6 +90,7 @@
+ #include <sys/fsctl.h>
+ #include <sys/malloc.h>
+ #include <sys/mman.h>
++#include <sys/mount.h>
+ #include <sys/syslog.h>
+ #include <sys/unistd.h>
+ #include <sys/resourcevar.h>
+@@ -3030,8 +3031,40 @@ dropboth:
+ 		goto outdrop;
+ 	}
+ 
+-#if DEBUG || DEVELOPMENT
+-	case F_RECYCLE:
++	case F_RECYCLE: {
++#if !DEBUG && !DEVELOPMENT
++		bool allowed = false;
++
++		//
++		// non-debug and non-development kernels have restrictions
++		// on who can all this fcntl.  the process has to be marked
++		// with the dataless-manipulator entitlement and either the
++		// process or thread have to be marked rapid-aging.
++		//
++		if (!vfs_context_is_dataless_manipulator(&context)) {
++			error = EPERM;
++			goto out;
++		}
++
++		proc_t proc = vfs_context_proc(&context);
++		if (proc && (proc->p_lflag & P_LRAGE_VNODES)) {
++			allowed = true;
++		} else {
++			thread_t thr = vfs_context_thread(&context);
++			if (thr) {
++				struct uthread *ut = get_bsdthread_info(thr);
++
++				if (ut && (ut->uu_flag & UT_RAGE_VNODES)) {
++					allowed = true;
++				}
++			}
++		}
++		if (!allowed) {
++			error = EPERM;
++			goto out;
++		}
++#endif
++
+ 		if (fp->f_type != DTYPE_VNODE) {
+ 			error = EBADF;
+ 			goto out;
+@@ -3041,7 +3074,7 @@ dropboth:
+ 
+ 		vnode_recycle(vp);
+ 		break;
+-#endif
++	}
+ 
+ 	default:
+ 		/*
+@@ -5103,7 +5136,8 @@ fileproc_drain(proc_t p, struct fileproc * fp)
+ 
+ 		fo_drain(fp, &context);
+ 		if ((fp->fp_flags & FP_INSELECT) == FP_INSELECT) {
+-			if (waitq_wakeup64_all((struct waitq *)fp->fp_wset, NO_EVENT64,
++			if (fp->fp_wset != NULL &&
++			    waitq_wakeup64_all((struct waitq *)fp->fp_wset, NO_EVENT64,
+ 			    THREAD_INTERRUPTED, WAITQ_ALL_PRIORITIES) == KERN_INVALID_ARGUMENT) {
+ 				panic("bad wait queue for waitq_wakeup64_all %p (fp:%p)", fp->fp_wset, fp);
+ 			}
+diff --git a/src/Kernel/xnu/bsd/kern/kern_lockf.c b/src/Kernel/xnu/bsd/kern/kern_lockf.c
+index 18e372d1..90268ceb 100644
+--- a/src/Kernel/xnu/bsd/kern/kern_lockf.c
++++ b/src/Kernel/xnu/bsd/kern/kern_lockf.c
+@@ -128,16 +128,34 @@ SYSCTL_INT(_debug, OID_AUTO, lockf_debug, CTLFLAG_RW | CTLFLAG_LOCKED, &lockf_de
+ #define OTHERS  0x2
+ #define OFF_MAX 0x7fffffffffffffffULL   /* max off_t */
+ 
++/* return the effective end of a 'struct lockf': lf_end == -1 is OFF_MAX */
++#define LF_END(l)       ((l)->lf_end == -1 ? OFF_MAX : (l)->lf_end)
++
+ /*
+  * Overlapping lock states
++ *
++ * For lk_find_overlap(..., SELF, ...), the possible sequences are a single:
++ *   - OVERLAP_NONE,
++ *   - OVERLAP_EQUALS_LOCK, or
++ *   - OVERLAP_CONTAINS_LOCK
++ *
++ * or the following sequence:
++ *   - optional OVERLAP_STARTS_BEFORE_LOCK
++ *   - zero or more OVERLAP_CONTAINED_BY_LOCK
++ *   - optional OVERLAP_ENDS_AFTER_LOCK
++ *   - OVERLAP_NONE
++ *
++ * In the annotations:
++ *   - the search lock is [SS, SE] and
++ *   - the returned overlap lock is [OS,OE].
+  */
+ typedef enum {
+ 	OVERLAP_NONE = 0,
+-	OVERLAP_EQUALS_LOCK,
+-	OVERLAP_CONTAINS_LOCK,
+-	OVERLAP_CONTAINED_BY_LOCK,
+-	OVERLAP_STARTS_BEFORE_LOCK,
+-	OVERLAP_ENDS_AFTER_LOCK
++	OVERLAP_EQUALS_LOCK,        /* OS == SS && OE == SE */
++	OVERLAP_CONTAINS_LOCK,      /* OS <= SS && OE >= SE */
++	OVERLAP_CONTAINED_BY_LOCK,  /* OS >= SS && OE <= SE */
++	OVERLAP_STARTS_BEFORE_LOCK, /* OS < SS && OE >= SS */
++	OVERLAP_ENDS_AFTER_LOCK     /* OS > SS && OE > SE */
+ } overlap_t;
+ 
+ static int       lf_clearlock(struct lockf *);
+@@ -437,8 +455,8 @@ lf_coalesce_adjacent(struct lockf *lock)
+ 		 * NOTE: Assumes that if two locks are adjacent on the number line
+ 		 * and belong to the same owner, then they are adjacent on the list.
+ 		 */
+-		if ((*lf)->lf_end != -1 &&
+-		    ((*lf)->lf_end + 1) == lock->lf_start) {
++		if (LF_END(*lf) < OFF_MAX &&
++		    (LF_END(*lf) + 1) == lock->lf_start) {
+ 			struct lockf *adjacent = *lf;
+ 
+ 			LOCKF_DEBUG(LF_DBG_LIST, "lf_coalesce_adjacent: coalesce adjacent previous\n");
+@@ -452,8 +470,8 @@ lf_coalesce_adjacent(struct lockf *lock)
+ 			continue;
+ 		}
+ 		/* If the lock starts adjacent to us, we can coalesce it */
+-		if (lock->lf_end != -1 &&
+-		    (lock->lf_end + 1) == (*lf)->lf_start) {
++		if (LF_END(lock) < OFF_MAX &&
++		    (LF_END(lock) + 1) == (*lf)->lf_start) {
+ 			struct lockf *adjacent = *lf;
+ 
+ 			LOCKF_DEBUG(LF_DBG_LIST, "lf_coalesce_adjacent: coalesce adjacent following\n");
+@@ -817,6 +835,7 @@ scan:
+ 	block = *head;
+ 	needtolink = 1;
+ 	for (;;) {
++		const off_t lkend = LF_END(lock);
+ 		ovcase = lf_findoverlap(block, lock, SELF, &prev, &overlap);
+ 		if (ovcase) {
+ 			block = overlap->lf_next;
+@@ -866,7 +885,8 @@ scan:
+ 			if (overlap->lf_start == lock->lf_start) {
+ 				*prev = lock;
+ 				lock->lf_next = overlap;
+-				overlap->lf_start = lock->lf_end + 1;
++				assert(lkend < OFF_MAX);
++				overlap->lf_start = lkend + 1;
+ 			} else {
+ 				/*
+ 				 * If we can't split the lock, we can't
+@@ -912,6 +932,7 @@ scan:
+ 			 */
+ 			lock->lf_next = overlap->lf_next;
+ 			overlap->lf_next = lock;
++			assert(lock->lf_start > 0);
+ 			overlap->lf_end = lock->lf_start - 1;
+ 			prev = &lock->lf_next;
+ 			lf_wakelock(overlap, TRUE);
+@@ -926,7 +947,8 @@ scan:
+ 				*prev = lock;
+ 				lock->lf_next = overlap;
+ 			}
+-			overlap->lf_start = lock->lf_end + 1;
++			assert(lkend < OFF_MAX);
++			overlap->lf_start = lkend + 1;
+ 			lf_wakelock(overlap, TRUE);
+ 			break;
+ 		}
+@@ -981,6 +1003,7 @@ lf_clearlock(struct lockf *unlock)
+ #endif /* LOCKF_DEBUGGING */
+ 	prev = head;
+ 	while ((ovcase = lf_findoverlap(lf, unlock, SELF, &prev, &overlap)) != OVERLAP_NONE) {
++		const off_t unlkend = LF_END(unlock);
+ 		/*
+ 		 * Wakeup the list of locks to be retried.
+ 		 */
+@@ -1002,7 +1025,8 @@ lf_clearlock(struct lockf *unlock)
+ 
+ 		case OVERLAP_CONTAINS_LOCK: /* split it */
+ 			if (overlap->lf_start == unlock->lf_start) {
+-				overlap->lf_start = unlock->lf_end + 1;
++				assert(unlkend < OFF_MAX);
++				overlap->lf_start = unlkend + 1;
+ 				break;
+ 			}
+ 			/*
+@@ -1022,13 +1046,15 @@ lf_clearlock(struct lockf *unlock)
+ 			continue;
+ 
+ 		case OVERLAP_STARTS_BEFORE_LOCK:
++			assert(unlock->lf_start > 0);
+ 			overlap->lf_end = unlock->lf_start - 1;
+ 			prev = &overlap->lf_next;
+ 			lf = overlap->lf_next;
+ 			continue;
+ 
+ 		case OVERLAP_ENDS_AFTER_LOCK:
+-			overlap->lf_start = unlock->lf_end + 1;
++			assert(unlkend < OFF_MAX);
++			overlap->lf_start = unlkend + 1;
+ 			break;
+ 		}
+ 		break;
+@@ -1079,10 +1105,11 @@ lf_getlock(struct lockf *lock, struct flock *fl, pid_t matchpid)
+ 		fl->l_type = block->lf_type;
+ 		fl->l_whence = SEEK_SET;
+ 		fl->l_start = block->lf_start;
+-		if (block->lf_end == -1) {
++		if (block->lf_end == -1 ||
++		    (block->lf_start == 0 && LF_END(block) == OFF_MAX)) {
+ 			fl->l_len = 0;
+ 		} else {
+-			fl->l_len = block->lf_end - block->lf_start + 1;
++			fl->l_len = LF_END(block) - block->lf_start + 1;
+ 		}
+ 		if (NULL != block->lf_owner) {
+ 			/*
+@@ -1195,7 +1222,6 @@ static overlap_t
+ lf_findoverlap(struct lockf *lf, struct lockf *lock, int type,
+     struct lockf ***prev, struct lockf **overlap)
+ {
+-	off_t start, end;
+ 	int found_self = 0;
+ 
+ 	*overlap = lf;
+@@ -1207,8 +1233,8 @@ lf_findoverlap(struct lockf *lf, struct lockf *lock, int type,
+ 		lf_print("lf_findoverlap: looking for overlap in", lock);
+ 	}
+ #endif /* LOCKF_DEBUGGING */
+-	start = lock->lf_start;
+-	end = lock->lf_end;
++	const off_t start = lock->lf_start;
++	const off_t end = LF_END(lock);
+ 	while (lf != NOLOCKF) {
+ 		if (((type & SELF) && lf->lf_id != lock->lf_id) ||
+ 		    ((type & OTHERS) && lf->lf_id == lock->lf_id)) {
+@@ -1242,8 +1268,10 @@ lf_findoverlap(struct lockf *lf, struct lockf *lock, int type,
+ 		/*
+ 		 * OK, check for overlap
+ 		 */
+-		if ((lf->lf_end != -1 && start > lf->lf_end) ||
+-		    (end != -1 && lf->lf_start > end)) {
++		const off_t lfstart = lf->lf_start;
++		const off_t lfend = LF_END(lf);
++
++		if ((start > lfend) || (lfstart > end)) {
+ 			/* Case 0 */
+ 			LOCKF_DEBUG(LF_DBG_LIST, "no overlap\n");
+ 
+@@ -1251,37 +1279,30 @@ lf_findoverlap(struct lockf *lf, struct lockf *lock, int type,
+ 			 * NOTE: assumes that locks for the same process are
+ 			 * nonintersecting and ordered.
+ 			 */
+-			if ((type & SELF) && end != -1 && lf->lf_start > end) {
++			if ((type & SELF) && lfstart > end) {
+ 				return OVERLAP_NONE;
+ 			}
+ 			*prev = &lf->lf_next;
+ 			*overlap = lf = lf->lf_next;
+ 			continue;
+ 		}
+-		if ((lf->lf_start == start) && (lf->lf_end == end)) {
++		if ((lfstart == start) && (lfend == end)) {
+ 			LOCKF_DEBUG(LF_DBG_LIST, "overlap == lock\n");
+ 			return OVERLAP_EQUALS_LOCK;
+ 		}
+-		if ((lf->lf_start <= start) &&
+-		    (end != -1) &&
+-		    ((lf->lf_end >= end) || (lf->lf_end == -1))) {
++		if ((lfstart <= start) && (lfend >= end)) {
+ 			LOCKF_DEBUG(LF_DBG_LIST, "overlap contains lock\n");
+ 			return OVERLAP_CONTAINS_LOCK;
+ 		}
+-		if (start <= lf->lf_start &&
+-		    (end == -1 ||
+-		    (lf->lf_end != -1 && end >= lf->lf_end))) {
++		if ((start <= lfstart) && (end >= lfend)) {
+ 			LOCKF_DEBUG(LF_DBG_LIST, "lock contains overlap\n");
+ 			return OVERLAP_CONTAINED_BY_LOCK;
+ 		}
+-		if ((lf->lf_start < start) &&
+-		    ((lf->lf_end >= start) || (lf->lf_end == -1))) {
++		if ((lfstart < start) && (lfend >= start)) {
+ 			LOCKF_DEBUG(LF_DBG_LIST, "overlap starts before lock\n");
+ 			return OVERLAP_STARTS_BEFORE_LOCK;
+ 		}
+-		if ((lf->lf_start > start) &&
+-		    (end != -1) &&
+-		    ((lf->lf_end > end) || (lf->lf_end == -1))) {
++		if ((lfstart > start) && (lfend > end)) {
+ 			LOCKF_DEBUG(LF_DBG_LIST, "overlap ends after lock\n");
+ 			return OVERLAP_ENDS_AFTER_LOCK;
+ 		}
+@@ -1329,11 +1350,13 @@ lf_split(struct lockf *lock1, struct lockf *lock2)
+ 	 * Check to see if splitting into only two pieces.
+ 	 */
+ 	if (lock1->lf_start == lock2->lf_start) {
+-		lock1->lf_start = lock2->lf_end + 1;
++		assert(LF_END(lock2) < OFF_MAX);
++		lock1->lf_start = LF_END(lock2) + 1;
+ 		lock2->lf_next = lock1;
+ 		return 0;
+ 	}
+-	if (lock1->lf_end == lock2->lf_end) {
++	if (LF_END(lock1) == LF_END(lock2)) {
++		assert(lock2->lf_start > 0);
+ 		lock1->lf_end = lock2->lf_start - 1;
+ 		lock2->lf_next = lock1->lf_next;
+ 		lock1->lf_next = lock2;
+@@ -1348,8 +1371,10 @@ lf_split(struct lockf *lock1, struct lockf *lock2)
+ 		return ENOLCK;
+ 	}
+ 	bcopy(lock1, splitlock, sizeof *splitlock);
+-	splitlock->lf_start = lock2->lf_end + 1;
++	assert(LF_END(lock2) < OFF_MAX);
++	splitlock->lf_start = LF_END(lock2) + 1;
+ 	TAILQ_INIT(&splitlock->lf_blkhd);
++	assert(lock2->lf_start > 0);
+ 	lock1->lf_end = lock2->lf_start - 1;
+ 	/*
+ 	 * OK, now link it in
+diff --git a/src/Kernel/xnu/bsd/kern/kern_memorystatus_notify.c b/src/Kernel/xnu/bsd/kern/kern_memorystatus_notify.c
+index 83262fec..c7445863 100644
+--- a/src/Kernel/xnu/bsd/kern/kern_memorystatus_notify.c
++++ b/src/Kernel/xnu/bsd/kern/kern_memorystatus_notify.c
+@@ -1024,8 +1024,20 @@ done_scanning:
+ 	return kn_max;
+ }
+ 
+-static uint64_t next_warning_notification_sent_at_ts = 0;
+-static uint64_t next_critical_notification_sent_at_ts = 0;
++/*
++ * To avoid notification storms in a system with sawtooth behavior of pressure levels eg:
++ * Normal -> warning (notify clients) -> critical (notify) -> warning (notify) -> critical (notify) -> warning (notify)...
++ *
++ * We have 'resting' periods: WARNING_NOTIFICATION_RESTING_PERIOD and CRITICAL_NOTIFICATION_RESTING_PERIOD
++ *
++ * So it would look like:-
++ * Normal -> warning (notify) -> critical (notify) -> warning (notify if it has been RestPeriod since last warning) -> critical (notify if it has been RestPeriod since last critical) -> ...
++ *
++ * That's what these 2 timestamps below signify.
++ */
++
++uint64_t next_warning_notification_sent_at_ts = 0;
++uint64_t next_critical_notification_sent_at_ts = 0;
+ 
+ boolean_t        memorystatus_manual_testing_on = FALSE;
+ vm_pressure_level_t    memorystatus_manual_testing_level = kVMPressureNormal;
+@@ -1483,6 +1495,11 @@ SYSCTL_INT(_kern, OID_AUTO, memorystatus_purge_on_warning, CTLFLAG_RW | CTLFLAG_
+ SYSCTL_INT(_kern, OID_AUTO, memorystatus_purge_on_urgent, CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_LOCKED, &vm_pageout_state.memorystatus_purge_on_urgent, 0, "");
+ SYSCTL_INT(_kern, OID_AUTO, memorystatus_purge_on_critical, CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_LOCKED, &vm_pageout_state.memorystatus_purge_on_critical, 0, "");
+ 
++#if (XNU_TARGET_OS_OSX && __arm64__)
++extern int vm_pressure_level_transition_threshold;
++SYSCTL_INT(_kern, OID_AUTO, vm_pressure_level_transition_threshold, CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_LOCKED, &vm_pressure_level_transition_threshold, 0, "");
++#endif /* (XNU_TARGET_OS_OSX && __arm64__) */
++
+ #if DEBUG || DEVELOPMENT
+ SYSCTL_UINT(_kern, OID_AUTO, memorystatus_vm_pressure_events_enabled, CTLFLAG_RW | CTLFLAG_LOCKED, &vm_pressure_events_enabled, 0, "");
+ 
+diff --git a/src/Kernel/xnu/bsd/kern/mach_loader.c b/src/Kernel/xnu/bsd/kern/mach_loader.c
+index 542acb3d..bc8dcf22 100644
+--- a/src/Kernel/xnu/bsd/kern/mach_loader.c
++++ b/src/Kernel/xnu/bsd/kern/mach_loader.c
+@@ -689,6 +689,7 @@ load_machfile(
+ 	}
+ #endif /* __has_feature(ptrauth_calls) && defined(XNU_TARGET_OS_OSX) */
+ 
++
+ #ifdef CONFIG_32BIT_TELEMETRY
+ 	if (!result->is_64bit_data) {
+ 		/*
+diff --git a/src/Kernel/xnu/bsd/kern/posix_shm.c b/src/Kernel/xnu/bsd/kern/posix_shm.c
+index 4f22edd2..7eaf6bdf 100644
+--- a/src/Kernel/xnu/bsd/kern/posix_shm.c
++++ b/src/Kernel/xnu/bsd/kern/posix_shm.c
+@@ -739,7 +739,7 @@ pshm_mmap(
+ 	vm_map_offset_t    user_addr = (vm_map_offset_t)uap->addr;
+ 	vm_map_size_t      user_size = (vm_map_size_t)uap->len;
+ 	vm_map_offset_t    user_start_addr;
+-	vm_map_size_t      map_size, mapped_size;
++	vm_map_size_t      map_size, mapped_size, pshm_size;
+ 	int                prot = uap->prot;
+ 	int                max_prot = VM_PROT_DEFAULT;
+ 	int                flags = uap->flags;
+@@ -771,6 +771,8 @@ pshm_mmap(
+ 		max_prot &= ~VM_PROT_WRITE;
+ 	}
+ 
++	user_map = current_map();
++
+ 	PSHM_SUBSYS_LOCK();
+ 	pnode = (pshmnode_t *)fp->f_data;
+ 	if (pnode == NULL) {
+@@ -789,7 +791,9 @@ pshm_mmap(
+ 		return EINVAL;
+ 	}
+ 
+-	if (user_size > (vm_map_size_t)pinfo->pshm_length) {
++	pshm_size = vm_map_round_page((vm_map_size_t)pinfo->pshm_length, vm_map_page_mask(user_map));
++
++	if (user_size > pshm_size) {
+ 		PSHM_SUBSYS_UNLOCK();
+ 		return EINVAL;
+ 	}
+@@ -799,7 +803,7 @@ pshm_mmap(
+ 		PSHM_SUBSYS_UNLOCK();
+ 		return EINVAL;
+ 	}
+-	if (end_pos > (vm_map_size_t)pinfo->pshm_length) {
++	if (end_pos > pshm_size) {
+ 		PSHM_SUBSYS_UNLOCK();
+ 		return EINVAL;
+ 	}
+@@ -825,7 +829,6 @@ pshm_mmap(
+ 	}
+ 
+ 	PSHM_SUBSYS_UNLOCK();
+-	user_map = current_map();
+ 
+ 	if (!(flags & MAP_FIXED)) {
+ 		alloc_flags = VM_FLAGS_ANYWHERE;
+diff --git a/src/Kernel/xnu/bsd/kern/uipc_mbuf.c b/src/Kernel/xnu/bsd/kern/uipc_mbuf.c
+index f73bcbda..717a3632 100644
+--- a/src/Kernel/xnu/bsd/kern/uipc_mbuf.c
++++ b/src/Kernel/xnu/bsd/kern/uipc_mbuf.c
+@@ -704,11 +704,7 @@ static char *mbuf_dump_buf;
+  * mb_drain_maxint controls the amount of time to wait (in seconds) before
+  * consecutive calls to mbuf_drain().
+  */
+-#if !XNU_TARGET_OS_OSX || DEVELOPMENT || DEBUG
+ static unsigned int mb_watchdog = 1;
+-#else /* XNU_TARGET_OS_OSX && !DEVELOPMENT && !DEBUG */
+-static unsigned int mb_watchdog = 0;
+-#endif /* XNU_TARGET_OS_OSX && !DEVELOPMENT && !DEBUG */
+ #if !XNU_TARGET_OS_OSX
+ static unsigned int mb_drain_maxint = 60;
+ #else /* XNU_TARGET_OS_OSX */
+diff --git a/src/Kernel/xnu/bsd/net/content_filter.c b/src/Kernel/xnu/bsd/net/content_filter.c
+index e33a2a40..9a285f9f 100644
+--- a/src/Kernel/xnu/bsd/net/content_filter.c
++++ b/src/Kernel/xnu/bsd/net/content_filter.c
+@@ -967,17 +967,13 @@ cfil_data_length(struct mbuf *m, int *retmbcnt, int *retmbnum)
+ 	int mbcnt;
+ 	int mbnum;
+ 
+-	// Locate the start of data
++	// Locate M_PKTHDR and mark as start of data if present
+ 	for (m0 = m; m0 != NULL; m0 = m0->m_next) {
+ 		if (m0->m_flags & M_PKTHDR) {
++			m = m0;
+ 			break;
+ 		}
+ 	}
+-	if (m0 == NULL) {
+-		CFIL_LOG(LOG_ERR, "cfil_data_length: no M_PKTHDR");
+-		return 0;
+-	}
+-	m = m0;
+ 
+ 	if (retmbcnt == NULL && retmbnum == NULL) {
+ 		return m_length(m);
+@@ -1008,13 +1004,13 @@ cfil_data_start(struct mbuf *m)
+ {
+ 	struct mbuf *m0;
+ 
+-	// Locate the start of data
++	// Locate M_PKTHDR and use it as start of data if present
+ 	for (m0 = m; m0 != NULL; m0 = m0->m_next) {
+ 		if (m0->m_flags & M_PKTHDR) {
+-			break;
++			return m0;
+ 		}
+ 	}
+-	return m0;
++	return m;
+ }
+ 
+ /*
+@@ -3634,8 +3630,8 @@ cfil_dispatch_data_event(struct socket *so, struct cfil_info *cfil_info, uint32_
+ 	}
+ 
+ 	data = cfil_data_start(data);
+-	if (data == NULL || (data->m_flags & M_PKTHDR) == 0) {
+-		CFIL_LOG(LOG_ERR, "NOT PKTHDR");
++	if (data == NULL) {
++		CFIL_LOG(LOG_ERR, "No data start");
+ 		goto done;
+ 	}
+ 
+@@ -4103,6 +4099,10 @@ cfil_service_inject_queue(struct socket *so, struct cfil_info *cfil_info, int ou
+ 
+ 	socket_lock_assert_owned(so);
+ 
++	if (so->so_state & SS_DEFUNCT) {
++		return 0;
++	}
++
+ 	if (outgoing) {
+ 		cfi_buf = &cfil_info->cfi_snd;
+ 		cfil_info->cfi_flags &= ~CFIF_RETRY_INJECT_OUT;
+diff --git a/src/Kernel/xnu/bsd/net/necp.c b/src/Kernel/xnu/bsd/net/necp.c
+index 1e44bd61..46168284 100644
+--- a/src/Kernel/xnu/bsd/net/necp.c
++++ b/src/Kernel/xnu/bsd/net/necp.c
+@@ -6470,8 +6470,11 @@ necp_application_find_policy_match_internal(proc_t proc,
+ 	}
+ 
+ 	// Initialize UID, PID, and UUIDs to the current process
+-	kauth_cred_t cred = kauth_cred_get();
+-	uid_t uid = kauth_cred_getuid(cred);
++	uid_t uid = 0;
++	kauth_cred_t cred = kauth_cred_proc_ref(proc);
++	if (cred != NULL) {
++		uid = kauth_cred_getuid(cred);
++	}
+ 	pid_t pid = proc_pid(proc);
+ 	int32_t pid_version = proc_pidversion(proc);
+ 	uuid_t application_uuid;
+@@ -6508,6 +6511,9 @@ necp_application_find_policy_match_internal(proc_t proc,
+ 	u_int32_t flow_divert_aggregate_unit = 0;
+ 
+ 	if (returned_result == NULL) {
++		if (cred != NULL) {
++			kauth_cred_unref(&cred);
++		}
+ 		return EINVAL;
+ 	}
+ 
+@@ -6534,6 +6540,9 @@ necp_application_find_policy_match_internal(proc_t proc,
+ 		if (necp_drop_all_order > 0 || drop_order > 0) {
+ 			returned_result->routing_result = NECP_KERNEL_POLICY_RESULT_DROP;
+ 			lck_rw_done(&necp_kernel_policy_lock);
++			if (cred != NULL) {
++				kauth_cred_unref(&cred);
++			}
+ 			return 0;
+ 		}
+ 	}
+@@ -6739,6 +6748,9 @@ necp_application_find_policy_match_internal(proc_t proc,
+ 		returned_result->routing_result = NECP_KERNEL_POLICY_RESULT_PASS;
+ 		returned_result->routed_interface_index = lo_ifp->if_index;
+ 		*flags |= (NECP_CLIENT_RESULT_FLAG_IS_LOCAL | NECP_CLIENT_RESULT_FLAG_IS_DIRECT);
++		if (cred != NULL) {
++			kauth_cred_unref(&cred);
++		}
+ 		return 0;
+ 	}
+ 
+@@ -7254,6 +7266,10 @@ done:
+ 	}
+ #endif
+ 
++	if (cred != NULL) {
++		kauth_cred_unref(&cred);
++	}
++
+ 	return error;
+ }
+ 
+@@ -9999,8 +10015,11 @@ necp_socket_is_allowed_to_send_recv_internal(struct inpcb *inp, struct sockaddr
+ 	if (bypass_type == NECP_BYPASS_TYPE_LOOPBACK &&
+ 	    necp_pass_loopback == NECP_LOOPBACK_PASS_WITH_FILTER &&
+ 	    (matched_policy == NULL || matched_policy->result != NECP_KERNEL_POLICY_RESULT_SOCKET_DIVERT)) {
+-		// Polices have changed since last evaluation, update inp result with new filter state
+-		if (inp->inp_policyresult.results.filter_control_unit != filter_control_unit) {
++		// If policies haven't changed since last evaluation, do not update filter result in order to
++		// preserve the very first filter result for the socket.  Otherwise, update the filter result to
++		// allow content filter to detect and drop pre-existing flows.
++		if (inp->inp_policyresult.policy_gencount != necp_kernel_socket_policies_gencount &&
++		    inp->inp_policyresult.results.filter_control_unit != filter_control_unit) {
+ 			inp->inp_policyresult.results.filter_control_unit = filter_control_unit;
+ 		}
+ 		if (inp->inp_policyresult.results.flow_divert_aggregate_unit != flow_divert_aggregate_unit) {
+@@ -10046,8 +10065,11 @@ necp_socket_is_allowed_to_send_recv_internal(struct inpcb *inp, struct sockaddr
+ 			if (matched_policy->result == NECP_KERNEL_POLICY_RESULT_PASS) {
+ 				pass_flags = matched_policy->result_parameter.pass_flags;
+ 			}
+-			// Polices has changed since last evaluation, update inp result with new filter state
+-			if (inp->inp_policyresult.results.filter_control_unit != filter_control_unit) {
++			// If policies haven't changed since last evaluation, do not update filter result in order to
++			// preserve the very first filter result for the socket.  Otherwise, update the filter result to
++			// allow content filter to detect and drop pre-existing flows.
++			if (inp->inp_policyresult.policy_gencount != necp_kernel_socket_policies_gencount &&
++			    inp->inp_policyresult.results.filter_control_unit != filter_control_unit) {
+ 				inp->inp_policyresult.results.filter_control_unit = filter_control_unit;
+ 			}
+ 			if (inp->inp_policyresult.results.flow_divert_aggregate_unit != flow_divert_aggregate_unit) {
+@@ -10076,8 +10098,11 @@ necp_socket_is_allowed_to_send_recv_internal(struct inpcb *inp, struct sockaddr
+ 				*return_route_rule_id = route_rule_id;
+ 			}
+ 
+-			// Polices has changed since last evaluation, update inp result with new filter state
+-			if (inp->inp_policyresult.results.filter_control_unit != filter_control_unit) {
++			// If policies haven't changed since last evaluation, do not update filter result in order to
++			// preserve the very first filter result for the socket.  Otherwise, update the filter result to
++			// allow content filter to detect and drop pre-existing flows.
++			if (inp->inp_policyresult.policy_gencount != necp_kernel_socket_policies_gencount &&
++			    inp->inp_policyresult.results.filter_control_unit != filter_control_unit) {
+ 				inp->inp_policyresult.results.filter_control_unit = filter_control_unit;
+ 			}
+ 			if (inp->inp_policyresult.results.flow_divert_aggregate_unit != flow_divert_aggregate_unit) {
+diff --git a/src/Kernel/xnu/bsd/netinet/flow_divert.c b/src/Kernel/xnu/bsd/netinet/flow_divert.c
+index 818eb1be..b9fdce85 100644
+--- a/src/Kernel/xnu/bsd/netinet/flow_divert.c
++++ b/src/Kernel/xnu/bsd/netinet/flow_divert.c
+@@ -82,6 +82,7 @@
+ #define FLOW_DIVERT_DID_SET_LOCAL_ADDR  0x00000200
+ #define FLOW_DIVERT_HAS_TOKEN           0x00000400
+ #define FLOW_DIVERT_SHOULD_SET_LOCAL_ADDR 0x00000800
++#define FLOW_DIVERT_FLOW_IS_TRANSPARENT   0x00001000
+ 
+ #define FDLOG(level, pcb, format, ...) \
+ 	os_log_with_type(OS_LOG_DEFAULT, flow_divert_syslog_type_to_oslog_type(level), "(%u): " format "\n", (pcb)->hash, __VA_ARGS__)
+@@ -1867,8 +1868,9 @@ flow_divert_set_remote_endpoint(struct flow_divert_pcb *fd_cb, struct sockaddr *
+ }
+ 
+ static uint32_t
+-flow_divert_derive_kernel_control_unit(uint32_t ctl_unit, uint32_t *aggregate_unit)
++flow_divert_derive_kernel_control_unit(uint32_t ctl_unit, uint32_t *aggregate_unit, bool *is_aggregate)
+ {
++	*is_aggregate = false;
+ 	if (aggregate_unit != NULL && *aggregate_unit != 0) {
+ 		uint32_t counter;
+ 		for (counter = 0; counter < (GROUP_COUNT_MAX - 1); counter++) {
+@@ -1878,6 +1880,7 @@ flow_divert_derive_kernel_control_unit(uint32_t ctl_unit, uint32_t *aggregate_un
+ 		}
+ 		if (counter < (GROUP_COUNT_MAX - 1)) {
+ 			*aggregate_unit &= ~(1 << counter);
++			*is_aggregate = true;
+ 			return counter + 1;
+ 		} else {
+ 			return ctl_unit;
+@@ -1895,8 +1898,9 @@ flow_divert_try_next(struct flow_divert_pcb *fd_cb)
+ 	struct flow_divert_group *current_group = NULL;
+ 	struct flow_divert_group *next_group = NULL;
+ 	int error = 0;
++	bool is_aggregate = false;
+ 
+-	next_ctl_unit = flow_divert_derive_kernel_control_unit(fd_cb->policy_control_unit, &(fd_cb->aggregate_unit));
++	next_ctl_unit = flow_divert_derive_kernel_control_unit(fd_cb->policy_control_unit, &(fd_cb->aggregate_unit), &is_aggregate);
+ 	current_ctl_unit = fd_cb->control_group_unit;
+ 
+ 	if (current_ctl_unit == next_ctl_unit) {
+@@ -1938,6 +1942,11 @@ flow_divert_try_next(struct flow_divert_pcb *fd_cb)
+ 
+ 	fd_cb->group = next_group;
+ 	fd_cb->control_group_unit = next_ctl_unit;
++	if (is_aggregate) {
++		fd_cb->flags |= FLOW_DIVERT_FLOW_IS_TRANSPARENT;
++	} else {
++		fd_cb->flags &= ~FLOW_DIVERT_FLOW_IS_TRANSPARENT;
++	}
+ 
+ 	lck_rw_done(&(next_group->lck));
+ 	lck_rw_done(&(current_group->lck));
+@@ -3397,7 +3406,11 @@ flow_divert_connect_out_internal(struct socket *so, struct sockaddr *to, proc_t
+ 			error = in6_pcbladdr(inp, to, &(fd_cb->local_endpoint.sin6.sin6_addr), &ifp);
+ 			if (error) {
+ 				FDLOG(LOG_WARNING, fd_cb, "failed to get a local IPv6 address: %d", error);
+-				error = 0;
++				if (!(fd_cb->flags & FLOW_DIVERT_FLOW_IS_TRANSPARENT) || IN6_IS_ADDR_UNSPECIFIED(&(satosin6(to)->sin6_addr))) {
++					error = 0;
++				} else {
++					goto done;
++				}
+ 			}
+ 			if (ifp != NULL) {
+ 				inp->in6p_last_outifp = ifp;
+@@ -3412,7 +3425,11 @@ flow_divert_connect_out_internal(struct socket *so, struct sockaddr *to, proc_t
+ 			error = in_pcbladdr(inp, to, &(fd_cb->local_endpoint.sin.sin_addr), IFSCOPE_NONE, &ifp, 0);
+ 			if (error) {
+ 				FDLOG(LOG_WARNING, fd_cb, "failed to get a local IPv4 address: %d", error);
+-				error = 0;
++				if (!(fd_cb->flags & FLOW_DIVERT_FLOW_IS_TRANSPARENT) || satosin(to)->sin_addr.s_addr == INADDR_ANY) {
++					error = 0;
++				} else {
++					goto done;
++				}
+ 			}
+ 			if (ifp != NULL) {
+ 				inp->inp_last_outifp = ifp;
+@@ -3742,7 +3759,8 @@ flow_divert_pcb_init_internal(struct socket *so, uint32_t ctl_unit, uint32_t agg
+ 	errno_t error = 0;
+ 	struct flow_divert_pcb *fd_cb;
+ 	uint32_t agg_unit = aggregate_unit;
+-	uint32_t group_unit = flow_divert_derive_kernel_control_unit(ctl_unit, &agg_unit);
++	bool is_aggregate = false;
++	uint32_t group_unit = flow_divert_derive_kernel_control_unit(ctl_unit, &agg_unit, &is_aggregate);
+ 
+ 	if (group_unit == 0) {
+ 		return EINVAL;
+@@ -3759,6 +3777,11 @@ flow_divert_pcb_init_internal(struct socket *so, uint32_t ctl_unit, uint32_t agg
+ 		fd_cb->control_group_unit = group_unit;
+ 		fd_cb->policy_control_unit = ctl_unit;
+ 		fd_cb->aggregate_unit = agg_unit;
++		if (is_aggregate) {
++			fd_cb->flags |= FLOW_DIVERT_FLOW_IS_TRANSPARENT;
++		} else {
++			fd_cb->flags &= ~FLOW_DIVERT_FLOW_IS_TRANSPARENT;
++		}
+ 
+ 		error = flow_divert_pcb_insert(fd_cb, group_unit);
+ 		if (error) {
+diff --git a/src/Kernel/xnu/bsd/netinet/in_pcb.c b/src/Kernel/xnu/bsd/netinet/in_pcb.c
+index 6fd6e712..336edcac 100644
+--- a/src/Kernel/xnu/bsd/netinet/in_pcb.c
++++ b/src/Kernel/xnu/bsd/netinet/in_pcb.c
+@@ -3712,8 +3712,11 @@ inp_decr_sndbytes_total(struct socket *so, int32_t len)
+ 	struct ifnet *ifp = inp->inp_last_outifp;
+ 
+ 	if (ifp != NULL) {
+-		VERIFY(ifp->if_sndbyte_total >= len);
+-		OSAddAtomic64(-len, &ifp->if_sndbyte_total);
++		if (ifp->if_sndbyte_total >= len) {
++			OSAddAtomic64(-len, &ifp->if_sndbyte_total);
++		} else {
++			ifp->if_sndbyte_total = 0;
++		}
+ 	}
+ }
+ 
+diff --git a/src/Kernel/xnu/bsd/netinet/tcp_output.c b/src/Kernel/xnu/bsd/netinet/tcp_output.c
+index 5eecbbbf..dd3c1859 100644
+--- a/src/Kernel/xnu/bsd/netinet/tcp_output.c
++++ b/src/Kernel/xnu/bsd/netinet/tcp_output.c
+@@ -1937,8 +1937,9 @@ send:
+ 			tso_maxlen = tp->tso_max_segment_size ?
+ 			    tp->tso_max_segment_size : TCP_MAXWIN;
+ 
+-			if (len > tso_maxlen - hdrlen - optlen) {
+-				len = tso_maxlen - hdrlen - optlen;
++			/* hdrlen includes optlen */
++			if (len > tso_maxlen - hdrlen) {
++				len = tso_maxlen - hdrlen;
+ 				sendalot = 1;
+ 			} else if (tp->t_flags & TF_NEEDFIN) {
+ 				sendalot = 1;
+diff --git a/src/Kernel/xnu/bsd/sys/kpi_socket.h b/src/Kernel/xnu/bsd/sys/kpi_socket.h
+index bd2425ee..e2b9857f 100644
+--- a/src/Kernel/xnu/bsd/sys/kpi_socket.h
++++ b/src/Kernel/xnu/bsd/sys/kpi_socket.h
+@@ -418,7 +418,6 @@ __NKE_API_DEPRECATED;
+ extern void sock_close(socket_t so)
+ __NKE_API_DEPRECATED;
+ 
+-#ifdef KERNEL_PRIVATE
+ /*
+  *       @function sock_retain
+  *       @discussion Prevents the socket from closing
+@@ -429,7 +428,8 @@ __NKE_API_DEPRECATED;
+  *               that socket. It is used in conjunction with
+  *               sock_release(socket_t so).
+  */
+-extern void sock_retain(socket_t so);
++extern void sock_retain(socket_t so)
++__NKE_API_DEPRECATED;
+ 
+ /*
+  *       @function sock_release
+@@ -439,8 +439,8 @@ extern void sock_retain(socket_t so);
+  *               on a socket acquired with sock_retain. When the last retain
+  *               count is reached, this will call sock_close to close the socket.
+  */
+-extern void sock_release(socket_t so);
+-#endif /* KERNEL_PRIVATE */
++extern void sock_release(socket_t so)
++__NKE_API_DEPRECATED;
+ 
+ /*!
+  *       @function sock_setpriv
+diff --git a/src/Kernel/xnu/bsd/sys/vnode.h b/src/Kernel/xnu/bsd/sys/vnode.h
+index aa0cd6aa..563cd2b4 100644
+--- a/src/Kernel/xnu/bsd/sys/vnode.h
++++ b/src/Kernel/xnu/bsd/sys/vnode.h
+@@ -1201,6 +1201,15 @@ void    vnode_clearmountedon(vnode_t vp);
+  */
+ int     vnode_isrecycled(vnode_t vp);
+ 
++/*!
++ *  @function vnode_willberecycled
++ *  @abstract Check if a vnode is marked for recycling when the last reference to it is released.
++ *  @discussion This is only a snapshot: a vnode may start to be recycled, or go from dead to in use, at any time.
++ *  @param vp The vnode to test.
++ *  @return Nonzero if vnode is marked for recycling, 0 otherwise.
++ */
++int     vnode_willberecycled(vnode_t vp);
++
+ /*!
+  *  @function vnode_isnocache
+  *  @abstract Check if a vnode is set to not have its data cached in memory  (i.e. we write-through to disk and always read from disk).
+diff --git a/src/Kernel/xnu/bsd/vfs/kpi_vfs.c b/src/Kernel/xnu/bsd/vfs/kpi_vfs.c
+index 3efc8573..8325c14b 100644
+--- a/src/Kernel/xnu/bsd/vfs/kpi_vfs.c
++++ b/src/Kernel/xnu/bsd/vfs/kpi_vfs.c
+@@ -1733,6 +1733,14 @@ vnode_isrecycled(vnode_t vp)
+ 	return ret;
+ }
+ 
++/* is this vnode marked for termination */
++int
++vnode_willberecycled(vnode_t vp)
++{
++	return (vp->v_lflag & VL_MARKTERM) ? 1 : 0;
++}
++
++
+ /* vnode was created by background task requesting rapid aging
+  *  and has not since been referenced by a normal task */
+ int
+diff --git a/src/Kernel/xnu/bsd/vfs/vfs_syscalls.c b/src/Kernel/xnu/bsd/vfs/vfs_syscalls.c
+index ed9e3ab9..8fc0dcb0 100644
+--- a/src/Kernel/xnu/bsd/vfs/vfs_syscalls.c
++++ b/src/Kernel/xnu/bsd/vfs/vfs_syscalls.c
+@@ -11950,6 +11950,10 @@ fgetxattr(proc_t p, struct fgetxattr_args *uap, user_ssize_t *retval)
+ 		goto out;
+ 	}
+ 	if (uap->value && uap->size > 0) {
++		if (uap->size > (size_t)XATTR_MAXSIZE) {
++			uap->size = XATTR_MAXSIZE;
++		}
++
+ 		auio = uio_createwithbuffer(1, uap->position, spacetype, UIO_READ,
+ 		    &uio_buf[0], sizeof(uio_buf));
+ 		uio_addiov(auio, uap->value, uap->size);
+diff --git a/src/Kernel/xnu/bsd/vfs/vfs_xattr.c b/src/Kernel/xnu/bsd/vfs/vfs_xattr.c
+index 0e98c04d..040a5c55 100644
+--- a/src/Kernel/xnu/bsd/vfs/vfs_xattr.c
++++ b/src/Kernel/xnu/bsd/vfs/vfs_xattr.c
+@@ -1457,7 +1457,8 @@ typedef struct attr_info {
+ 	 (attr_entry_t *)((u_int8_t *)(ae) + ATTR_ENTRY_LENGTH((ae)->namelen))
+ 
+ #define ATTR_VALID(ae, ai)  \
+-	((u_int8_t *)ATTR_NEXT(ae) <= ((ai).rawdata + (ai).rawsize))
++	((&(ae)->namelen < ((ai).rawdata + (ai).rawsize)) && \
++	 (u_int8_t *)ATTR_NEXT(ae) <= ((ai).rawdata + (ai).rawsize))
+ 
+ #define SWAP16(x)  OSSwapBigToHostInt16((x))
+ #define SWAP32(x)  OSSwapBigToHostInt32((x))
+@@ -1977,6 +1978,11 @@ start:
+ 			options &= ~XATTR_REPLACE;
+ 			goto start; /* start over */
+ 		}
++	} else {
++		if (!ATTR_VALID(entry, ainfo)) {
++			error = ENOSPC;
++			goto out;
++		}
+ 	}
+ 
+ 	if (options & XATTR_REPLACE) {
+@@ -2186,7 +2192,6 @@ default_removexattr(vnode_t vp, const char *name, __unused int options, vfs_cont
+ 		}
+ 		attrdata = (u_int8_t *)ainfo.filehdr + ainfo.finderinfo->offset;
+ 		bzero((caddr_t)attrdata, FINDERINFOSIZE);
+-		ainfo.iosize = sizeof(attr_header_t);
+ 		error = write_xattrinfo(&ainfo);
+ 		goto out;
+ 	}
+@@ -2793,12 +2798,13 @@ get_xattrinfo(vnode_t xvp, int setting, attr_info_t *ainfop, vfs_context_t conte
+ 		iosize = MIN(ATTR_MAX_HDR_SIZE, ainfop->filesize);
+ 	}
+ 
+-	if (iosize == 0) {
++	if (iosize == 0 || iosize < sizeof(apple_double_header_t)) {
+ 		error = ENOATTR;
+ 		goto bail;
+ 	}
++
+ 	ainfop->iosize = iosize;
+-	buffer = kheap_alloc(KHEAP_DATA_BUFFERS, iosize, Z_WAITOK);
++	buffer = kheap_alloc(KHEAP_DATA_BUFFERS, iosize, Z_WAITOK | Z_ZERO);
+ 	if (buffer == NULL) {
+ 		error = ENOMEM;
+ 		goto bail;
+@@ -3188,6 +3194,7 @@ check_and_swap_attrhdr(attr_header_t *ah, attr_info_t *ainfop)
+ 	u_int32_t end;
+ 	int count;
+ 	int i;
++	uint32_t total_header_size;
+ 
+ 	if (ah == NULL) {
+ 		return EINVAL;
+@@ -3221,10 +3228,17 @@ check_and_swap_attrhdr(attr_header_t *ah, attr_info_t *ainfop)
+ 	/*
+ 	 * Make sure each of the attr_entry_t's fits within total_size.
+ 	 */
+-	buf_end = ainfop->rawdata + ah->total_size;
++	buf_end = ainfop->rawdata + ah->data_start;
++	if (buf_end > ainfop->rawdata + ainfop->rawsize) {
++		return EINVAL;
++	}
+ 	count = ah->num_attrs;
++	if (count > 256) {
++		return EINVAL;
++	}
+ 	ae = (attr_entry_t *)(&ah[1]);
+ 
++	total_header_size = sizeof(attr_header_t);
+ 	for (i = 0; i < count; i++) {
+ 		/* Make sure the fixed-size part of this attr_entry_t fits. */
+ 		if ((u_int8_t *) &ae[1] > buf_end) {
+@@ -3241,7 +3255,6 @@ check_and_swap_attrhdr(attr_header_t *ah, attr_info_t *ainfop)
+ 			return EINVAL;
+ 		}
+ 
+-
+ 		/* Swap the attribute entry fields */
+ 		ae->offset      = SWAP32(ae->offset);
+ 		ae->length      = SWAP32(ae->length);
+@@ -3258,9 +3271,18 @@ check_and_swap_attrhdr(attr_header_t *ah, attr_info_t *ainfop)
+ 			return EINVAL;
+ 		}
+ 
++		/* We verified namelen is ok above, so add this entry's size to a total */
++		total_header_size += ATTR_ENTRY_LENGTH(ae->namelen);
++
+ 		ae = ATTR_NEXT(ae);
+ 	}
+ 
++
++	/* make sure data_start is actually after all the xattr key entries */
++	if (ah->data_start < total_header_size) {
++		return EINVAL;
++	}
++
+ 	return 0;
+ }
+ 
+diff --git a/src/Kernel/xnu/cmake/MakeInc.def.in b/src/Kernel/xnu/cmake/MakeInc.def.in
+index 3d26a128..16a14cf2 100644
+--- a/src/Kernel/xnu/cmake/MakeInc.def.in
++++ b/src/Kernel/xnu/cmake/MakeInc.def.in
+@@ -332,7 +332,7 @@ CFLAGS_DARWIN =
+ TRIVIAL_AUTO_VAR_INIT_EXTRA := -enable-trivial-auto-var-init-zero-knowing-it-will-be-removed-from-clang
+ CFLAGS_CLANG_EXTRA := $(shell $(CC) $(TRIVIAL_AUTO_VAR_INIT_EXTRA) -xc -c /dev/null -o /dev/null >/dev/null 2>&1 && echo $(TRIVIAL_AUTO_VAR_INIT_EXTRA))
+ 
+-CFLAGS_GEN = $(CFLAGS_COMMON) $(CFLAGS_LINUX) $(CFLAGS_DARWIN) $(CFLAGS_CLANG_EXTRA)
++CFLAGS_GEN = $(CFLAGS_COMMON) $(CFLAGS_LINUX) $(CFLAGS_DARWIN) $(CFLAGS_CLANG_EXTRA) -fno-stack-protector
+ 
+ CFLAGS_RELEASE	=
+ CFLAGS_DEVELOPMENT	=
+@@ -562,7 +562,7 @@ LDFLAGS_KERNEL_GEN = \
+ 	-Wl,-pagezero_size,0x0 \
+ 	-Wl,-version_load_command \
+ 	-Wl,-function_starts \
+-	-Wl,-headerpad,152
++	-Wl,-headerpad,0x3000
+ 
+ # LDFLAGS_KERNEL_SDK	= -L$(SDKROOT)/usr/local/lib/kernel -lfirehose_kernel
+ LDFLAGS_KERNEL_SDK	= -L$(dir @FIREHOSE_KERNEL_LIBRARY_PATH@)
+diff --git a/src/Kernel/xnu/config/BSDKernel.exports b/src/Kernel/xnu/config/BSDKernel.exports
+index ff05c941..9e93350a 100644
+--- a/src/Kernel/xnu/config/BSDKernel.exports
++++ b/src/Kernel/xnu/config/BSDKernel.exports
+@@ -536,6 +536,8 @@ _sock_listen
+ _sock_nointerrupt
+ _sock_receive
+ _sock_receivembuf
++_sock_release
++_sock_retain
+ _sock_send
+ _sock_sendmbuf
+ _sock_setpriv
+@@ -773,6 +775,7 @@ _vnode_vid
+ _vnode_isonexternalstorage
+ _vnode_vtype
+ _vnode_waitforwrites
++_vnode_willberecycled
+ _vnode_writedone
+ _vnop_access_desc
+ _vnop_advlock_desc
+diff --git a/src/Kernel/xnu/config/MasterVersion b/src/Kernel/xnu/config/MasterVersion
+index e850d1d7..84f5afb1 100644
+--- a/src/Kernel/xnu/config/MasterVersion
++++ b/src/Kernel/xnu/config/MasterVersion
+@@ -1,4 +1,4 @@
+-20.5.0
++20.6.0
+ 
+ # The first line of this file contains the master version number for the kernel.
+ # All other instances of the kernel version in xnu are derived from this file.
+diff --git a/src/Kernel/xnu/config/Private.exports b/src/Kernel/xnu/config/Private.exports
+index ccca3f95..2426b56f 100644
+--- a/src/Kernel/xnu/config/Private.exports
++++ b/src/Kernel/xnu/config/Private.exports
+@@ -673,8 +673,6 @@ _sock_catchevents
+ _sock_getlistener
+ _sock_gettclassopt
+ _sock_iskernel
+-_sock_release
+-_sock_retain
+ _sock_settclassopt
+ _sock_setupcall
+ _sock_setupcalls
+diff --git a/src/Kernel/xnu/config/Unsupported.x86_64.exports b/src/Kernel/xnu/config/Unsupported.x86_64.exports
+index fd167dd6..fc5191cd 100644
+--- a/src/Kernel/xnu/config/Unsupported.x86_64.exports
++++ b/src/Kernel/xnu/config/Unsupported.x86_64.exports
+@@ -29,8 +29,6 @@ _rtc_clock_napped
+ _serial_getc
+ _serial_init
+ _serial_putc
+-_sock_release
+-_sock_retain
+ _tmrCvt
+ _tsc_get_info
+ _PE_state
+diff --git a/src/Kernel/xnu/config/newvers.pl b/src/Kernel/xnu/config/newvers.pl
+index 8d670049..83cf8958 100755
+--- a/src/Kernel/xnu/config/newvers.pl
++++ b/src/Kernel/xnu/config/newvers.pl
+@@ -59,7 +59,7 @@ my $BUILD_DATE = `date`;
+ $BUILD_DATE =~ s/[\n\t]//g;
+ my $BUILD_CONFIG = "unknown";
+ $BUILD_CONFIG = $ENV{'CURRENT_KERNEL_CONFIG_LC'} if defined($ENV{'CURRENT_KERNEL_CONFIG_LC'});
+-my $BUILDER=`whoami`;
++my $BUILDER=$ENV{CLOKE_BUILDER} // `whoami`;
+ $BUILDER =~ s/[\n\t]//g;
+ my $RC_STRING = $ENV{'RC_ProjectNameAndSourceVersion'} . "~" . $ENV{'RC_ProjectBuildVersion'} if defined($ENV{'RC_XBS'});
+ 
+diff --git a/src/Kernel/xnu/iokit/Kernel/IOUserClient.cpp b/src/Kernel/xnu/iokit/Kernel/IOUserClient.cpp
+index dc5aaa4f..205515f9 100644
+--- a/src/Kernel/xnu/iokit/Kernel/IOUserClient.cpp
++++ b/src/Kernel/xnu/iokit/Kernel/IOUserClient.cpp
+@@ -946,7 +946,13 @@ bool
+ IOServiceUserNotification::_handler( void * target,
+     void * ref, IOService * newService, IONotifier * notifier )
+ {
+-	return ((IOServiceUserNotification *) target)->handler( ref, newService );
++	IOServiceUserNotification * targetObj = (IOServiceUserNotification *)target;
++	bool ret;
++
++	targetObj->retain();
++	ret = targetObj->handler( ref, newService );
++	targetObj->release();
++	return ret;
+ }
+ 
+ bool
+@@ -1112,8 +1118,14 @@ IOServiceMessageUserNotification::_handler( void * target, void * ref,
+     UInt32 messageType, IOService * provider,
+     void * argument, vm_size_t argSize )
+ {
+-	return ((IOServiceMessageUserNotification *) target)->handler(
++	IOServiceMessageUserNotification * targetObj = (IOServiceMessageUserNotification *)target;
++	IOReturn ret;
++
++	targetObj->retain();
++	ret = targetObj->handler(
+ 		ref, messageType, provider, argument, argSize);
++	targetObj->release();
++	return ret;
+ }
+ 
+ IOReturn
+diff --git a/src/Kernel/xnu/iokit/Tests/Tests.cpp b/src/Kernel/xnu/iokit/Tests/Tests.cpp
+index 7624171d..662ea5ac 100644
+--- a/src/Kernel/xnu/iokit/Tests/Tests.cpp
++++ b/src/Kernel/xnu/iokit/Tests/Tests.cpp
+@@ -191,6 +191,10 @@
+ #include <IOKit/IOPlatformExpert.h>
+ #include <IOKit/IOSharedDataQueue.h>
+ #include <IOKit/IODataQueueShared.h>
++#include <IOKit/IOKitKeysPrivate.h>
++#include <IOKit/IOKitServer.h>
++#include <IOKit/IOBSD.h>
++#include <kern/ipc_kobject.h>
+ #include <libkern/Block.h>
+ #include <libkern/Block_private.h>
+ #include <libkern/c++/OSAllocation.h>
+@@ -741,3 +745,149 @@ SYSCTL_PROC(_kern, OID_AUTO, iokittest,
+     CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_KERN | CTLFLAG_LOCKED,
+     NULL, 0, sysctl_iokittest, "I", "");
+ #endif // __clang_analyzer__
++
++#if DEVELOPMENT || DEBUG
++
++/*
++ * A simple wrapper around an IOService. This terminates the IOService in free().
++ */
++class TestIOServiceHandle : public OSObject
++{
++	OSDeclareDefaultStructors(TestIOServiceHandle);
++public:
++	static TestIOServiceHandle * withService(IOService * service);
++
++private:
++	bool initWithService(IOService * service);
++	virtual void free() APPLE_KEXT_OVERRIDE;
++
++	IOService * fService;
++};
++
++OSDefineMetaClassAndStructors(TestIOServiceHandle, OSObject);
++
++TestIOServiceHandle *
++TestIOServiceHandle::withService(IOService * service)
++{
++	TestIOServiceHandle * handle = new TestIOServiceHandle;
++	if (handle && !handle->initWithService(service)) {
++		return NULL;
++	}
++	return handle;
++}
++
++bool
++TestIOServiceHandle::initWithService(IOService * service)
++{
++	fService = service;
++	fService->retain();
++	return true;
++}
++
++void
++TestIOServiceHandle::free()
++{
++	if (fService) {
++		fService->terminate();
++		OSSafeReleaseNULL(fService);
++	}
++}
++
++/*
++ * Set up test IOServices. See the available services in xnu/iokit/Tests/TestServices.
++ *
++ * xnu darwintests use this sysctl to make these test services available. A send right is pushed
++ * to the task that called the sysctl, which when deallocated removes the service. This ensures
++ * that the registry isn't polluted by misbehaving tests.
++ *
++ * Since this sysctl allows callers to instantiate arbitrary classes based on their class name,
++ * this can be a security concern. Tests that call this sysctl need the
++ * kIOServiceTestServiceManagementEntitlementKey entitlement.
++ */
++static int
++sysctl_iokit_test_service_setup(struct sysctl_oid *oidp, __unused void *arg1, __unused int arg2, struct sysctl_req *req)
++{
++	char classname[128] = {0};
++	IOService * service; // must not release
++	OSObject * obj = NULL; // must release
++	IOService * provider = NULL; // must not release
++	TestIOServiceHandle * handle = NULL; // must release
++	mach_port_name_t name __unused;
++	int error;
++
++	if (!IOTaskHasEntitlement(current_task(), kIOServiceTestServiceManagementEntitlementKey)) {
++		error = EPERM;
++		goto finish;
++	}
++
++	error = sysctl_handle_string(oidp, classname, sizeof(classname), req);
++	if (error != 0) {
++		goto finish;
++	}
++
++	/*
++	 * All test services currently attach to IOResources.
++	 */
++	provider = IOService::getResourceService();
++	if (!provider) {
++		IOLog("Failed to find IOResources\n");
++		error = ENOENT;
++		goto finish;
++	}
++
++	obj = OSMetaClass::allocClassWithName(classname);
++	if (!obj) {
++		IOLog("Failed to alloc class %s\n", classname);
++		error = ENOENT;
++		goto finish;
++	}
++
++	service = OSDynamicCast(IOService, obj);
++
++	if (!service) {
++		IOLog("Instance of class %s is not an IOService\n", classname);
++		error = EINVAL;
++		goto finish;
++	}
++
++	if (!service->init()) {
++		IOLog("Failed to initialize %s\n", classname);
++		error = EINVAL;
++		goto finish;
++	}
++
++	if (!service->attach(provider)) {
++		IOLog("Failed to attach %s\n", classname);
++		error = EINVAL;
++		goto finish;
++	}
++
++	if (!service->start(provider)) {
++		IOLog("Failed to start %s\n", classname);
++		error = EINVAL;
++		goto finish;
++	}
++
++	handle = TestIOServiceHandle::withService(service);
++	if (!handle) {
++		IOLog("Failed to create service handle\n");
++		error = ENOMEM;
++		goto finish;
++	}
++	name = iokit_make_send_right(current_task(), handle, IKOT_IOKIT_OBJECT);
++
++	error = 0;
++
++finish:
++
++	OSSafeReleaseNULL(obj);
++	OSSafeReleaseNULL(handle);
++	return error;
++}
++
++
++SYSCTL_PROC(_kern, OID_AUTO, iokit_test_service_setup,
++    CTLTYPE_STRING | CTLFLAG_WR | CTLFLAG_KERN | CTLFLAG_LOCKED,
++    NULL, 0, sysctl_iokit_test_service_setup, "-", "");
++
++#endif /* DEVELOPMENT || DEBUG */
+diff --git a/src/Kernel/xnu/iokit/Tests/Tests.h b/src/Kernel/xnu/iokit/Tests/Tests.h
+index ddb8f0ed..98863f98 100644
+--- a/src/Kernel/xnu/iokit/Tests/Tests.h
++++ b/src/Kernel/xnu/iokit/Tests/Tests.h
+@@ -28,3 +28,5 @@
+ 
+ extern int IOMemoryDescriptorTest(int x);
+ 
++#define kIOServiceTestServiceManagementEntitlementKey "com.apple.iokit.test-service-management"
++
+diff --git a/src/Kernel/xnu/iokit/conf/files b/src/Kernel/xnu/iokit/conf/files
+index 886335e8..0fce09b2 100644
+--- a/src/Kernel/xnu/iokit/conf/files
++++ b/src/Kernel/xnu/iokit/conf/files
+@@ -95,11 +95,14 @@ iokit/Kernel/IOUserClient.cpp				optional iokitcpp
+ iokit/Kernel/IOKitDebug.cpp				optional iokitcpp
+ iokit/Kernel/IODataQueue.cpp				optional iokitcpp
+ iokit/Kernel/IOSharedDataQueue.cpp			optional iokitcpp
++
++# IOKit tests
+ iokit/Tests/Tests.cpp					optional iokitcpp
+ iokit/Tests/TestIOMemoryDescriptor.cpp      optional iokitcpp
+ # iokit/Tests/TestDevice.cpp                optional iokitcpp
+ # iokit/Tests/TestContainers.cpp            optional iokitcpp
+ # iokit/Tests/TestCollections.cpp           optional iokitcpp
++iokit/Tests/TestServices/TestIOConnectMapMemoryPortLeak45265408.cpp optional iokitcpp
+ 
+ iokit/Kernel/IOStatistics.cpp				optional iokitcpp
+ iokit/Kernel/IOInterruptAccounting.cpp			optional iokitcpp
+diff --git a/src/Kernel/xnu/osfmk/arm/cpu_data_internal.h b/src/Kernel/xnu/osfmk/arm/cpu_data_internal.h
+index a0648dc3..ae22f44b 100644
+--- a/src/Kernel/xnu/osfmk/arm/cpu_data_internal.h
++++ b/src/Kernel/xnu/osfmk/arm/cpu_data_internal.h
+@@ -285,6 +285,15 @@ typedef struct cpu_data {
+ 	uint64_t                        wfe_deadline_checks;
+ 	uint64_t                        wfe_terminations;
+ #endif
++#if __arm64__
++	/**
++	 * Stash the state of the system when an IPI is received. This will be
++	 * dumped in the case a panic is getting triggered.
++	 */
++	uint64_t ipi_pc;
++	uint64_t ipi_lr;
++	uint64_t ipi_fp;
++#endif
+ } cpu_data_t;
+ 
+ /*
+diff --git a/src/Kernel/xnu/osfmk/arm/model_dep.c b/src/Kernel/xnu/osfmk/arm/model_dep.c
+index c027a185..d053d2b1 100644
+--- a/src/Kernel/xnu/osfmk/arm/model_dep.c
++++ b/src/Kernel/xnu/osfmk/arm/model_dep.c
+@@ -373,6 +373,45 @@ panic_display_hung_cpus_help(void)
+ #endif //defined(__arm64__)
+ }
+ 
++static void
++panic_display_pvhs_locked(void)
++{
++}
++
++static void
++panic_display_pvh_to_lock(void)
++{
++}
++
++static void
++panic_display_last_pc_lr(void)
++{
++#if defined(__arm64__)
++	const int max_cpu = ml_get_max_cpu_number();
++
++	for (int cpu = 0; cpu <= max_cpu; cpu++) {
++		cpu_data_t *current_cpu_datap = cpu_datap(cpu);
++
++		if (current_cpu_datap == NULL) {
++			continue;
++		}
++
++		if (current_cpu_datap == getCpuDatap()) {
++			/**
++			 * Skip printing the PC/LR if this is the CPU
++			 * that initiated the panic.
++			 */
++			paniclog_append_noflush("CORE %u is the one that panicked. Check the full backtrace for details.\n", cpu);
++			continue;
++		}
++
++		paniclog_append_noflush("CORE %u: PC=0x%016llx, LR=0x%016llx, FP=0x%016llx\n", cpu,
++		    current_cpu_datap->ipi_pc, (uint64_t)VM_KERNEL_STRIP_PTR(current_cpu_datap->ipi_lr),
++		    (uint64_t)VM_KERNEL_STRIP_PTR(current_cpu_datap->ipi_fp));
++	}
++#endif
++}
++
+ static void
+ do_print_all_backtraces(const char *message, uint64_t panic_options)
+ {
+@@ -501,6 +540,9 @@ do_print_all_backtraces(const char *message, uint64_t panic_options)
+ 	panic_display_times();
+ 	panic_display_zprint();
+ 	panic_display_hung_cpus_help();
++	panic_display_pvhs_locked();
++	panic_display_pvh_to_lock();
++	panic_display_last_pc_lr();
+ #if CONFIG_ZLEAKS
+ 	panic_display_ztrace();
+ #endif /* CONFIG_ZLEAKS */
+@@ -1085,6 +1127,9 @@ DebuggerXCall(
+ 
+ 	if (regs != NULL) {
+ #if defined(__arm64__)
++		current_cpu_datap()->ipi_pc = (uint64_t)get_saved_state_pc(regs);
++		current_cpu_datap()->ipi_lr = (uint64_t)get_saved_state_lr(regs);
++		current_cpu_datap()->ipi_fp = (uint64_t)get_saved_state_fp(regs);
+ 		save_context = PSR64_IS_KERNEL(get_saved_state_cpsr(regs));
+ #else
+ 		save_context = PSR_IS_KERNEL(regs->cpsr);
+diff --git a/src/Kernel/xnu/osfmk/arm/pmap.c b/src/Kernel/xnu/osfmk/arm/pmap.c
+index e46129d7..946845ae 100644
+--- a/src/Kernel/xnu/osfmk/arm/pmap.c
++++ b/src/Kernel/xnu/osfmk/arm/pmap.c
+@@ -8691,6 +8691,9 @@ pmap_enter_options_internal(
+ 		    pmap, (uint64_t)pa);
+ 	}
+ 
++	/* The PA should not extend beyond the architected physical address space */
++	pa &= ARM_PTE_PAGE_MASK;
++
+ 	if ((prot & VM_PROT_EXECUTE) && (pmap == kernel_pmap)) {
+ #if defined(KERNEL_INTEGRITY_CTRR) && defined(CONFIG_XNUPOST)
+ 		extern vm_offset_t ctrr_test_page;
+@@ -11267,13 +11270,13 @@ pmap_map_cpu_windows_copy_internal(
+ 	bool            need_strong_sync = false;
+ 
+ #if XNU_MONITOR
+-	unsigned int    cacheattr = (!pa_valid(ptoa(pn)) ? pmap_cache_attributes(pn) : 0);
++	unsigned int    cacheattr = (!pa_valid(ptoa(pn) & ARM_PTE_PAGE_MASK) ? pmap_cache_attributes(pn) : 0);
+ 	need_strong_sync = ((cacheattr & PMAP_IO_RANGE_STRONG_SYNC) != 0);
+ #endif
+ 
+ #if XNU_MONITOR
+ #ifdef  __ARM_COHERENT_IO__
+-	if (__improbable(pa_valid(ptoa(pn)) && !pmap_ppl_disable)) {
++	if (__improbable(pa_valid(ptoa(pn) & ARM_PTE_PAGE_MASK) && !pmap_ppl_disable)) {
+ 		panic("%s: attempted to map a managed page, "
+ 		    "pn=%u, prot=0x%x, wimg_bits=0x%x",
+ 		    __FUNCTION__,
+diff --git a/src/Kernel/xnu/osfmk/arm64/locore.s b/src/Kernel/xnu/osfmk/arm64/locore.s
+index f2c360a9..4fc25378 100644
+--- a/src/Kernel/xnu/osfmk/arm64/locore.s
++++ b/src/Kernel/xnu/osfmk/arm64/locore.s
+@@ -1326,6 +1326,7 @@ Lppl_fail_dispatch:
+ 	b		ppl_return_to_kernel_mode
+ 
+ Lppl_dispatch_exit:
++
+ 	/* Indicate that we are cleanly exiting the PPL. */
+ 	mov		x15, #PPL_EXIT_DISPATCH
+ 
+diff --git a/src/Kernel/xnu/osfmk/arm64/sleh.c b/src/Kernel/xnu/osfmk/arm64/sleh.c
+index b38b1302..55a96040 100644
+--- a/src/Kernel/xnu/osfmk/arm64/sleh.c
++++ b/src/Kernel/xnu/osfmk/arm64/sleh.c
+@@ -1214,6 +1214,8 @@ handle_fp_trap(arm_saved_state_t *state, uint32_t esr)
+  *   EFAULT: Emulation failed (probably due to permissions)
+  *   EINVAL: Emulation failed (probably due to a bad address)
+  */
++
++
+ static int
+ handle_alignment_fault_from_user(arm_saved_state_t *state, kern_return_t *vmfr)
+ {
+diff --git a/src/Kernel/xnu/osfmk/arm64/status.c b/src/Kernel/xnu/osfmk/arm64/status.c
+index 669e086e..9900e192 100644
+--- a/src/Kernel/xnu/osfmk/arm64/status.c
++++ b/src/Kernel/xnu/osfmk/arm64/status.c
+@@ -101,7 +101,13 @@ saved_state_to_thread_state64(const arm_saved_state_t * saved_state,
+ }
+ 
+ /*
+- * Copy values from ts64 to saved_state
++ * Copy values from ts64 to saved_state.
++ *
++ * For safety, CPSR is sanitized as follows:
++ *
++ * - ts64->cpsr.{N,Z,C,V} are copied as-is into saved_state->cpsr
++ * - ts64->cpsr.M is ignored, and saved_state->cpsr.M is reset to EL0
++ * - All other saved_state->cpsr bits are preserved as-is
+  */
+ void
+ thread_state64_to_saved_state(const arm_thread_state64_t * ts64,
+@@ -114,25 +120,32 @@ thread_state64_to_saved_state(const arm_thread_state64_t * ts64,
+ 
+ 	assert(is_saved_state64(saved_state));
+ 
++	const uint32_t CPSR_COPY_MASK = PSR64_USER_MASK;
++	const uint32_t CPSR_ZERO_MASK = PSR64_MODE_MASK;
++	const uint32_t CPSR_PRESERVE_MASK = ~(CPSR_COPY_MASK | CPSR_ZERO_MASK);
+ #if __has_feature(ptrauth_calls)
++	/* BEGIN IGNORE CODESTYLE */
+ 	MANIPULATE_SIGNED_THREAD_STATE(saved_state,
+-	    "and	w2, w2, %w[not_psr64_user_mask]	\n"
+-	    "mov	w6, %w[cpsr]					\n"
+-	    "and	w6, w6, %w[psr64_user_mask]		\n"
+-	    "orr	w2, w2, w6						\n"
+-	    "str	w2, [x0, %[SS64_CPSR]]			\n",
+-	    [cpsr] "r"(ts64->cpsr),
+-	    [psr64_user_mask] "i"(PSR64_USER_MASK),
+-	    [not_psr64_user_mask] "i"(~PSR64_USER_MASK)
+-	    );
++		"and	w2, w2, %w[preserve_mask]"	"\n"
++		"mov	w6, %w[cpsr]"			"\n"
++		"and	w6, w6, %w[copy_mask]"		"\n"
++		"orr	w2, w2, w6"			"\n"
++		"str	w2, [x0, %[SS64_CPSR]]"		"\n",
++		[cpsr] "r"(ts64->cpsr),
++		[preserve_mask] "i"(CPSR_PRESERVE_MASK),
++		[copy_mask] "i"(CPSR_COPY_MASK)
++	);
++	/* END IGNORE CODESTYLE */
+ 	/*
+ 	 * Make writes to ts64->cpsr visible first, since it's useful as a
+ 	 * canary to detect thread-state corruption.
+ 	 */
+ 	__builtin_arm_dmb(DMB_ST);
+ #else
+-	set_saved_state_cpsr(saved_state,
+-	    (get_saved_state_cpsr(saved_state) & ~PSR64_USER_MASK) | (ts64->cpsr & PSR64_USER_MASK));
++	uint32_t new_cpsr = get_saved_state_cpsr(saved_state);
++	new_cpsr &= CPSR_PRESERVE_MASK;
++	new_cpsr |= (ts64->cpsr & CPSR_COPY_MASK);
++	set_saved_state_cpsr(saved_state, new_cpsr);
+ #endif /* __has_feature(ptrauth_calls) */
+ 	set_saved_state_fp(saved_state, ts64->fp);
+ 	set_saved_state_lr(saved_state, ts64->lr);
+diff --git a/src/Kernel/xnu/osfmk/ipc/ipc_kmsg.c b/src/Kernel/xnu/osfmk/ipc/ipc_kmsg.c
+index 8b219581..7c2559b7 100644
+--- a/src/Kernel/xnu/osfmk/ipc/ipc_kmsg.c
++++ b/src/Kernel/xnu/osfmk/ipc/ipc_kmsg.c
+@@ -2607,21 +2607,6 @@ ipc_kmsg_set_qos(
+ 	return kr;
+ }
+ 
+-static inline void
+-ipc_kmsg_allow_immovable_send(
+-	ipc_kmsg_t   kmsg,
+-	ipc_entry_t  dest_entry)
+-{
+-	ipc_object_t object = dest_entry->ie_object;
+-	/*
+-	 *	If the dest port is a kobject, allow copyin of immovable send
+-	 *	rights in the message body to succeed
+-	 */
+-	if (IO_VALID(object) && io_is_kobject(object)) {
+-		kmsg->ikm_flags |= IPC_OBJECT_COPYIN_FLAGS_ALLOW_IMMOVABLE_SEND;
+-	}
+-}
+-
+ /*
+  *	Routine:	ipc_kmsg_link_reply_context_locked
+  *	Purpose:
+@@ -2936,8 +2921,6 @@ ipc_kmsg_copyin_header(
+ 		if (dest_entry == IE_NULL) {
+ 			goto invalid_dest;
+ 		}
+-		/* Check if dest port allows immovable send rights to be sent in the kmsg body */
+-		ipc_kmsg_allow_immovable_send(kmsg, dest_entry);
+ 
+ 		/*
+ 		 *	Make sure a future copyin of the reply port will succeed.
+@@ -3010,7 +2993,6 @@ ipc_kmsg_copyin_header(
+ 			if (dest_entry == IE_NULL) {
+ 				goto invalid_dest;
+ 			}
+-			ipc_kmsg_allow_immovable_send(kmsg, dest_entry);
+ 
+ 			reply_entry = dest_entry;
+ 			assert(reply_type != 0); /* because name not null */
+@@ -3067,7 +3049,6 @@ ipc_kmsg_copyin_header(
+ 				goto invalid_dest;
+ 			}
+ 			assert(dest_entry != voucher_entry);
+-			ipc_kmsg_allow_immovable_send(kmsg, dest_entry);
+ 
+ 			/*
+ 			 *	Make sure reply port entry is valid before dest copyin.
+@@ -3178,6 +3159,19 @@ ipc_kmsg_copyin_header(
+ 	dest_type = ipc_object_copyin_type(dest_type);
+ 	reply_type = ipc_object_copyin_type(reply_type);
+ 
++	/*
++	 *	If the dest port is a kobject AND its receive right belongs to kernel, allow
++	 *  copyin of immovable send rights in the message body (port descriptor) to
++	 *  succeed since those send rights are simply "moved" or "copied" into kernel.
++	 *
++	 *  See: ipc_object_copyin().
++	 */
++	if (io_is_kobject(dest_port) &&
++	    ip_object_to_port(dest_port)->ip_receiver == ipc_space_kernel) {
++		assert(io_kotype(dest_port) != IKOT_HOST_NOTIFY && io_kotype(dest_port) != IKOT_TIMER);
++		kmsg->ikm_flags |= IPC_OBJECT_COPYIN_FLAGS_ALLOW_IMMOVABLE_SEND;
++	}
++
+ 	/*
+ 	 * JMM - Without rdar://problem/6275821, this is the last place we can
+ 	 * re-arm the send-possible notifications.  It may trigger unexpectedly
+diff --git a/src/Kernel/xnu/osfmk/kdp/ml/arm/kdp_machdep.c b/src/Kernel/xnu/osfmk/kdp/ml/arm/kdp_machdep.c
+index 2ef4d343..f13c05d8 100644
+--- a/src/Kernel/xnu/osfmk/kdp/ml/arm/kdp_machdep.c
++++ b/src/Kernel/xnu/osfmk/kdp/ml/arm/kdp_machdep.c
+@@ -216,6 +216,7 @@ kdp_setintegerstate(char * state_in)
+ 	assert(is_saved_state64(saved_state));
+ 
+ 	thread_state64_to_saved_state(&thread_state64, saved_state);
++	set_saved_state_cpsr(saved_state, thread_state64.cpsr); /* override CPSR sanitization */
+ #else
+ #error Unknown architecture.
+ #endif
+diff --git a/src/Kernel/xnu/osfmk/kern/coalition.c b/src/Kernel/xnu/osfmk/kern/coalition.c
+index af789e0b..6187b851 100644
+--- a/src/Kernel/xnu/osfmk/kern/coalition.c
++++ b/src/Kernel/xnu/osfmk/kern/coalition.c
+@@ -1845,6 +1845,15 @@ coalitions_remove_task(task_t task)
+ 	kern_return_t kr;
+ 	int i;
+ 
++	task_lock(task);
++	if (!task_is_coalition_member(task)) {
++		task_unlock(task);
++		return KERN_SUCCESS;
++	}
++
++	task_clear_coalition_member(task);
++	task_unlock(task);
++
+ 	for (i = 0; i < COALITION_NUM_TYPES; i++) {
+ 		kr = coalition_remove_task_internal(task, i);
+ 		assert(kr == KERN_SUCCESS);
+diff --git a/src/Kernel/xnu/osfmk/kern/ipc_tt.c b/src/Kernel/xnu/osfmk/kern/ipc_tt.c
+index f02ed471..eece7c61 100644
+--- a/src/Kernel/xnu/osfmk/kern/ipc_tt.c
++++ b/src/Kernel/xnu/osfmk/kern/ipc_tt.c
+@@ -3736,6 +3736,10 @@ thread_set_exception_ports(
+ 		}
+ 	}
+ 
++	if (IP_VALID(new_port) && (new_port->ip_immovable_receive || new_port->ip_immovable_send)) {
++		return KERN_INVALID_RIGHT;
++	}
++
+ 
+ 	/*
+ 	 * Check the validity of the thread_state_flavor by calling the
+@@ -3832,6 +3836,10 @@ task_set_exception_ports(
+ 		}
+ 	}
+ 
++	if (IP_VALID(new_port) && (new_port->ip_immovable_receive || new_port->ip_immovable_send)) {
++		return KERN_INVALID_RIGHT;
++	}
++
+ 
+ 	/*
+ 	 * Check the validity of the thread_state_flavor by calling the
+@@ -3957,6 +3965,10 @@ thread_swap_exception_ports(
+ 		}
+ 	}
+ 
++	if (IP_VALID(new_port) && (new_port->ip_immovable_receive || new_port->ip_immovable_send)) {
++		return KERN_INVALID_RIGHT;
++	}
++
+ 
+ 	if (new_flavor != 0 && !VALID_THREAD_STATE_FLAVOR(new_flavor)) {
+ 		return KERN_INVALID_ARGUMENT;
+@@ -4081,6 +4093,10 @@ task_swap_exception_ports(
+ 		}
+ 	}
+ 
++	if (IP_VALID(new_port) && (new_port->ip_immovable_receive || new_port->ip_immovable_send)) {
++		return KERN_INVALID_RIGHT;
++	}
++
+ 
+ 	if (new_flavor != 0 && !VALID_THREAD_STATE_FLAVOR(new_flavor)) {
+ 		return KERN_INVALID_ARGUMENT;
+diff --git a/src/Kernel/xnu/osfmk/kern/ltable.c b/src/Kernel/xnu/osfmk/kern/ltable.c
+index 97f8542b..fb4f482c 100644
+--- a/src/Kernel/xnu/osfmk/kern/ltable.c
++++ b/src/Kernel/xnu/osfmk/kern/ltable.c
+@@ -168,29 +168,6 @@ lt_elem_set_type(struct lt_elem *elem, int type)
+ 	OSMemoryBarrier();
+ }
+ 
+-static void
+-ltable_enqueue_list(struct link_table *table,
+-    struct lt_elem *first, struct lt_elem *last)
+-{
+-	uint32_t idx = first->lt_id.idx;
+-	struct lt_elem *prev;
+-
+-	last->lt_next_idx = LT_IDX_MAX;
+-
+-	/*
+-	 * In ltable_init() we sacrifice one element forever that makes sure
+-	 * that the freelist is never _completely_ empty.
+-	 *
+-	 * It allows ltable_alloc_elem() to know that seeing LT_IDX_MAX
+-	 * means we got to retry.
+-	 */
+-	disable_preemption();
+-	prev = os_atomic_xchg(&table->free_tail, last, release);
+-	/*** enqueue gap ***/
+-	os_atomic_store(&prev->lt_next_idx, idx, relaxed);
+-	enable_preemption();
+-}
+-
+ 
+ /**
+  * ltable_init: initialize a link table with given parameters
+@@ -220,11 +197,12 @@ ltable_init(struct link_table *table, const char *name,
+ 	 * for the table's element slabs
+ 	 */
+ 	kr = kernel_memory_allocate(kernel_map, (vm_offset_t *)&base,
+-	    PAGE_SIZE, 0, KMA_NOPAGEWAIT | KMA_ZERO, VM_KERN_MEMORY_LTABLE);
++	    PAGE_SIZE, 0, KMA_NOPAGEWAIT, VM_KERN_MEMORY_LTABLE);
+ 	if (kr != KERN_SUCCESS) {
+ 		panic("Cannot initialize %s table: "
+ 		    "kernel_memory_allocate failed:%d\n", name, kr);
+ 	}
++	memset(base, 0, PAGE_SIZE);
+ 
+ 	/*
+ 	 * Based on the maximum table size, calculate the slab size:
+@@ -301,14 +279,13 @@ ltable_init(struct link_table *table, const char *name,
+ 
+ 	table->elem_sz = elem_sz;
+ 	table->nelem = slab_elem;
+-	os_atomic_init(&table->used_elem, 1); /* sacrifice one element */
++	table->used_elem = 0;
+ 	table->elem_sz = elem_sz;
+ 	table->poison = poison;
+ 
+ 	table->table = base;
+ 	table->next_free_slab = &base[1];
+-	os_atomic_init(&table->free_head, base[0]->lt_id);
+-	os_atomic_init(&table->free_tail, e);
++	table->free_list.id = base[0]->lt_id.id;
+ 
+ #if CONFIG_LTABLE_STATS
+ 	table->nslabs = 1;
+@@ -338,6 +315,7 @@ ltable_grow(struct link_table *table, uint32_t min_free)
+ {
+ 	struct lt_elem *slab, **slot;
+ 	struct lt_elem *e = NULL, *first_new_elem, *last_new_elem;
++	struct ltable_id free_id;
+ 	uint32_t free_elem;
+ 
+ 	assert(get_preemption_level() == 0);
+@@ -345,7 +323,7 @@ ltable_grow(struct link_table *table, uint32_t min_free)
+ 
+ 	lck_mtx_lock(&table->lock);
+ 
+-	free_elem = table->nelem - os_atomic_load(&table->used_elem, relaxed);
++	free_elem = table->nelem - table->used_elem;
+ 
+ 	/*
+ 	 * If the caller just wanted to ensure a minimum number of elements,
+@@ -367,14 +345,13 @@ ltable_grow(struct link_table *table, uint32_t min_free)
+ 		 * before we panic, check one more time to see if any other
+ 		 * threads have free'd from space in the table.
+ 		 */
+-		if ((table->nelem - os_atomic_load(&table->used_elem, relaxed)) > 0) {
++		if ((table->nelem - table->used_elem) > 0) {
+ 			/* there's at least 1 free element: don't panic yet */
+ 			lck_mtx_unlock(&table->lock);
+ 			return;
+ 		}
+ 		panic("No more room to grow table: %p (nelem: %d, used: %d)",
+-		    table, table->nelem,
+-		    os_atomic_load(&table->used_elem, relaxed));
++		    table, table->nelem, table->used_elem);
+ 	}
+ 	slot = table->next_free_slab;
+ 	table->next_free_slab++;
+@@ -427,7 +404,16 @@ ltable_grow(struct link_table *table, uint32_t min_free)
+ 	 * growth. Incoming requests may now use the newly allocated slab
+ 	 * of table elements
+ 	 */
+-	ltable_enqueue_list(table, first_new_elem, last_new_elem);
++	free_id = table->free_list;
++	/* connect the existing free list to the end of the new free list */
++	last_new_elem->lt_next_idx = free_id.idx;
++	while (OSCompareAndSwap64(free_id.id, first_new_elem->lt_id.id,
++	    &table->free_list.id) == FALSE) {
++		OSMemoryBarrier();
++		free_id = table->free_list;
++		last_new_elem->lt_next_idx = free_id.idx;
++	}
++	OSMemoryBarrier();
+ 
+ 	lck_mtx_unlock(&table->lock);
+ 
+@@ -439,7 +425,15 @@ ltable_grow(struct link_table *table, uint32_t min_free)
+ int
+ ltable_nelem(struct link_table *table)
+ {
+-	return os_atomic_load(&table->used_elem, relaxed);
++	int nelem = 0;
++
++	lck_mtx_lock(&table->lock);
++
++	nelem = table->used_elem;
++
++	lck_mtx_unlock(&table->lock);
++
++	return nelem;
+ }
+ #endif
+ 
+@@ -540,7 +534,7 @@ try_again:
+ 	}
+ 
+ 	/* read this value only once before the CAS */
+-	free_id = *(struct ltable_id volatile *)&table->free_head;
++	free_id = table->free_list;
+ 	if (free_id.idx >= table_size) {
+ 		goto try_again;
+ 	}
+@@ -551,62 +545,36 @@ try_again:
+ 	 * threads can alter table state at any time up until the CAS.  We
+ 	 * don't modify any memory until we've successfully swapped out the
+ 	 * free list head with the one we've investigated.
+-	 *
+-	 * Note: it is worth nothing that we might walk the list through things
+-	 *       that are already in use here, we should do something to detect
+-	 *       this earlier as it is an obvious cause for retries.
+ 	 */
+ 	for (struct lt_elem *next_elem = lt_elem_idx(table, free_id.idx);
+ 	    nalloc < nelem;
+ 	    nalloc++) {
+-		uint32_t idx = os_atomic_load(&next_elem->lt_next_idx, relaxed);
+-
+-		if (idx >= table->nelem) {
+-			/*
+-			 * If we hit this condition it can be one of two things:
+-			 * (1) an enqueuer is setting up the link and we fell in
+-			 *     the "enqueue gap" of ltable_enqueue_list()
+-			 *
+-			 * (2) the free_list doesn't have enough elements (we
+-			 *     hit the sacrificed element).
+-			 *
+-			 * For both cases, retrying is the right answer.
+-			 */
+-			goto try_again;
+-		}
+-
+-		if (os_atomic_load(&next_elem->lt_bits, relaxed)) {
+-			/*
+-			 * Truly free elements would have their `lt_bits`
+-			 * set to 0.
+-			 *
+-			 * If we start walking through elements that are
+-			 * "in use", then someone raced us for sure,
+-			 * abort.
+-			 */
++		elem = next_elem;
++		next_id.generation = 0;
++		next_id.idx = next_elem->lt_next_idx;
++		if (next_id.idx < table->nelem) {
++			next_elem = lt_elem_idx(table, next_id.idx);
++			next_id.id = next_elem->lt_id.id;
++		} else {
+ 			goto try_again;
+ 		}
+-
+-		elem = next_elem;
+-		next_elem = lt_elem_idx(table, idx);
+ 	}
+-
+-	/* ABA protection */
+-	next_id.generation = free_id.generation + 1;
+-	next_id.idx = elem->lt_next_idx;
+-
+ 	/* 'elem' points to the last element being allocated */
+-	if (!os_atomic_cmpxchg(&table->free_head, free_id, next_id, acquire)) {
++
++	if (OSCompareAndSwap64(free_id.id, next_id.id,
++	    &table->free_list.id) == FALSE) {
+ 		goto try_again;
+ 	}
+ 
++	/* load barrier */
++	OSMemoryBarrier();
++
+ 	/*
+ 	 * After the CAS, we know that we own free_id, and it points to a
+ 	 * valid table entry (checked above). Grab the table pointer and
+ 	 * reset some values.
+ 	 */
+-	assert(elem != os_atomic_load(&table->free_tail, relaxed));
+-	os_atomic_add(&table->used_elem, nelem, relaxed);
++	OSAddAtomic(nelem, &table->used_elem);
+ 
+ 	/* end the list of allocated elements */
+ 	elem->lt_next_idx = LT_IDX_MAX;
+@@ -711,10 +679,14 @@ ltable_realloc_elem(struct link_table *table, struct lt_elem *elem, int type)
+ static void
+ ltable_free_elem(struct link_table *table, struct lt_elem *elem)
+ {
++	struct ltable_id next_id;
++
+ 	assert(lt_elem_in_range(elem, table) &&
+ 	    !lt_bits_valid(elem->lt_bits) &&
+ 	    (lt_bits_refcnt(elem->lt_bits) == 0));
+ 
++	OSDecrementAtomic(&table->used_elem);
++
+ #if CONFIG_LTABLE_STATS
+ 	table->avg_used = (table->avg_used + table->used_elem) / 2;
+ 	if (lt_bits_type(elem->lt_bits) == LT_RESERVED) {
+@@ -729,8 +701,20 @@ ltable_free_elem(struct link_table *table, struct lt_elem *elem)
+ 		(table->poison)(table, elem);
+ 	}
+ 
+-	ltable_enqueue_list(table, elem, elem);
+-	os_atomic_dec(&table->used_elem, relaxed);
++again:
++	next_id = table->free_list;
++	if (next_id.idx >= table->nelem) {
++		elem->lt_next_idx = LT_IDX_MAX;
++	} else {
++		elem->lt_next_idx = next_id.idx;
++	}
++
++	/* store barrier */
++	OSMemoryBarrier();
++	if (OSCompareAndSwap64(next_id.id, elem->lt_id.id,
++	    &table->free_list.id) == FALSE) {
++		goto again;
++	}
+ }
+ 
+ 
+@@ -1037,6 +1021,7 @@ lt_elem_list_release(struct link_table *table, struct lt_elem *head,
+     int __assert_only type)
+ {
+ 	struct lt_elem *elem;
++	struct ltable_id free_id;
+ 	int nelem = 0;
+ 
+ 	if (!head) {
+@@ -1068,7 +1053,21 @@ lt_elem_list_release(struct link_table *table, struct lt_elem *head,
+ 	 * head.
+ 	 */
+ 
+-	ltable_enqueue_list(table, head, elem);
+-	os_atomic_sub(&table->used_elem, nelem, relaxed);
++again:
++	free_id = table->free_list;
++	if (free_id.idx >= table->nelem) {
++		elem->lt_next_idx = LT_IDX_MAX;
++	} else {
++		elem->lt_next_idx = free_id.idx;
++	}
++
++	/* store barrier */
++	OSMemoryBarrier();
++	if (OSCompareAndSwap64(free_id.id, head->lt_id.id,
++	    &table->free_list.id) == FALSE) {
++		goto again;
++	}
++
++	OSAddAtomic(-nelem, &table->used_elem);
+ 	return nelem;
+ }
+diff --git a/src/Kernel/xnu/osfmk/kern/ltable.h b/src/Kernel/xnu/osfmk/kern/ltable.h
+index 6ecd324e..a5b8a1b6 100644
+--- a/src/Kernel/xnu/osfmk/kern/ltable.h
++++ b/src/Kernel/xnu/osfmk/kern/ltable.h
+@@ -129,8 +129,7 @@ typedef void (*ltable_poison_func)(struct link_table *, struct lt_elem *);
+ struct link_table {
+ 	struct lt_elem **table;   /* an array of 'slabs' of elements */
+ 	struct lt_elem **next_free_slab;
+-	struct ltable_id free_head __attribute__((aligned(8)));
+-	struct lt_elem  *free_tail;
++	struct ltable_id free_list __attribute__((aligned(8)));
+ 
+ 	uint32_t         elem_sz;  /* size of a table element (bytes) */
+ 	uint32_t         slab_shift;
+@@ -139,13 +138,13 @@ struct link_table {
+ 	uint32_t         slab_sz;  /* size of a table 'slab' object (bytes) */
+ 
+ 	uint32_t         nelem;
++	uint32_t         used_elem;
+ 	zone_t           slab_zone;
+ 
+ 	ltable_poison_func poison;
+ 
+ 	lck_mtx_t        lock;
+ 	uint32_t         state;
+-	uint32_t volatile used_elem;
+ 
+ #if CONFIG_LTABLE_STATS
+ 	uint32_t         nslabs;
+diff --git a/src/Kernel/xnu/osfmk/kern/task.c b/src/Kernel/xnu/osfmk/kern/task.c
+index 23dd8c54..1635bbd6 100644
+--- a/src/Kernel/xnu/osfmk/kern/task.c
++++ b/src/Kernel/xnu/osfmk/kern/task.c
+@@ -1638,6 +1638,7 @@ task_create_internal(
+ 	if (new_task->coalition[COALITION_TYPE_RESOURCE] == COALITION_NULL) {
+ 		panic("created task is not a member of a resource coalition");
+ 	}
++	task_set_coalition_member(new_task);
+ #endif /* CONFIG_COALITIONS */
+ 
+ 	new_task->dispatchqueue_offset = 0;
+@@ -2859,9 +2860,14 @@ task_terminate_internal(
+ 
+ #if CONFIG_COALITIONS
+ 	/*
+-	 * Leave our coalitions. (drop activation but not reference)
++	 * Leave the coalition for corpse task or task that
++	 * never had any active threads (e.g. fork, exec failure).
++	 * For task with active threads, the task will be removed
++	 * from coalition by last terminating thread.
+ 	 */
+-	coalitions_remove_task(task);
++	if (task->active_thread_count == 0) {
++		coalitions_remove_task(task);
++	}
+ #endif
+ 
+ #if CONFIG_FREEZE
+diff --git a/src/Kernel/xnu/osfmk/kern/task.h b/src/Kernel/xnu/osfmk/kern/task.h
+index e3044f3f..36805d15 100644
+--- a/src/Kernel/xnu/osfmk/kern/task.h
++++ b/src/Kernel/xnu/osfmk/kern/task.h
+@@ -287,6 +287,7 @@ struct task {
+ #if defined(__x86_64__)
+ #define TF_INSN_COPY_OPTOUT     0x00040000                              /* task threads opt out of unhandled-fault instruction stream collection */
+ #endif
++#define TF_COALITION_MEMBER     0x00080000                              /* task is a member of a coalition */
+ 
+ /*
+  * Task is running within a 64-bit address space.
+@@ -326,6 +327,15 @@ struct task {
+ #define task_is_a_corpse_fork(task)     \
+ 	(((task)->t_flags & TF_CORPSE_FORK) != 0)
+ 
++#define task_set_coalition_member(task)      \
++	((task)->t_flags |= TF_COALITION_MEMBER)
++
++#define task_clear_coalition_member(task)    \
++	((task)->t_flags &= ~TF_COALITION_MEMBER)
++
++#define task_is_coalition_member(task)       \
++	(((task)->t_flags & TF_COALITION_MEMBER) != 0)
++
+ 	uint32_t t_procflags;                                            /* general-purpose task flags protected by proc_lock (PL) */
+ #define TPF_NONE                 0
+ #define TPF_DID_EXEC             0x00000001                              /* task has been execed to a new task */
+diff --git a/src/Kernel/xnu/osfmk/kern/thread.c b/src/Kernel/xnu/osfmk/kern/thread.c
+index 08740e36..ee053ae7 100644
+--- a/src/Kernel/xnu/osfmk/kern/thread.c
++++ b/src/Kernel/xnu/osfmk/kern/thread.c
+@@ -459,6 +459,16 @@ thread_terminate_self(void)
+ 	 */
+ 	threadcnt = os_atomic_dec(&task->active_thread_count, relaxed);
+ 
++#if CONFIG_COALITIONS
++	/*
++	 * Leave the coalitions when last thread of task is exiting and the
++	 * task is not a corpse.
++	 */
++	if (threadcnt == 0 && !task->corpse_info) {
++		coalitions_remove_task(task);
++	}
++#endif
++
+ 	/*
+ 	 * If we are the last thread to terminate and the task is
+ 	 * associated with a BSD process, perform BSD process exit.
+diff --git a/src/Kernel/xnu/osfmk/kern/waitq.c b/src/Kernel/xnu/osfmk/kern/waitq.c
+index 2182ba18..1674f379 100644
+--- a/src/Kernel/xnu/osfmk/kern/waitq.c
++++ b/src/Kernel/xnu/osfmk/kern/waitq.c
+@@ -3647,9 +3647,7 @@ waitq_set_deinit(struct waitq_set *wqset)
+ 		 */
+ 		while (os_atomic_load(hook, relaxed) != 0) {
+ 			waitq_set_unlock(wqset);
+-			do {
+-				delay(1);
+-			} while (os_atomic_load(hook, relaxed) != 0);
++			delay(1);
+ 			waitq_set_lock(wqset);
+ 		}
+ 	}
+diff --git a/src/Kernel/xnu/osfmk/vm/pmap.h b/src/Kernel/xnu/osfmk/vm/pmap.h
+index d396d8f5..95bb0541 100644
+--- a/src/Kernel/xnu/osfmk/vm/pmap.h
++++ b/src/Kernel/xnu/osfmk/vm/pmap.h
+@@ -347,6 +347,7 @@ extern boolean_t        pmap_verify_free(ppnum_t pn);
+ extern void pmap_assert_free(ppnum_t pn);
+ #endif
+ 
++
+ /*
+  *	Statistics routines
+  */
+diff --git a/src/Kernel/xnu/osfmk/vm/vm_fault.c b/src/Kernel/xnu/osfmk/vm/vm_fault.c
+index b66167da..f7878eb6 100644
+--- a/src/Kernel/xnu/osfmk/vm/vm_fault.c
++++ b/src/Kernel/xnu/osfmk/vm/vm_fault.c
+@@ -7496,22 +7496,56 @@ unsigned int vmtc_byte_counts[MAX_TRACK_POWER2 + 1];
+ 
+ #if DEVELOPMENT || DEBUG
+ /*
+- * Keep around the last diagnosed corruption buffers to aid in debugging.
++ * Buffers used to compare before/after page contents.
++ * Stashed to aid when debugging crashes.
+  */
+-static size_t vmtc_last_buffer_size;
++static size_t vmtc_last_buffer_size = 0;
+ static uint64_t *vmtc_last_before_buffer = NULL;
+ static uint64_t *vmtc_last_after_buffer = NULL;
+ #endif /* DEVELOPMENT || DEBUG */
+ 
++/*
++ * Stash a copy of data from a possibly corrupt page.
++ */
++static uint64_t *
++vmtc_get_page_data(
++	vm_map_offset_t code_addr,
++	vm_page_t       page)
++{
++	uint64_t        *buffer = NULL;
++	addr64_t        buffer_paddr;
++	addr64_t        page_paddr;
++	extern void     bcopy_phys(addr64_t from, addr64_t to, vm_size_t bytes);
++	uint_t          size = MIN(vm_map_page_size(current_map()), PAGE_SIZE);
++
++	/*
++	 * Need an aligned buffer to do a physical copy.
++	 */
++	if (kmem_alloc_aligned(kernel_map, (vm_offset_t *)&buffer, size, VM_KERN_MEMORY_DIAG) != KERN_SUCCESS) {
++		return NULL;
++	}
++	buffer_paddr = kvtophys((vm_offset_t)buffer);
++	page_paddr = ptoa(VM_PAGE_GET_PHYS_PAGE(page));
++
++	/* adjust the page start address if we need only 4K of a 16K page */
++	if (size < PAGE_SIZE) {
++		uint_t subpage_start = ((code_addr & (PAGE_SIZE - 1)) & ~(size - 1));
++		page_paddr += subpage_start;
++	}
++
++	bcopy_phys(page_paddr, buffer_paddr, size);
++	return buffer;
++}
++
+ /*
+  * Set things up so we can diagnose a potential text page corruption.
+  */
+ static uint64_t *
+ vmtc_text_page_diagnose_setup(
+-	vm_map_offset_t code_addr)
++	vm_map_offset_t code_addr,
++	vm_page_t       page)
+ {
+-	uint64_t        *buffer;
+-	size_t          size = MIN(vm_map_page_size(current_map()), PAGE_SIZE);
++	uint64_t        *buffer = NULL;
+ 
+ 	(void)OSAddAtomic(1, &vmtc_total);
+ 
+@@ -7526,10 +7560,8 @@ vmtc_text_page_diagnose_setup(
+ 	/*
+ 	 * Get the contents of the corrupt page.
+ 	 */
+-	buffer = kheap_alloc(KHEAP_DEFAULT, size, Z_WAITOK);
+-	if (copyin((user_addr_t)vm_map_trunc_page(code_addr, size - 1), buffer, size) != 0) {
+-		/* copyin error, so undo things */
+-		kheap_free(KHEAP_DEFAULT, buffer, size);
++	buffer = vmtc_get_page_data(code_addr, page);
++	if (buffer == NULL) {
+ 		(void)OSAddAtomic(1, &vmtc_undiagnosed);
+ 		++vmtc_copyin_fail;
+ 		if (!OSCompareAndSwap(1, 0, &vmtc_diagnosing)) {
+@@ -7559,6 +7591,7 @@ vmtc_text_page_diagnose(
+ 	uint64_t        *old;
+ 
+ 	new_code_buffer = kheap_alloc(KHEAP_DEFAULT, size, Z_WAITOK);
++	assert(new_code_buffer != NULL);
+ 	if (copyin((user_addr_t)vm_map_trunc_page(code_addr, size - 1), new_code_buffer, size) != 0) {
+ 		/* copyin error, so undo things */
+ 		(void)OSAddAtomic(1, &vmtc_undiagnosed);
+@@ -7632,7 +7665,7 @@ done:
+ 	 */
+ #if DEVELOPMENT || DEBUG
+ 	if (vmtc_last_before_buffer != NULL) {
+-		kheap_free(KHEAP_DEFAULT, vmtc_last_before_buffer, vmtc_last_buffer_size);
++		kmem_free(kernel_map, (vm_offset_t)vmtc_last_before_buffer, vmtc_last_buffer_size);
+ 	}
+ 	if (vmtc_last_after_buffer != NULL) {
+ 		kheap_free(KHEAP_DEFAULT, vmtc_last_after_buffer, vmtc_last_buffer_size);
+@@ -7642,7 +7675,7 @@ done:
+ 	vmtc_last_buffer_size = size;
+ #else /* DEVELOPMENT || DEBUG */
+ 	kheap_free(KHEAP_DEFAULT, new_code_buffer, size);
+-	kheap_free(KHEAP_DEFAULT, old_code_buffer, size);
++	kmem_free(kernel_map, (vm_offset_t)old_code_buffer, size);
+ #endif /* DEVELOPMENT || DEBUG */
+ 
+ 	/*
+@@ -7856,24 +7889,14 @@ revalidate_text_page(task_t task, vm_map_offset_t code_addr)
+ #endif /* DEBUG || DEVELOPMENT */
+ 
+ 		/*
+-		 * We're going to invalidate this page. Mark it as busy so we can
+-		 * drop the object lock and use copyin() to save its contents.
++		 * We're going to invalidate this page. Grab a copy of it for comparison.
+ 		 */
+ 		do_invalidate = true;
+-		assert(!page->vmp_busy);
+-		page->vmp_busy = TRUE;
+-		vm_object_unlock(object);
+-		diagnose_buffer = vmtc_text_page_diagnose_setup(code_addr);
++		diagnose_buffer = vmtc_text_page_diagnose_setup(code_addr, page);
+ 	}
+ 
+ done:
+ 	if (do_invalidate) {
+-		vm_object_lock(object);
+-		assert(page->vmp_busy);
+-		assert(VM_PAGE_OBJECT(page) == object);      /* Since the page was busy, this shouldn't change */
+-		assert(page->vmp_offset == offset);
+-		PAGE_WAKEUP_DONE(page);                      /* make no longer busy */
+-
+ 		/*
+ 		 * Invalidate, i.e. toss, the corrupted page.
+ 		 */
+@@ -7904,6 +7927,7 @@ done:
+ 			(void)OSAddAtomic(1, &vmtc_not_eligible);
+ 		}
+ 		vm_object_unlock(object);
++		object = NULL;
+ 
+ 		/*
+ 		 * Now try to diagnose the type of failure by faulting
+diff --git a/src/Kernel/xnu/osfmk/vm/vm_pageout.c b/src/Kernel/xnu/osfmk/vm/vm_pageout.c
+index 416921ce..27b5f0ec 100644
+--- a/src/Kernel/xnu/osfmk/vm/vm_pageout.c
++++ b/src/Kernel/xnu/osfmk/vm/vm_pageout.c
+@@ -4365,6 +4365,25 @@ extern unsigned int     memorystatus_level;
+ 
+ boolean_t vm_pressure_events_enabled = FALSE;
+ 
++#if (XNU_TARGET_OS_OSX && __arm64__)
++extern uint64_t next_warning_notification_sent_at_ts;
++extern uint64_t next_critical_notification_sent_at_ts;
++
++#define PRESSURE_LEVEL_STUCK_THRESHOLD_MINS    (30)    /* 30 minutes. */
++
++/*
++ * The last time there was change in pressure level OR we forced a check
++ * because the system is stuck in a non-normal pressure level.
++ */
++uint64_t  vm_pressure_last_level_transition_abs = 0;
++
++/*
++ *  This is how the long the system waits 'stuck' in an unchanged non-normal pressure
++ * level before resending out notifications for that level again.
++ */
++int  vm_pressure_level_transition_threshold = PRESSURE_LEVEL_STUCK_THRESHOLD_MINS;
++#endif /* (XNU_TARGET_OS_OSX && __arm64__) */
++
+ void
+ vm_pressure_response(void)
+ {
+@@ -4398,6 +4417,19 @@ vm_pressure_response(void)
+ 		return;
+ 	}
+ 
++#if (XNU_TARGET_OS_OSX && __arm64__)
++	uint64_t                curr_ts, abs_time_since_level_transition, time_in_ns;
++	bool                    force_check = false;
++	int                     time_in_mins;
++
++	curr_ts = mach_absolute_time();
++	abs_time_since_level_transition = curr_ts - vm_pressure_last_level_transition_abs;
++
++	absolutetime_to_nanoseconds(abs_time_since_level_transition, &time_in_ns);
++	time_in_mins = (int) ((time_in_ns / NSEC_PER_SEC) / 60);
++	force_check = (time_in_mins >= vm_pressure_level_transition_threshold);
++#endif /* (XNU_TARGET_OS_OSX && __arm64__) */
++
+ 	old_level = memorystatus_vm_pressure_level;
+ 
+ 	switch (memorystatus_vm_pressure_level) {
+@@ -4418,6 +4450,11 @@ vm_pressure_response(void)
+ 			new_level = kVMPressureNormal;
+ 		} else if (VM_PRESSURE_WARNING_TO_CRITICAL()) {
+ 			new_level = kVMPressureCritical;
++#if (XNU_TARGET_OS_OSX && __arm64__)
++		} else if (force_check) {
++			new_level = kVMPressureWarning;
++			next_warning_notification_sent_at_ts = curr_ts;
++#endif /* (XNU_TARGET_OS_OSX && __arm64__) */
+ 		}
+ 		break;
+ 	}
+@@ -4428,6 +4465,11 @@ vm_pressure_response(void)
+ 			new_level = kVMPressureNormal;
+ 		} else if (VM_PRESSURE_CRITICAL_TO_WARNING()) {
+ 			new_level = kVMPressureWarning;
++#if (XNU_TARGET_OS_OSX && __arm64__)
++		} else if (force_check) {
++			new_level = kVMPressureCritical;
++			next_critical_notification_sent_at_ts = curr_ts;
++#endif /* (XNU_TARGET_OS_OSX && __arm64__) */
+ 		}
+ 		break;
+ 	}
+@@ -4436,15 +4478,30 @@ vm_pressure_response(void)
+ 		return;
+ 	}
+ 
+-	if (new_level != -1) {
+-		memorystatus_vm_pressure_level = (vm_pressure_level_t) new_level;
++	if (new_level != -1
++#if (XNU_TARGET_OS_OSX && __arm64__)
++	    || force_check
++#endif /* (XNU_TARGET_OS_OSX && __arm64__)  */
++	    ) {
++		if (new_level != -1) {
++			memorystatus_vm_pressure_level = (vm_pressure_level_t) new_level;
+ 
+-		if (new_level != (int) old_level) {
++			if (new_level != (int) old_level) {
++				VM_DEBUG_CONSTANT_EVENT(vm_pressure_level_change, VM_PRESSURE_LEVEL_CHANGE, DBG_FUNC_NONE,
++				    new_level, old_level, 0, 0);
++			}
++#if (XNU_TARGET_OS_OSX && __arm64__)
++		} else {
+ 			VM_DEBUG_CONSTANT_EVENT(vm_pressure_level_change, VM_PRESSURE_LEVEL_CHANGE, DBG_FUNC_NONE,
+-			    new_level, old_level, 0, 0);
++			    new_level, old_level, force_check, 0);
++#endif /* (XNU_TARGET_OS_OSX && __arm64__) */
+ 		}
+ 
+-		if ((memorystatus_vm_pressure_level != kVMPressureNormal) || (old_level != memorystatus_vm_pressure_level)) {
++		if ((memorystatus_vm_pressure_level != kVMPressureNormal) || (old_level != memorystatus_vm_pressure_level)
++#if (XNU_TARGET_OS_OSX && __arm64__)
++		    || force_check
++#endif /* (XNU_TARGET_OS_OSX && __arm64__) */
++		    ) {
+ 			if (vm_pageout_state.vm_pressure_thread_running == FALSE) {
+ 				thread_wakeup(&vm_pressure_thread);
+ 			}
+@@ -4452,6 +4509,9 @@ vm_pressure_response(void)
+ 			if (old_level != memorystatus_vm_pressure_level) {
+ 				thread_wakeup(&vm_pageout_state.vm_pressure_changed);
+ 			}
++#if (XNU_TARGET_OS_OSX && __arm64__)
++			vm_pressure_last_level_transition_abs = curr_ts; /* renew the window of observation for a stuck pressure level */
++#endif /* (XNU_TARGET_OS_OSX && __arm64__) */
+ 		}
+ 	}
+ }
+diff --git a/src/Kernel/xnu/tools/tests/MPMMTest/MPMMtest_run.sh b/src/Kernel/xnu/tools/tests/MPMMTest/MPMMtest_run.sh
+index 8b3f8b89..8fe37da9 100755
+--- a/src/Kernel/xnu/tools/tests/MPMMTest/MPMMtest_run.sh
++++ b/src/Kernel/xnu/tools/tests/MPMMTest/MPMMtest_run.sh
+@@ -27,8 +27,11 @@ then
+ 	then
+ 		# If 32-bit support appears to be present OR if this is not
+ 		# a 64-bit environment, run the test.
+-		echo ""; echo " Running $MPMMTEST";
+-		$MPMMTEST -perf || { x=$?; echo "$MPMMTEST failed $x "; exit $x; }
++		
++		echo "Disable the test on 32-bit platforms until 37721005 is fixed"
++		exit 0;
++		# echo ""; echo " Running $MPMMTEST";
++		# $MPMMTEST -perf || { x=$?; echo "$MPMMTEST failed $x "; exit $x; }
+ 	fi
+ fi
+ 
+@@ -47,8 +50,12 @@ then
+ 	then
+ 		# If 32-bit support appears to be present OR if this is not
+ 		# a 64-bit environment, run the test.
+-		echo ""; echo " Running $KQMPMMTEST"
+-		$KQMPMMTEST -perf || { x=$?; echo "$KQMPMMTEST failed $x"; exit $x; }
++
++		echo "Disable the test on 32-bit platforms until 37721005 is fixed"
++		exit 0;
++
++		# echo ""; echo " Running $KQMPMMTEST"
++		# $KQMPMMTEST -perf || { x=$?; echo "$KQMPMMTEST failed $x"; exit $x; }
+ 	fi
+ fi
+ 
