@@ -45,9 +45,12 @@ fi
 clang -target arm64-apple-macos11.0 -O2 -ffreestanding -fno-builtin -fno-stack-protector -nostdlib -static -Wl,-e,_start -o "$out/a64-sys" a64-sys.c
 ar_="${A64_ROOT:-$WORK/a64root}/usr/lib"
 if [ -f "$ar_/libSystem.B.dylib" ]; then
-  for t in hello-dyn; do
+  for t in hello-dyn hello-spawn hello-sig hello-thr hello-cv hello-mtx hello-rw; do
+    # die Tests gehören zu ucrun (x86_64); hello-spawn erwartet "x86_64" von uname -m, hier "arm64" (Kopie, Original bleibt)
+    sed 's/"x86_64", 6/"arm64", 5/; s/uname -m = x86_64/uname -m = arm64/' $t.c > "$out/.$t.c"
     clang -target arm64-apple-macos11.0 -isysroot "$sdk" -O1 -nostdlib -Wl,-platform_version,macos,11.0,11.5 -Wl,-no_fixup_chains -Wl,-e,_main \
-      -o "$out/a64-$t" $t.c "$ar_/libSystem.B.dylib" "$ar_/libc++abi.dylib"
+      -o "$out/a64-$t" "$out/.$t.c" "$ar_/libSystem.B.dylib" "$ar_/libc++abi.dylib"
+    rm -f "$out/.$t.c"
   done
 fi
 file "$out"/*

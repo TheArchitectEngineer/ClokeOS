@@ -194,6 +194,27 @@ static int fake_sysctl_name(const char *name, void *ob, size_t *ol) {
 	return 0;
 }
 
+
+// --- posix_spawn (Systemaufruf 244): Aufbau von struct _posix_spawn_args_desc und der Dateiaktionen wie in ucrun (XNU spawn_internal.h) ---
+static void spawn_apply_actions(const uint8_t *fa, size_t fa_size) {
+	if (!fa || fa_size < 8) return;
+	int count = *(const int *)(fa + 4); const size_t asz = 8 + 1032;  // _psfa_action: type, fd, {oflag, mode, path[1024]}
+	for (int i = 0; i < count && 8 + (size_t)(i + 1) * asz <= fa_size; i++) {
+		const uint8_t *a = fa + 8 + (size_t)i * asz; int type = *(const int *)a, fd = *(const int *)(a + 4);
+		switch (type) {
+		case 0: {  // OPEN
+			int oflag = *(const int *)(a + 8); unsigned mode = *(const uint16_t *)(a + 12); char p[1100]; strncpy(p, (const char *)(a + 14), 1023); p[1023] = 0;
+			char pb[1200]; int nfd = open(guest_path(p, pb, sizeof pb), oflag, mode); if (nfd < 0) _exit(127);
+			if (nfd != fd) { dup2(nfd, fd); close(nfd); }
+			break; }
+		case 1: close(fd); break;
+		case 2: { int nfd = *(const int *)(a + 8); if (fd == nfd) { int fl = fcntl(fd, F_GETFD); if (fl >= 0) fcntl(fd, F_SETFD, fl & ~FD_CLOEXEC); } else dup2(fd, nfd); break; }
+		case 5: { char p[1100]; strncpy(p, (const char *)(a + 8), 1023); p[1023] = 0; if (chdir(p)) _exit(127); break; }
+		case 6: if (fchdir(fd)) _exit(127); break;
+		default: break;
+		}
+	}
+}
 static uint64_t ring[64]; static unsigned ringn; static int use_ring;
 static void on_code(uc_engine *u, uint64_t addr, uint32_t size, void *ud) { (void)u; (void)size; (void)ud; ring[ringn++ & 63] = addr; }
 static void dump_ring(void) {
@@ -330,6 +351,26 @@ static void do_syscall(uc_engine *u, uint32_t intno, void *ud) {
 		res = pid; x1v = pid == 0 ? 1 : 0;
 		if (pid == 0) nsys = 0;
 		goto done;
+	}
+	if (nr == 244) {  // posix_spawn(pid_t *pid, path, adesc, argv, envp): fork + Dateiaktionen + execve (SETEXEC: ohne fork)
+		uint64_t d[4] = {0, 0, 0, 0}; if (a[2]) uc_mem_read(uc, a[2], d, 32);
+		uint8_t attr[64] = {0}; if (d[1]) uc_mem_read(uc, d[1], attr, d[0] < 64 ? d[0] : 64);
+		short aflags = *(short *)attr; uint8_t *fa = 0; if (d[3] && d[2] > 0 && d[2] < (1u << 24)) { fa = malloc(d[2]); uc_mem_read(uc, d[3], fa, d[2]); }
+		char *pth = gdup(a[1]); if (!pth) { err = EFAULT; res = EFAULT; goto done; }
+		char rpb[1200]; const char *rp = guest_path(pth, rpb, sizeof rpb);
+		if (access(rp, X_OK)) { err = errno; res = errno; free(fa); goto done; }  // Fehler beim Starten melden wie der Kernel
+		if (aflags & 0x40) { spawn_apply_actions(fa, d[2]); int r = do_execve(a[1], a[3], a[4]); err = r; res = r; goto done; }
+		fflush(0); pid_t pid = fork();
+		if (pid < 0) { err = errno; res = errno; free(fa); goto done; }
+		if (pid == 0) {
+			spawn_apply_actions(fa, d[2]);
+			if (aflags & 2) setpgid(0, *(pid_t *)(attr + 12));
+			if (aflags & 4) { uint32_t sd = *(uint32_t *)(attr + 4); for (int sg = 1; sg < 32; sg++) if (sd & (1u << (sg - 1))) signal(sg, SIG_DFL); }
+			do_execve(a[1], a[3], a[4]); _exit(127);
+		}
+		free(fa);
+		if (a[0]) { int32_t p32 = pid; uc_mem_write(uc, a[0], &p32, 4); }
+		res = 0; goto done;
 	}
 	if (nr == 59) { int r = do_execve(a[0], a[1], a[2]); err = r; res = r; goto done; }  // execve kehrt nur bei Fehler zurück
 	if (nr == 7) {  // wait4(pid, *status, options, *rusage)
