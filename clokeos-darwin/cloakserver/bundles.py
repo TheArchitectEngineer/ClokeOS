@@ -62,7 +62,7 @@ APPS = [
     ('System/Applications', 'System Settings', 'Systemeinstellungen', 'com.clokeos.systemeinstellungen', 'einstellungen',
      None, '', 'settings'),
     # Windows-Programme (Wine, nur x86_64): Dateimanager von Wine mit C: = /NT; .exe öffnet Fundus direkt
-    ('Applications', 'Wine', 'Wine', 'org.winehq.wine', None, 'exec wine winefile "$@"', 'winefile* wine* explorer* notepad* *.exe', ''),
+    ('Applications', 'Wine', 'Wine', 'org.winehq.wine', 'wine', 'exec wine winefile "$@"', 'winefile* wine* explorer* notepad* *.exe', ''),
     # nachinstalliert wie ein Programm aus dem Netz: liegt in /Applications
     ('Applications', 'Dillo', 'Dillo', 'org.dillo.dillo', None, 'exec dillo "$@"', 'Dillo', ''),
 ]
@@ -171,7 +171,8 @@ def main(stage, icons, version, build):
         script += start + '\n' if start else f'# {name} zeichnet CloakServer selbst ({internal}).\nexit 0\n'
         write(os.path.join(app, 'MacOS', exe), script, 0o755)
         if icon:
-            with open(os.path.join(icons, icon + '.svg'), encoding='utf-8') as f:
+            own = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'icons', icon + '.svg')
+            with open(own if os.path.exists(own) else os.path.join(icons, icon + '.svg'), encoding='utf-8') as f:
                 svg = f.read()
         elif name == 'Linux':
             svg = linux_icon()
