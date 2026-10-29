@@ -117,6 +117,24 @@ device clock with a safety offset of a few tens of frames. What we have is far f
 * A second run with `hda-duplex`, a 480 Hz tone at peak 20000 and 2 s of 20000-peak data also gave an all-zero
   WAV (96549 frames). `dmesg` shows only `RavynHDAudio: published /dev/dsp0` from the driver (no codec
   enumeration lines at the default log level), so codec setup could not be confirmed from the log.
+* **Third round, driver rebuilt from the pinned source** (x86_64, kernel collection rebuilt with the
+  `kc-builder` recipe from `kext/build.sh`, only `RavynHDAudio.kext` replaced, installed into a cloned image's
+  ESP, with register logging added). Findings, all with `intel-hda` + `hda-duplex` on QEMU:
+  controller and codec init succeed (codec vendor 0x1af40022, DAC nid 2 -> pin nid 3, engine "active");
+  the output stream descriptor is at `0x100` (4 input streams), `CTL=0x...100002` (RUN, stream tag 1),
+  `FMT=0x11` (48 kHz/16 bit/stereo), `CBL=262144`, `LVI=3`; **LPIB advances while writing, the data
+  the writer stages is non-zero, and the codec reads back `FMT=0x11`, stream/channel `0x10`, pin
+  `CTL=0x40`, power D0**. So the controller DMA side and the stream routing are correct.
+  The driver sets the DAC amp gain to 0 and calls it "0 dB"; in HDA the gain field is a step count from the
+  minimum and the 0 dB step is the *offset* in the amp capabilities (QEMU's DAC: caps `0x80034a4a`, offset
+  74). Gain 0 is the minimum, which QEMU's codec maps to silence. A change that reads the capability and
+  programs the offset (74) was built, **but the amp readback still returned 0 and the WAV was still silent
+  (peak 0)**, so either the set verb is not taking effect (readback form or ordering unverified) or there is
+  a second cause. Read the `hda-codec` source of the installed QEMU to see how it maps the verb to the
+  host volume; that is the next step.
+* Side finding: building this kext with the host clang makes `dsp0_write` (4 KB stack buffer) call
+  `___chkstk_darwin`, which does not exist in the kernel; the first write panics (GP fault) – use frames
+  under 4 KB (the image's own binary does not have this). The driver changes were **not** committed.
 * Not determined why. Candidates, none checked: the image's `RavynHDAudio` binary is older than the source
   that was read here (image 23.08., source rev 1bbaeb2 25.08.; the source has fixes for garbled playback);
   codec routing/amp verbs not taking effect on QEMU's `hda-output` codec; ring data written but not seen by
