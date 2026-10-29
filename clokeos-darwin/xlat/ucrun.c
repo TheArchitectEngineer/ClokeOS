@@ -521,6 +521,30 @@ static void do_syscall(uc_engine *u, void *ud) {
 		pthread_create(&pt, &pa, thread_main, t); res = a[3]; goto done;
 	}
 	if (nr == 361) { pthread_mutex_lock(&wmx); if (ndead < 256) dead[ndead++] = (uint32_t)a[2]; pthread_mutex_unlock(&wmx); ulock_wake(); for (int q = 0; q < 64; q++) if (eth[q] && eth[q]->u == u) eth[q]->done = 1; uc_emu_stop(u); res = 0; goto done; }  // bsdthread_terminate: Gast-Thread endet
+	if (nr == 334) {  // __semwait_signal(cond_sem, mutex_sem, timeout, relative, sec, nsec): so schläft libc (usleep, nanosleep, sleep)
+		if (!a[2]) { res = 0; goto done; }
+		struct timespec ts; if (a[3]) { ts.tv_sec = (time_t)a[4]; ts.tv_nsec = (long)a[5]; }
+		else { clock_gettime(CLOCK_REALTIME, &ts); struct timespec target = {(time_t)a[4], (long)a[5]}; ts.tv_sec = target.tv_sec - ts.tv_sec; ts.tv_nsec = target.tv_nsec - ts.tv_nsec; if (ts.tv_nsec < 0) { ts.tv_sec--; ts.tv_nsec += 1000000000; } if (ts.tv_sec < 0) ts.tv_sec = ts.tv_nsec = 0; }
+		BLOCKING_BEGIN;
+		struct timespec rem = ts; int intr = 0;
+		while (rem.tv_sec > 0 || rem.tv_nsec > 0) {  // in 10-ms-Stücken, damit Signale das Schlafen unterbrechen
+			struct timespec step = {0, 10000000}; if (rem.tv_sec == 0 && rem.tv_nsec < step.tv_nsec) step.tv_nsec = rem.tv_nsec;
+			nanosleep(&step, 0);
+			rem.tv_nsec -= step.tv_nsec; if (rem.tv_nsec < 0) { if (rem.tv_sec > 0) { rem.tv_sec--; rem.tv_nsec += 1000000000; } else rem.tv_nsec = 0; }
+			if (rem.tv_sec > 0 && rem.tv_nsec >= 1000000000) { rem.tv_sec++; rem.tv_nsec -= 1000000000; }
+			if (__atomic_load_n(&sig_pending, __ATOMIC_SEQ_CST) & ~(gmask << 1)) { intr = 1; break; }
+		}
+		BLOCKING_END; err = intr ? EINTR : ETIMEDOUT; res = err; goto done;
+	}
+	if (nr == 305) {  // __psynch_cvwait(cv, cvlsgen, cvugen, mutex, mugen, flags, sec, nsec): sec/nsec liegen auf dem Stapel (7./8. Argument)
+		uint64_t sp, st[3] = {0, 0, 0}; uc_reg_read(u, UC_X86_REG_RSP, &sp); uc_mem_read(u, sp, st, 24);
+		uint32_t flags = (uint32_t)a[5]; int hasto = st[1] != 0 || st[2] != 0 || 0;  // sec==0 && nsec==0: kein Zeitlimit
+		int r = cv_wait(a[0], hasto, (int64_t)st[1], (int64_t)st[2]); (void)flags;
+		if (r) { err = r; res = r; } else res = 0; goto done;
+	}
+	if (nr == 304) { cv_wake(a[0], 0); res = 0; goto done; }  // __psynch_cvsignal
+	if (nr == 303) { cv_wake(a[0], 1); res = 0; goto done; }  // __psynch_cvbroad
+	if (nr == 312) { res = 0; goto done; }                    // __psynch_cvclrprepost
 	if (nr == 515 || nr == 544) {  // __ulock_wait(op, addr, value, timeout_us) / __ulock_wait2(op, addr, value, timeout_ns, value2)
 		int op = (int)(a[0] & 0xff), noerr = (a[0] & 0x01000000) != 0, rem = 0;
 		int r = ulock_wait(a[1], op == 5 || op == 6, op == 5 || op == 6 ? a[2] : (uint32_t)a[2], nr == 515 ? a[3] : a[3] / 1000, &rem);
