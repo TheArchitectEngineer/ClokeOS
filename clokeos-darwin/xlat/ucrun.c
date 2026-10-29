@@ -31,6 +31,7 @@
 
 extern char **environ;
 static uc_engine *uc;
+static int trace;
 
 // --- Gastspeicher: Host-Speicher, in jede Unicorn-Maschine (ein Gast-Thread = eine Maschine) per uc_mem_map_ptr eingeblendet ---
 typedef struct { uint64_t g, n; uint8_t *h; } Reg;
@@ -80,7 +81,7 @@ static uint32_t *g2h32(uint64_t a) {
 // --- Threads (bsdthread_create) und ulock-Warteschlange ---
 static uint64_t thread_entry, tsd_offset, mts_offset;  // von bsdthread_register: Einsprung neuer Threads (libpthread)
 static pthread_mutex_t wmx = PTHREAD_MUTEX_INITIALIZER; static pthread_cond_t wcv = PTHREAD_COND_INITIALIZER;
-typedef struct { uc_engine *u; uint64_t pc; uint64_t ring[64]; unsigned n; volatile int done; uint64_t rsp, rdi, rsi, rdx, rcx, r8, r9, gs; } Th;
+typedef struct { uc_engine *u; uint64_t pc; uint64_t ring[64]; unsigned n; volatile int done; uint64_t rsp, rdi, rsi, rdx, rcx, r8, r9, gs; struct Saved *ss; int sd; uint64_t fault_addr; volatile int resume; uint64_t resume_rip; } Th;
 static pthread_mutex_t gm = PTHREAD_MUTEX_INITIALIZER; static pthread_cond_t gc = PTHREAD_COND_INITIALIZER; static unsigned g_next, g_serving;  // fairer Ticket-Sperre
 static void gil_lock(void) { pthread_mutex_lock(&gm); unsigned my = g_next++; while (g_serving != my) pthread_cond_wait(&gc, &gm); pthread_mutex_unlock(&gm); }
 static void gil_unlock(void) { pthread_mutex_lock(&gm); g_serving++; pthread_cond_broadcast(&gc); pthread_mutex_unlock(&gm); }  // immer nur eine Maschine rechnet (Unicorn-Speicherabbild ist nicht thread-sicher); Zeitscheiben + Blockieren geben ihn frei
@@ -90,12 +91,74 @@ static uint64_t slice_us = 1000000;  // Zeitscheibe 1 s: Wechsel praktisch nur a
 #define BLOCKING_BEGIN gil_unlock()
 #define BLOCKING_END gil_lock()
 // Läuft in Zeitscheiben (ca. 1 ms), bis der Thread endet; liefert den letzten Fehler
+
+// --- Signale ---
+// Der Gast kennt sigaction (46), sigprocmask (48/329), sigreturn (184), kill, Zeitgeber. Echte Signale (kill, alarm, SIGCHLD ...) fängt ein Host-Handler ab
+// und merkt sie vor; zugestellt wird zwischen zwei Zeitscheiben im Gast-Thread (Rahmen auf dem Gast-Stapel, Einsprung in die __sigtramp des Gastes).
+// Fehler im Gast (ungültiger Zugriff, Division durch 0, ud2) werden in SIGSEGV/SIGFPE/SIGILL umgesetzt, wenn der Gast einen Handler hat.
+typedef struct Saved { uint64_t r[16], rip, eflags; uint32_t oldmask; uint8_t xmm[16][16]; } Saved;
+static struct { uint64_t handler, tramp; uint32_t mask, flags; } gsa[32];
+static volatile uint32_t sig_pending; static uint32_t gmask;
+static const int gregs[16] = {UC_X86_REG_RAX, UC_X86_REG_RCX, UC_X86_REG_RDX, UC_X86_REG_RBX, UC_X86_REG_RSP, UC_X86_REG_RBP, UC_X86_REG_RSI, UC_X86_REG_RDI,
+	UC_X86_REG_R8, UC_X86_REG_R9, UC_X86_REG_R10, UC_X86_REG_R11, UC_X86_REG_R12, UC_X86_REG_R13, UC_X86_REG_R14, UC_X86_REG_R15};
+static void hsig(int s);
+static Th *th_of(uc_engine *u);
+static void wake_engines(void);
+
+static int fault_signal(uc_engine *u, uc_err e, uint64_t rip) {
+	switch (e) {
+	case UC_ERR_READ_UNMAPPED: case UC_ERR_WRITE_UNMAPPED: case UC_ERR_FETCH_UNMAPPED: case UC_ERR_READ_PROT: case UC_ERR_WRITE_PROT: case UC_ERR_FETCH_PROT: return 11;
+	case UC_ERR_INSN_INVALID: return 4;
+	case UC_ERR_EXCEPTION: {
+		uint8_t b[16] = {0}; uc_mem_read(u, rip, b, 16); int i = 0;
+		while (i < 4 && ((b[i] & 0xf0) == 0x40 || b[i] == 0x66 || b[i] == 0xf2 || b[i] == 0xf3)) i++;
+		if ((b[i] == 0xf6 || b[i] == 0xf7) && ((b[i + 1] >> 3) & 7) >= 6) return 8;  // div/idiv
+		if (b[i] == 0xcc) return 5;
+		return 11;
+	}
+	default: return 0;
+	}
+}
+// Rahmen für Signal sig auf dem Gast-Stapel bauen und in die Trampolin-Funktion des Gastes springen
+static void push_signal(Th *t, int sig, uint64_t addr) {
+	uc_engine *u = t->u; uint64_t r[16], rip, fl;
+	for (int i = 0; i < 16; i++) uc_reg_read(u, gregs[i], &r[i]);
+	uc_reg_read(u, UC_X86_REG_RIP, &rip); uc_reg_read(u, UC_X86_REG_EFLAGS, &fl);
+	if (!t->ss) t->ss = calloc(16, sizeof(Saved));
+	Saved *sv = &t->ss[t->sd++ & 15]; memcpy(sv->r, r, sizeof r); sv->rip = rip; sv->eflags = fl; sv->oldmask = gmask;
+	for (int i = 0; i < 16; i++) uc_reg_read(u, UC_X86_REG_XMM0 + i, sv->xmm[i]);
+	uint64_t sp = r[4] - 128 - 1024; uint64_t uctx = sp; sp -= 128; uint64_t info = sp; sp &= ~15ULL; info = sp; sp -= 8;
+	uint8_t z[1152] = {0}; uc_mem_write(u, info, z, 1152 > 128 + 1024 ? 128 + 1024 : 1152);
+	uint32_t hdr[3] = {(uint32_t)sig, 0, 1}; uc_mem_write(u, info, hdr, 12); uc_mem_write(u, info + 24, &addr, 8);
+	sp -= 0; uint64_t ret0 = 0; sp = (info - 16) & ~15ULL; sp -= 8; uc_mem_write(u, sp, &ret0, 8);
+	uint64_t style = (gsa[sig].flags & 0x40) ? 30 : 1, h = gsa[sig].handler, sg = sig;
+	uc_reg_write(u, UC_X86_REG_RDI, &h); uc_reg_write(u, UC_X86_REG_RSI, &style); uc_reg_write(u, UC_X86_REG_RDX, &sg);
+	uc_reg_write(u, UC_X86_REG_RCX, &info); uc_reg_write(u, UC_X86_REG_R8, &uctx); uc_reg_write(u, UC_X86_REG_RSP, &sp);
+	uc_reg_write(u, UC_X86_REG_RIP, &gsa[sig].tramp);
+	if (trace) fprintf(stderr, "ucrun: Signal %d: gespeichert rip %#llx rsp %#llx rax %#llx, Rahmen rsp %#llx\n", sig, (unsigned long long)rip, (unsigned long long)r[4], (unsigned long long)r[0], (unsigned long long)sp);
+	gmask |= gsa[sig].mask | ((gsa[sig].flags & 0x10) ? 0 : (1u << (sig - 1)));
+}
+// Zwischen Zeitscheiben: wartende, nicht gesperrte Signale zustellen. true = ein Rahmen wurde gebaut
+static int deliver_pending(Th *t, uint64_t *pc) {
+	uint32_t p = __atomic_load_n(&sig_pending, __ATOMIC_SEQ_CST) & ~(gmask << 1);
+	for (int s = 1; s < 32; s++) if (p & (1u << s)) {
+		__atomic_and_fetch(&sig_pending, ~(1u << s), __ATOMIC_SEQ_CST);
+		if (gsa[s].handler > 1 && gsa[s].tramp) { push_signal(t, s, 0); uc_reg_read(t->u, UC_X86_REG_RIP, pc); return 1; }
+	}
+	return 0;
+}
 static uc_err run_engine(Th *t) {
 	uint64_t pc = t->pc; uc_err e = UC_ERR_OK;
 	for (;;) {
 		gil_lock();
+		deliver_pending(t, &pc);
 		e = uc_emu_start(t->u, pc, 0, slice_us, 0);
 		uc_reg_read(t->u, UC_X86_REG_RIP, &pc);
+		if (t->resume) { pc = t->resume_rip; t->resume = 0; uc_reg_write(t->u, UC_X86_REG_RIP, &pc); }
+		if (e && !t->done) {  // Fehler im Gast -> Signal, wenn der Gast einen Handler dafür hat
+			int sg = fault_signal(t->u, e, pc);
+			if (sg && gsa[sg].handler > 1 && gsa[sg].tramp && !(gmask & (1u << (sg - 1)))) { push_signal(t, sg, t->fault_addr); uc_reg_read(t->u, UC_X86_REG_RIP, &pc); e = UC_ERR_OK; }
+		}
 		gil_unlock();
 		if (e || t->done) return e;
 		sched_yield();
@@ -128,7 +191,6 @@ static int ulock_wait(uint64_t addr, uint32_t val, uint64_t timeout_us) {
 	pthread_mutex_unlock(&wmx); BLOCKING_END; return r;
 }
 static void ulock_wake(void) { pthread_mutex_lock(&wmx); pthread_cond_broadcast(&wcv); pthread_mutex_unlock(&wmx); }
-static int trace;
 static unsigned long nsys;
 static uint64_t mmap_next = MMAP_BASE;
 static double t0;
@@ -160,7 +222,8 @@ static int load_image(const uint8_t *file, uint64_t slide, uint64_t *entry, uint
 }
 
 static bool on_unmapped(uc_engine *u, uc_mem_type t, uint64_t addr, int size, int64_t val, void *ud) {
-	fprintf(stderr, "ucrun: Zugriff auf nicht abgebildeten Gastspeicher: Art %d, Adresse %#llx, Größe %d\n", (int)t, (unsigned long long)addr, size);
+	Th *th = th_of(u); if (th) th->fault_addr = addr;
+	if (!(gsa[11].handler > 1)) fprintf(stderr, "ucrun: Zugriff auf nicht abgebildeten Gastspeicher: Art %d, Adresse %#llx, Größe %d\n", (int)t, (unsigned long long)addr, size);
 	return false;
 }
 // Antwort auf eine MIG-Nachricht an den Host-Port in den Empfangspuffer schreiben
@@ -206,6 +269,12 @@ static int do_execve(uc_engine *u, uint64_t pa, uint64_t av, uint64_t ev) {
 	return errno;
 }
 
+
+static Th *th_of(uc_engine *u) { for (int i = 0; i < 64; i++) if (eth[i] && eth[i]->u == u) return eth[i]; return 0; }
+static void wake_engines(void) { for (int i = 0; i < neng; i++) uc_emu_stop(engs[i]); }
+static int sig_wake = 1;
+static void hsig(int s) { __atomic_or_fetch(&sig_pending, 1u << s, __ATOMIC_SEQ_CST); if (sig_wake) wake_engines(); }
+
 static double now(void) { struct timeval t; gettimeofday(&t, 0); return t.tv_sec + t.tv_usec / 1e6; }
 
 static int gstr(uint64_t a, char *b, size_t n) {  // C-String aus dem Gast
@@ -246,6 +315,9 @@ static const Sc tab[] = {
 	{57, "symlink", {{0, 's', 0, 0}, {1, 's', 0, 0}}},
 	{81, "getpgrp", {NONE, NONE}},
 	{82, "setpgid", {NONE, NONE}},
+	{83, "setitimer", {{1, 'i', 32, 0}, {2, 'o', 32, 0}}},
+	{86, "getitimer", {{1, 'o', 32, 0}, NONE}},
+	{27, "alarm", {NONE, NONE}},
 	{194, "getrlimit", {{1, 'o', 16, 0}, NONE}},
 	{220, "getattrlist", {{0, 's', 0, 0}, {1, 'i', 24, 0}, {2, 'o', 0, 3}}},
 };
@@ -314,6 +386,8 @@ static void do_syscall(uc_engine *u, void *ud) {
 	}
 	if ((rax >> 24) != 2) { fprintf(stderr, "ucrun: Systemaufruf-Klasse %llu (Mach-Falle?) nicht umgesetzt: %#llx\n", (unsigned long long)(rax >> 24), (unsigned long long)rax); err = ENOSYS; res = ENOSYS; goto done; }
 	uint64_t nr = rax & 0xffffff;
+	{ static const struct { int from, to; } nc[] = {{396, 3}, {397, 4}, {398, 5}, {399, 6}, {400, 7}, {406, 92}, {410, 111}, {414, 153}, {415, 154}};  // *_nocancel-Varianten (libc-Abbruchpunkte)
+	  for (unsigned q = 0; q < sizeof nc / sizeof *nc; q++) if (nc[q].from == (int)nr) { nr = nc[q].to; break; } }
 	if (trace) fprintf(stderr, "ucrun: sys %llu(%#llx, %#llx, %#llx)\n", (unsigned long long)nr, (unsigned long long)a[0], (unsigned long long)a[1], (unsigned long long)a[2]);
 	if (nr == 1) {
 		if (getenv("UCRUN_STATS")) fprintf(stderr, "ucrun: %.3f s, %lu Systemaufrufe\n", now() - t0, nsys);
@@ -347,8 +421,49 @@ static void do_syscall(uc_engine *u, void *ud) {
 	if (nr == 301) { BLOCKING_BEGIN; usleep(20); BLOCKING_END; err = EINTR; res = EINTR; goto done; }  // __psynch_mutexwait
 	if (nr == 302) { res = 0; goto done; }                               // __psynch_mutexdrop
 	if (nr == 516) { ulock_wake(); res = 0; goto done; }  // __ulock_wake
+	if (nr == 46) {  // sigaction(sig, struct __sigaction *nsa {handler, tramp, mask, flags}, struct sigaction *osa {handler, mask, flags})
+		int sg = (int)a[0]; if (sg <= 0 || sg >= 32 || sg == 9 || sg == 17) { err = EINVAL; res = EINVAL; goto done; }
+		if (a[2]) { uint64_t o[2] = {gsa[sg].handler, 0}; uint32_t om[2] = {gsa[sg].mask, gsa[sg].flags}; memcpy((char *)o + 8, om, 0); uint8_t ob[16]; memcpy(ob, &o[0], 8); memcpy(ob + 8, om, 8); uc_mem_write(u, a[2], ob, 16); }
+		if (a[1]) {
+			uint8_t nb[24]; uc_mem_read(u, a[1], nb, 24); uint64_t hd, tr; uint32_t mk, fl; memcpy(&hd, nb, 8); memcpy(&tr, nb + 8, 8); memcpy(&mk, nb + 16, 4); memcpy(&fl, nb + 20, 4);
+			gsa[sg].handler = hd; gsa[sg].tramp = tr; gsa[sg].mask = mk; gsa[sg].flags = fl;
+			struct sigaction ha; memset(&ha, 0, sizeof ha);
+			if (hd == 0) ha.sa_handler = SIG_DFL; else if (hd == 1) ha.sa_handler = SIG_IGN; else { ha.sa_handler = hsig; ha.sa_flags = (fl & 2) ? SA_RESTART : 0; }
+			sigaction(sg, &ha, 0);
+		}
+		res = 0; goto done;
+	}
+	if (nr == 48 || nr == 329) {  // sigprocmask / __pthread_sigmask(how, set*, oset*): ein Prozess-weite Maske genügt hier
+		uint32_t old = gmask, nm = 0; if (a[1]) uc_mem_read(u, a[1], &nm, 4);
+		if (a[2]) uc_mem_write(u, a[2], &old, 4);
+		if (a[1]) { nm &= ~((1u << 8) | (1u << 16)); gmask = a[0] == 1 ? old | nm : a[0] == 2 ? old & ~nm : nm; }
+		res = 0; goto done;
+	}
+	if (nr == 52) { uint32_t p = (sig_pending >> 1) & gmask; uc_mem_write(u, a[0], &p, 4); res = 0; goto done; }   // sigpending
+	if (nr == 53) { res = 0; goto done; }                                                                  // sigaltstack: ignoriert
+	if (nr == 111 || nr == 429) {  // sigsuspend(mask) / pause: auf ein Signal warten, Maske für die Dauer ersetzen
+		uint32_t nm = 0; if (nr == 111 && a[0]) uc_mem_read(u, a[0], &nm, 4); uint32_t old = gmask; gmask = nm;
+		BLOCKING_BEGIN; while (!(__atomic_load_n(&sig_pending, __ATOMIC_SEQ_CST) & ~(gmask << 1))) usleep(500); BLOCKING_END;
+		Th *th = th_of(u); uint64_t pc0; uc_reg_read(u, UC_X86_REG_RIP, &pc0); (void)pc0; gmask = old | 0; (void)th;
+		err = EINTR; res = EINTR; goto done;
+	}
+	if (nr == 184) {  // sigreturn(uctx, style): Register und Maske aus dem gemerkten Rahmen wiederherstellen
+		Th *th = th_of(u);
+		if (a[0] == 0) { res = 0; goto done; }  // _longjmp: sigreturn(NULL, UC_RESET_ALT_STACK) setzt nur den Alternativstapel zurück
+		if (th && th->sd > 0) {
+			Saved *sv = &th->ss[--th->sd & 15];
+			for (int i = 0; i < 16; i++) uc_reg_write(u, gregs[i], &sv->r[i]);
+			for (int i = 0; i < 16; i++) uc_reg_write(u, UC_X86_REG_XMM0 + i, sv->xmm[i]);
+			uc_reg_write(u, UC_X86_REG_EFLAGS, &sv->eflags); th->resume_rip = sv->rip; th->resume = 1; gmask = sv->oldmask;  // rip erst nach dem Hook setzen (Unicorn rechnet nach dem syscall-Hook sonst weiter)
+			if (trace) fprintf(stderr, "ucrun: sigreturn: rip %#llx rsp %#llx rax %#llx\n", (unsigned long long)sv->rip, (unsigned long long)sv->r[4], (unsigned long long)sv->r[0]);
+			uc_emu_stop(u);  // aus dem Hook heraus neu aufsetzen (run_engine liest rip)
+			return;
+		}
+		res = 0; goto done;
+	}
+	if (nr == 328) { if (a[1]) kill(getpid(), (int)a[1]); res = 0; goto done; }  // __pthread_kill(thread, sig): Prozess-weit genügt
 	switch (nr) {  // Systemaufrufe, die nur beim Start nach dem Zustand des Systems fragen
-	case 483: case 381: case 520: case 521: case 48: case 46: case 329: case 331: res = 0; goto done;                 // csrctl, bsdthread_register, __mac_syscall
+	case 483: case 381: case 520: case 521: case 331: res = 0; goto done;                 // csrctl, bsdthread_register, __mac_syscall
 	case 54: err = 25; res = 25; goto done;                              // ioctl: ENOTTY (Terminal-Abfragen der libc)
 	case 274: err = 2; res = 2; goto done;                               // __sysctlbyname: ENOENT
 	case 294: case 336: case 287: err = EINVAL; res = EINVAL; goto done; // shared_region_check_np (kein Cache), proc_info, ...
@@ -435,12 +550,14 @@ done:;
 	uc_reg_write(u, UC_X86_REG_EFLAGS, &fl);
 	uc_reg_write(u, UC_X86_REG_RAX, &res);
 	uc_reg_write(u, UC_X86_REG_RDX, &rdx);
+	if (__atomic_load_n(&sig_pending, __ATOMIC_SEQ_CST) & ~(gmask << 1)) uc_emu_stop(u);  // Signal wartet: Zeitscheibe beenden, Zustellung in run_engine
 }
 
 
 int main(int argc, char **argv) {
 	if (argc < 2) { fprintf(stderr, "usage: ucrun <x86_64 Mach-O> [args]\n"); return 2; }
 	trace = getenv("UCRUN_TRACE") != 0;
+	if (getenv("UCRUN_SLICE_MS")) { slice_us = atoll(getenv("UCRUN_SLICE_MS")) * 1000; sig_wake = 0; }
 	{ uint32_t sz = sizeof self_exe; if (_NSGetExecutablePath(self_exe, &sz)) strcpy(self_exe, argv[0]); }
 	if (getenv("XLAT_ROOT")) xroot = getenv("XLAT_ROOT");
 	FILE *f = fopen(argv[1], "rb"); if (!f) { perror(argv[1]); return 127; }
@@ -499,7 +616,8 @@ int main(int argc, char **argv) {
 	uc_reg_write(uc, UC_X86_REG_RSP, &sp);
 	t0 = now();
 	main_th.u = uc; main_th.pc = entry; eth[63] = &main_th;
+	if (getenv("UCRUN_RING")) { uc_hook ch; uc_hook_add(uc, &ch, UC_HOOK_CODE, on_code, &main_th, 1, 0); }
 	e = run_engine(&main_th);
-	if (e) { uint64_t rip; uc_reg_read(uc, UC_X86_REG_RIP, &rip); fprintf(stderr, "ucrun: %s bei rip %#llx\n", uc_strerror(e), (unsigned long long)rip); return 4; }
+	if (e) { uint64_t rip; uc_reg_read(uc, UC_X86_REG_RIP, &rip); fprintf(stderr, "ucrun: %s bei rip %#llx\n", uc_strerror(e), (unsigned long long)rip); if (getenv("UCRUN_RING")) { fprintf(stderr, "  letzte Befehle:"); for (unsigned q = main_th.n > 48 ? main_th.n - 48 : 0; q < main_th.n; q++) fprintf(stderr, " %llx", (unsigned long long)main_th.ring[q & 63]); fputc(10, stderr); } return 4; }
 	return 0;
 }
