@@ -88,6 +88,12 @@ int tux_seq_read(int fd, void *buf, size_t n, long *ret);
 int tux_seq_write(int fd, const void *buf, size_t n, long *ret);
 void tux_host_to_guest(const char *h, char *g);
 
+long tux_memfd_create(const char *name, unsigned flags);
+
+// /proc (proc.c)
+int tux_proc_prepare(const char *rest, char *rootout);
+void tux_proc_setargs(char **argv, char **envp);
+
 // Sockets (sock.c)
 long tux_socket(long domain, long type, long proto);
 long tux_socketpair(long domain, long type, long proto, int *sv);
@@ -121,6 +127,7 @@ int tux_sig_d2l(int s);
 void tux_guest_to_host_sigset(uint64_t l, sigset_t *d);
 
 // Pfade
+void tux_guest_to_host(const char *g, char *h);
 int tux_resolve(int dirfd, const char *path, int follow, char *host, char *guest);
 const char *tux_errstr(int e);
 

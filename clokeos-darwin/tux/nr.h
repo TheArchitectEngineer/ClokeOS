@@ -12,6 +12,7 @@ enum {
 	NR(io_setup, 0, 206)
 	NR(getcwd, 17, 79)
 	NR(eventfd2, 19, 290)
+	NR(memfd_create, 279, 319)
 	NR(socket, 198, 41)
 	NR(socketpair, 199, 53)
 	NR(bind, 200, 49)

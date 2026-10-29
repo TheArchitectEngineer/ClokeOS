@@ -151,6 +151,7 @@ static void pop_comp(char *cur)
 }
 
 void tux_host_to_guest(const char *h, char *g) { host_to_guest(h, g); }
+void tux_guest_to_host(const char *g, char *h) { guest_to_host(g, h); }
 
 int tux_resolve(int dirfd, const char *path, int follow, char *host, char *guest)
 {
@@ -189,7 +190,14 @@ int tux_resolve(int dirfd, const char *path, int follow, char *host, char *guest
 		strlcat(cur, "/", sizeof cur);
 		strlcat(cur, comp, sizeof cur);
 		*p = save;
-		if (is_through(cur)) {
+		int proc_hit = 0;
+		if (!strcmp(cur, "/proc")) {   // /proc wird beim Auflösen erzeugt und dann wie ein Mac-Pfad behandelt
+			char pr[PATH_MAX];
+			tux_proc_prepare(p, pr);
+			strlcpy(cur, pr, sizeof cur);
+			proc_hit = 1;
+		}
+		if (proc_hit || is_through(cur)) {
 			// ab hier gilt der Mac: den Rest nur noch bereinigen, Verknüpfungen löst Darwin auf
 			char rest[PATH_MAX];
 			strlcpy(rest, p, sizeof rest);
@@ -619,6 +627,8 @@ static long fcntl_l2d(int fd, long cmd, long arg)
 	}
 	case 5: case 6: case 7: return 0;   // Sperren: so tun, als gäbe es sie
 	case 1031: case 1032: return 65536;  // F_SETPIPE_SZ, F_GETPIPE_SZ
+	case 1033: return 0;                 // F_ADD_SEALS: Siegel gibt es nicht, tun als ob
+	case 1034: return 0;                 // F_GET_SEALS
 	default: return -EINVAL;
 	}
 }
@@ -797,10 +807,12 @@ static long syscall_inner(tux_regs *r)
 		const char *path = (const char *)(nr == N_readlinkat ? a1 : a0);
 		char *buf = (char *)(nr == N_readlinkat ? a2 : a1);
 		size_t sz = nr == N_readlinkat ? a3 : a2;
-		if (!strcmp(path, "/proc/self/exe")) {
-			size_t n = strlen(tux_exe);
+		const char *special = !strcmp(path, "/proc/self/exe") ? tux_exe : !strcmp(path, "/proc/self/cwd") ? tux_cwd :
+		    !strcmp(path, "/proc/self/root") ? "/" : NULL;
+		if (special) {
+			size_t n = strlen(special);
 			if (n > sz) n = sz;
-			memcpy(buf, tux_exe, n);
+			memcpy(buf, special, n);
 			return n;
 		}
 		// /proc/self/fd/N (und /proc/<pid>/fd/N): Pfad der Datei hinter dem Deskriptor, z. B. für ttyname
@@ -1203,6 +1215,7 @@ static long syscall_inner(tux_regs *r)
 	case N_recvmsg: return tux_recvmsg((int)a0, (void *)a1, a2);
 	case N_sendmmsg: return tux_sendmmsg((int)a0, (void *)a1, (unsigned)a2, a3);
 	case N_recvmmsg: return tux_recvmmsg((int)a0, (void *)a1, (unsigned)a2, a3);
+	case N_memfd_create: return tux_memfd_create((const char *)a0, (unsigned)a1);
 	case N_eventfd2: return tux_eventfd((unsigned)a0, a1);
 #ifdef TUX_X86_64
 	case N_eventfd: return tux_eventfd((unsigned)a0, 0);

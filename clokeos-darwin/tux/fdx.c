@@ -477,3 +477,14 @@ void tux_fdx_mark_seqpkt(int fd)
 	o->kind = K_SEQPKT;
 	attach(fd, o);
 }
+
+// memfd_create: unbenannte Datei in /private/tmp (gleich wieder ausgetragen, der Deskriptor hält sie am Leben)
+long tux_memfd_create(const char *name, unsigned flags)
+{
+	char path[] = "/private/tmp/.tux-memfd-XXXXXX";
+	int fd = mkstemp(path);
+	if (fd < 0) return err();
+	unlink(path);
+	if (flags & 1) fcntl(fd, F_SETFD, FD_CLOEXEC);   // MFD_CLOEXEC
+	return fd;
+}

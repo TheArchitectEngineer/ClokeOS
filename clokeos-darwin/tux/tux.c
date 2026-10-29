@@ -530,6 +530,7 @@ int tux_exec(const char *guest_path, char **argv, char **envp, int depth)
 		entry = interp.entry;
 	}
 	strlcpy(tux_exe, canon, sizeof tux_exe);
+	tux_proc_setargs(argv, envp);
 	uint64_t sp = build_stack(&prog, ip, canon, argv, envp);
 	if (tux_trace) fprintf(stderr, "tux: starte %s entry=%llx sp=%llx base=%llx\n", canon, (unsigned long long)entry,
 	    (unsigned long long)sp, (unsigned long long)prog.base);
