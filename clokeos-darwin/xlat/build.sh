@@ -13,11 +13,14 @@ mkdir -p "$out"
 libs="$WORK/sysroot/tools-$CLOKE_ARCH-${PD_SHA256:0:12}"
 [ -f "$libs/libSystem.B.dylib" ] || { echo "Keine libSystem aus dem arm64-Image: zuerst tux/build.sh arm64 laufen lassen." >&2; exit 1; }
 cd "$here/xlat"
+clang -target arm64-apple-macos11.0 -isysroot "$(xcrun --show-sdk-path)" -O1 -Wall -fno-stack-check -nostdlib -dynamiclib \
+  -Wl,-platform_version,macos,11.0,11.5 -Wl,-no_fixup_chains -o "$out/libxlat-exec.dylib" exechook.c "$libs/libSystem.B.dylib"
 for t in jitprobe x64run; do
   clang -target arm64-apple-macos11.0 -isysroot "$(xcrun --show-sdk-path)" -O1 -Wall -fno-stack-check -nostdlib \
     -Wl,-platform_version,macos,11.0,11.5 -Wl,-no_fixup_chains -o "$out/$t" $t.c "$libs/libSystem.B.dylib"
 done
 clang -target x86_64-apple-macos11.0 -nostdlib -static -Wl,-e,_start -o "$out/hello-x64" hello-x64.s
+clang -target x86_64-apple-macos11.0 -O2 -ffreestanding -fno-builtin -fno-stack-protector -nostdlib -static -Wl,-e,_start -o "$out/t-sys" t-sys.c
 file "$out"/*
 
 # ucrun: x64run mit Unicorn (GPL-2.0, QEMU-TCG als Bibliothek) als CPU-Kern. Quelle: git clone --branch 2.1.4 unicorn-engine/unicorn
