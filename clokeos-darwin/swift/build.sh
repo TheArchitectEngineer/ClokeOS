@@ -31,9 +31,9 @@ for a in arm64 x86_64; do
     -DCMAKE_OSX_SYSROOT="$sdk" -DCMAKE_OSX_ARCHITECTURES=$a -DCMAKE_OSX_DEPLOYMENT_TARGET=$dep \
     -DCMAKE_Swift_COMPILER_TARGET=$a-apple-macos$dep \
     -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_Swift_COMPILER="$(xcrun -f swiftc)" \
-    -DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY -DBUILD_SHARED_LIBS=ON -DSwiftCore_ENABLE_BACKTRACING=OFF ${extra[@]+"${extra[@]}"} >/dev/null
-  ninja -C "b-$a" swiftCore >/dev/null
-  r="run-$a"; mkdir -p "$r"; cp "b-$a/Core/libswiftCore.dylib" "$r/"
+    -DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY -DBUILD_SHARED_LIBS=ON -DSwiftCore_ENABLE_BACKTRACING=OFF -DSwiftCore_ENABLE_CONCURRENCY=ON ${extra[@]+"${extra[@]}"} >/dev/null
+  ninja -C "b-$a" swiftCore swift_Concurrency >/dev/null
+  r="run-$a"; mkdir -p "$r"; cp "b-$a/Core/libswiftCore.dylib" "b-$a/Concurrency/libswift_Concurrency.dylib" "$r/"
   clang -arch $a -mmacosx-version-min=$dep -c "$here/overlay-stubs.c" -o "$r/stubs.o"
   for t in hello hello2 objc; do
     # Ohne Autolink: das SDK würde sonst /usr/lib/swift/libswiftCore.dylib (Dyld-Cache des Macs) eintragen.
@@ -43,6 +43,10 @@ for a in arm64 x86_64; do
       -lc++ -lobjc -Wl,-rpath,@executable_path -o "$r/$t"
     rm "$r/$t.o"
   done
-  rm "$r/stubs.o"
+  # async: _Concurrency ist implizit importiert, also hier ohne die -disable-implicit-Schalter
+  swiftc -O -c -parse-as-library -target $a-apple-macos$dep "$here/async.swift" -o "$r/async.o"
+  clang -arch $a -mmacosx-version-min=$dep "$r/async.o" "$r/stubs.o" "$r/libswiftCore.dylib" "$r/libswift_Concurrency.dylib" \
+    -Wl,-ignore_auto_link -lc++ -lobjc -Wl,-rpath,@executable_path -o "$r/async"
+  rm "$r/async.o" "$r/stubs.o"
 done
 file run-*/hello*

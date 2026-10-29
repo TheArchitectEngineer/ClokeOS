@@ -113,11 +113,20 @@ The x86_64 binaries were built by `swift/build.sh` (same sources, `-arch x86_64`
 Messages from `ucrun`: `Systemaufruf 427 nicht umgesetzt` (`fsgetpath`, twice, at start-up) and, in `hello2`, `75` (`madvise`) once; both answered `ENOSYS` and the runtime does not care.
 Speed was not measured beyond "under one second" (clock with 1 s resolution in the guest shell).
 
+### 6b. `libswift_Concurrency` (async/await, actors, task groups)
+
+`swift/async.swift` (actor, `withTaskGroup` over 10 child tasks, `@main` async) is built by `swift/build.sh` too (`SwiftCore_ENABLE_CONCURRENCY=ON`, +`libswift_Concurrency.dylib`, depends on `libSystem`, `libc++`, `libobjc`, `libswiftCore` and **`/usr/lib/system/libdispatch.dylib`**).
+- **arm64 native in the VM: works** (`sum 385 385`, exit 0) after three additions that the images lack, all in the repo:
+  1. `swift/dispatch-shim.c`: a `/usr/lib/system/libdispatch.dylib` that re-exports the image's `libSystem` (dispatch lives there; the file is what Swift loads by path) and supplies `voucher_copy`/`voucher_adopt` (return NULL; missing in `libSystem`).
+  2. `swift/osversion-shim.c` (`DYLD_INSERT_LIBRARIES`): the OS version. PureDarwin's `_availability_version_check` answers for macOS 11.x and `os_system_version_get_current_version` does not exist. Swift 6.4's `_Concurrency` asks for `#available(StdlibDeploymentTarget 6.3)`, i.e. **macOS 26.4**, and otherwise dies with `ExecutorImpl.swift:64: Fatal error: this should never happen`. The shim answers 15.6 by default; `CLOKEOS_OSVERSION=27.0.0` is needed for this runtime. Editing `SystemVersion.plist` does not help (tried); the real fix is a higher version reported by dyld/libSystem (kernel `kern.osproductversion` is not defined in the image). This affects Logic too: its `#available` checks run in its own binary against the same function.
+  3. Nothing else: `sum` came out right on first run.
+- **x86_64 through `ucrun`: fails.** It gets through version check and loading (the shim needed `XLAT_INSERT=./libosver.dylib`, a new two-line `ucrun` feature, because `ucrun` strips `DYLD_INSERT_LIBRARIES` for itself) and then executes `ud2` at a runtime address (`0f 0b` at `0x600000a886b1`), with no `ucrun` message about missing syscalls. Not analyzed further: probably libdispatch's worker-thread/workqueue machinery, which is the thread work in progress (`translation-study.md`, section 6). Running the same binary under Rosetta on the host works.
+
 ## 7. What this means for Logic Pro and what is untested
 
 Order of work, smallest first: (1) `/usr/lib/swift` with the built `libswiftCore` (+ `_Concurrency`, `_StringProcessing`, `Synchronization`, `Observation`, `Distributed`, `_RegexParser`, `RegexBuilder`, `System`); (2) generated stub dylibs for the closed overlays from `libswift*.tbd`, trapping on first use, to see which symbols Logic actually touches;
 (3) real shims for `Darwin`/`ObjectiveC`/`CoreFoundation`/`Dispatch`/`Foundation` (largest value, small code: they mostly re-export C/ObjC functions); (4) the frameworks underneath (CoreAudio, AVFoundation, Metal, SwiftUI) - the actual wall, unrelated to this study.
 
-Untested: the x86_64 build on real use beyond section 6; `libswift_Concurrency` and everything beyond `libswiftCore`; Swift code that touches Foundation, threads (`pthread` use by the runtime was not exercised beyond a single thread), `Task`; a real Apple-built Swift app (none was available to run, Logic is not installed here and
+Untested: everything beyond `libswiftCore` and `libswift_Concurrency` (section 6b; x86_64 `async` fails); Swift code that touches Foundation, threads (`pthread` use by the runtime was not exercised beyond a single thread), `Task`; a real Apple-built Swift app (none was available to run, Logic is not installed here and
 would anyway need AppKit); the build script from a clean directory on other machines; arm64e (Apple's slice for system libs; third-party apps like Logic use plain arm64 for the app, but their dependencies `libswiftCore` would be arm64e in the cache, we build plain arm64, which is what an arm64 app expects when it is itself arm64);
 licenses were read from the repositories' metadata, not reviewed by a lawyer.
