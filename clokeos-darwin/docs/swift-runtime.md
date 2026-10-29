@@ -73,7 +73,7 @@ Observed with the host toolchain (`swiftc -target arm64-apple-macos15`, same mec
   layout assumptions of `__SwiftNativeNSError` (checked only by an `assert`) hold against Darling's `NSError` is untested.
 - `libswift_Concurrency` and `libswift_StringProcessing` are implicit imports of Swift >= 5.5/5.7 code (not linked when unused at deployment target 15, see above); a program using `async` needs `libswift_Concurrency` and its executor (libdispatch).
 - Swift 5.x compatibility shims (`libswiftCompatibility56.a`, `...Concurrency.a`) are static archives linked into the *app* for deployment targets < 12/13; irrelevant for Logic (15.6). The test programs here are built for macOS 11 and replace the archives' force-load markers by empty symbols (they have no x86_64 slice on this host).
-- Chained fixups and code signing: the test binaries are unsigned and built for macOS 11. A variant of `hello` linked for macOS 13 (arm64, has `LC_DYLD_CHAINED_FIXUPS`) also ran natively in the VM, so the guest `dyld` reads chained fixups (not tried under `ucrun`/x86_64, where the older linker would not emit them for macOS 11 anyway). Entitlements and signature checks are not enforced by PureDarwin's kernel.
+- Chained fixups and code signing: the test binaries are unsigned and built for macOS 11. A variant of `hello` linked for macOS 13 (arm64, has `LC_DYLD_CHAINED_FIXUPS`) also ran natively in the VM, so the guest `dyld` reads chained fixups (not tried under `ucrun`/x86_64, where the older linker would not emit them for macOS 11 anyway). Code signature checks did not get in the way (the binaries are unsigned); entitlements were not looked at.
 
 ## 4. What the images contain
 
