@@ -114,6 +114,9 @@ device clock with a safety offset of a few tens of frames. What we have is far f
 * **The captured WAV is all zeros (peak 0). No tone was heard or recorded, so this is *not* a working output
   path.** An earlier run with a 2 s tone and the default 44.1 kHz backend was likewise silent (and was cut
   off by quitting QEMU before the WAV was finalised).
+* A second run with `hda-duplex`, a 480 Hz tone at peak 20000 and 2 s of 20000-peak data also gave an all-zero
+  WAV (96549 frames). `dmesg` shows only `RavynHDAudio: published /dev/dsp0` from the driver (no codec
+  enumeration lines at the default log level), so codec setup could not be confirmed from the log.
 * Not determined why. Candidates, none checked: the image's `RavynHDAudio` binary is older than the source
   that was read here (image 23.08., source rev 1bbaeb2 25.08.; the source has fixes for garbled playback);
   codec routing/amp verbs not taking effect on QEMU's `hda-output` codec; ring data written but not seen by
