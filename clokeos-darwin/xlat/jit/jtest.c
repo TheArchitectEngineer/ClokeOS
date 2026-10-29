@@ -10,11 +10,11 @@
 #include "ucsync.h"
 
 #define CODE 0x10000000ULL
-#define CODE_N 0x100000ULL
+#define CODE_N 0x10000ULL
 #define DATA 0x20000000ULL
 #define DATA_N 0x10000ULL
 #define SLOT 0x100
-#define NSLOT 4096
+#define NSLOT 256
 
 static uint64_t rs = 88172645463325252ULL;
 static uint64_t rnd(void) { rs ^= rs << 13; rs ^= rs >> 7; rs ^= rs << 17; return rs; }

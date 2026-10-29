@@ -1,7 +1,7 @@
 // jit.c – Block-JIT x86_64 -> arm64 (ganzzahliger Befehlssatz), Aufbau und Grenzen: docs/translation-study.md, Abschnitt 14.
 //
 // Überblick:
-//  * Gastspeicher: Host-Adresse = Gast-Adresse + delta (ein fester Versatz, Register x20). Der Bereich [delta, delta+2^45) wird einmal
+//  * Gastspeicher: Host-Adresse = Gast-Adresse + delta (ein fester Versatz, Register x20). Der Bereich [delta, delta+2^38) wird einmal
 //    reserviert (PROT_NONE); jit_guest_alloc schaltet Seiten frei. Ein Zugriff kostet damit keinen Befehl mehr als [Reg, x20].
 //  * Gastregister: rax..r15 liegen in x0..x15 (gleiche Nummer), nur beim Verlassen des JIT-Codes in JitCtx.
 //  * Flags: lazy im Host-NZCV. Zustand beim Übersetzen: FS_CTX (in JitCtx), FS_ADD (C = CF), FS_SUB (C = !CF), FS_LOGIC (wie ADD, C=V=0).
@@ -19,8 +19,8 @@
 #include <sys/ucontext.h>
 #include <setjmp.h>
 
-#define DELTA 0x400000000000ULL
-#define RESERVE (1ULL << 45)
+// Der arm64-Kernel von PureDarwin im VM trägt nur 39 Bit Benutzeradresse (Zugriff ab 2^39 hängt, mmap geht): Fenster [2^38, 2^39)
+static uint64_t DELTA, RESERVE;  // Fenster für den Gastspeicher, in reserve_guest gewählt
 #define CODE_SIZE (48u << 20)
 #define MAXI 48
 #define T0 22
@@ -144,13 +144,25 @@ static void ldst(int load, int size, int sx /*0 / 1 nach x / 2 nach w*/, int rt,
 static uint8_t *guest_reserved;
 static int reserve_guest(void) {
 	if (guest_reserved) return 0;
-	void *p = mmap((void *)DELTA, RESERVE, PROT_NONE, MAP_PRIVATE | MAP_ANON | MAP_NORESERVE, -1, 0);
-	if (p == MAP_FAILED) return -1;
-	if ((uint64_t)p != DELTA) { munmap(p, RESERVE); return -1; }
-	guest_reserved = p; return 0;
+	// Das Fenster muss ganz unter 2^39 liegen: der arm64-Kernel von PureDarwin im VM trägt nur 39 Bit Benutzeradresse (mmap darüber geht,
+	// der erste Zugriff hängt). Zuerst mit Adresshinweis ans obere Ende, sonst nimmt der Kernel den Platz, den er will; Größe absteigend.
+	const uint64_t top = 1ULL << 39;
+	for (int sh = 37; sh >= 33; sh--) {
+		uint64_t n = 1ULL << sh, hints[] = {top - n - (1ULL << 33), top - n, 0};
+		for (int h = 0; h < 3; h++) {
+			void *p = mmap((void *)hints[h], n, PROT_NONE, MAP_PRIVATE | MAP_ANON | MAP_NORESERVE, -1, 0);
+			if (p == MAP_FAILED) continue;
+			if ((uint64_t)p + n > top) { munmap(p, n); continue; }
+			guest_reserved = p; DELTA = (uint64_t)p; RESERVE = n;
+			if (getenv("UCRUN_JIT_TRACE")) fprintf(stderr, "jit: Gastfenster %p, %llu GiB\n", p, (unsigned long long)(n >> 30));
+			return 0;
+		}
+	}
+	return -1;
 }
+uint64_t jit_guest_limit(void) { return reserve_guest() ? 0 : RESERVE; }
 uint8_t *jit_guest_alloc(uint64_t g, uint64_t n) {
-	if (reserve_guest() || g + n > JIT_GUEST_LIMIT) return 0;
+	if (reserve_guest() || g + n > RESERVE) return 0;
 	uint64_t hs = (g + DELTA) & ~16383ULL, he = (g + DELTA + n + 16383) & ~16383ULL;
 	if (mprotect((void *)hs, he - hs, PROT_READ | PROT_WRITE)) return 0;
 	return (uint8_t *)(g + DELTA);
@@ -894,16 +906,20 @@ static void fault_handler(int sig, siginfo_t *si, void *uc_) {
 int jit_init(JitCtx *c) {
 	if (!code_base) {
 		trace_jit = getenv("UCRUN_JIT_TRACE") ? atoi(getenv("UCRUN_JIT_TRACE")) : 0;
+		if (trace_jit) fprintf(stderr, "jit: init: Codepuffer\n");
 		void *p = mmap(0, CODE_SIZE, PROT_READ | PROT_WRITE | PROT_EXEC, MAP_PRIVATE | MAP_ANON | MAP_JIT, -1, 0);
 		if (p == MAP_FAILED) return -1;
 		code_base = p; code_end = code_base + CODE_SIZE / 4; cp = code_base;
+		if (trace_jit) fprintf(stderr, "jit: init: Puffer %p, emit_common\n", p);
 		pthread_jit_write_protect_np(0);
 		emit_common(); code_blocks = cp;
 		sys_icache_invalidate(code_base, (cp - code_base) * 4);
 		pthread_jit_write_protect_np(1);
+		if (trace_jit) fprintf(stderr, "jit: init: Handler\n");
 		struct sigaction sa; memset(&sa, 0, sizeof sa); sa.sa_sigaction = fault_handler; sa.sa_flags = SA_SIGINFO | SA_NODEFER;
 		sigaction(SIGSEGV, &sa, 0); sigaction(SIGBUS, &sa, 0);
 	}
+	if (trace_jit) fprintf(stderr, "jit: init: Gastspeicher\n");
 	if (reserve_guest()) return -2;
 	memset(c, 0, sizeof *c); c->delta = DELTA;
 	c->jcache = (uint64_t)calloc(4096, 16);

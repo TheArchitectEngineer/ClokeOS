@@ -20,6 +20,7 @@ static void on(int sig, void (*h)(int, void *, void *)) { struct sa a = {(void *
 static __attribute__((noinline)) long fact(long n) { return n <= 1 ? 1 : n * fact(n - 1); }
 static __attribute__((noinline)) u64 mix(u64 a, u64 b) { u64 r = 0; for (int i = 0; i < 64; i++) { r = (r << 1) | (r >> 63); r ^= (a >> (i & 31)) + b * i; if (r & 1) r += 3; else r -= 1; } return r; }
 static char buf1[300], buf2[300];
+static long do_fork(void) { long rax = 0x2000002, rdx; __asm__ volatile("syscall" : "+a"(rax), "=d"(rdx) :: "rcx", "r11", "memory"); return rdx ? 0 : rax; }  // Darwin: Kind hat rdx = 1
 int cmain(long *sp) {
 	on(30, h1); on(14, h2);
 	sc(37, sc(20, 0, 0, 0, 0, 0, 0), 30, 0, 0, 0, 0);          // kill(getpid(), SIGUSR1)
@@ -34,6 +35,7 @@ int cmain(long *sp) {
 	char *s = buf1, *d = buf2; long n = 300; __asm__ volatile("rep movsb" : "+S"(s), "+D"(d), "+c"(n) :: "memory");
 	int same = 1; for (int i = 0; i < 300; i++) if (buf1[i] != buf2[i]) same = 0; CHECK(same, "rep movsb");
 	u64 x = 1000000007, y = 0; for (int i = 1; i < 20000; i++) { y += x / i + x % i; } CHECK(y == 12337590237ULL || y > 0, "div");
+	{ long pid = do_fork(); if (pid == 0) sc(1, 3, 0, 0, 0, 0, 0); int st = 0; long r = sc(7, pid, (long)&st, 0, 0, 0, 0); CHECK(r == pid && ((st >> 8) & 255) == 3, "fork + wait4"); }
 	out(fail ? "t-jit: FEHLER\n" : "t-jit: ok\n");
 	return fail;
 }
