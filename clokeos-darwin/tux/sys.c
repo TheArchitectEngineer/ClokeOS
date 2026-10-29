@@ -132,6 +132,12 @@ static void guest_to_host(const char *g, char *host)
 			return;
 		}
 	}
+	if (!strcmp(g, "/etc/resolv.conf")) {
+		// Alpines Minirootfs hat keine; solange der Linux-Baum keine eigene hat, gilt die des Macs (vom DHCP geführt)
+		snprintf(host, PATH_MAX, "%s/etc/resolv.conf", !strcmp(tux_root, "/") ? "" : tux_root);
+		if (access(host, F_OK) != 0) strlcpy(host, "/etc/resolv.conf", PATH_MAX);
+		return;
+	}
 	if (!g[0] || !strcmp(g, "/")) strlcpy(host, tux_root, PATH_MAX);
 	else snprintf(host, PATH_MAX, "%s%s", !strcmp(tux_root, "/") ? "" : tux_root, g);
 }
