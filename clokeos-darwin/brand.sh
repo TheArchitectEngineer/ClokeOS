@@ -58,14 +58,14 @@ if [ "$CLOKE_FLAVOR" = desktop ]; then
   mkdir -p "$tmp/stage$(dirname "$pdi")"
   "$DEBUGFS" -R "dump $pdi $tmp/stage$pdi" "$root" >/dev/null 2>&1
   python3 -I "$HERE/inputfix.py" "$tmp/stage$pdi"
-  # Eigene Kernel-Treiber (kext/build.sh): ins System, damit pd-rebuild-kc sie mit einbaut; der
+  # Eigene Kernel-Treiber (kext/build.sh; RavynHDAudio ersetzt PureDarwins Kext): ins System, damit pd-rebuild-kc sie mit einbaut; der
   # Kernel Collection selbst kommt unten in die EFI-Partition
   if [ "$CLOKE_ARCH" = x86_64 ]; then
     "$HERE/kext/build.sh" | tail -1
     mkdir -p "$tmp/stage/System/Library/Extensions" "$tmp/stage/usr/sbin"
     cp -R "$WORK"/out/kexts/*.kext "$tmp/stage/System/Library/Extensions/"
     "$DEBUGFS" -R "cat /usr/sbin/pd-rebuild-kc" "$root" 2>/dev/null |
-      awk -v add="$(cd "$WORK/out/kexts" && for k in *.kext; do printf 'set -- "$@" -kext "$KEXTS/%s"\\n' "$k"; done)" \
+      awk -v add="$(cd "$WORK/out/kexts" && for k in *.kext; do [ "$k" = RavynHDAudio.kext ] || printf 'set -- "$@" -kext "$KEXTS/%s"\\n' "$k"; done)" \
         '/^for p in "\$KEXTS"\/System.kext/ && !done { printf "%s", add; done = 1 } { print }' > "$tmp/stage/usr/sbin/pd-rebuild-kc"
     grep -q ClokePS2 "$tmp/stage/usr/sbin/pd-rebuild-kc" || { echo "pd-rebuild-kc nicht ergänzt" >&2; exit 1; }
     chmod 755 "$tmp/stage/usr/sbin/pd-rebuild-kc"

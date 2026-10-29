@@ -116,13 +116,14 @@ the pin, which has no amplifier, which overwrote the DAC's gain again. The patch
 stack buffer to 2 KB (see the `___chkstk_darwin` note below). Not verified on real hardware, where
 `SET_AMP_GAIN_MUTE` semantics are the same by spec but codecs differ.
 
-How it was done (not scripted yet): compile `RavynHDAudio` from the pinned PDSRC tarball with the
-`cflags`/link line of `kext/build.sh` (Kernel.framework headers from `~/ClokeOS-work/sysroot/kc-*`), run
-`kc-builder` with the `pd-rebuild-kc` list but this kext substituted, `kcfix.py`, copy the result to
-`EFI/BOOT/kernel` of a cloned x86_64 image with `mcopy`, boot with
-`-audiodev wav,id=snd0,path=out.wav,out.frequency=48000 -device intel-hda -device hda-duplex,audiodev=snd0`,
-write 16-bit stereo 48 kHz PCM to `/dev/dsp0`. The patch is not yet applied by `kext/build.sh`/`brand.sh`,
-so images still carry the silent driver.
+**Built in:** `kext/build.sh` extracts `RavynHDAudio` (plus the `IOAudioFamily` and `IOPCIFamily` headers) from the
+pinned PDSRC tarball, applies `kext/audio/ravynhda-amp.patch`, compiles with the same `cflags` as the other kexts
+and fails if the binary references `___chkstk_darwin`. The kext replaces PureDarwin's `RavynHDAudio.kext` in the
+kernel collection (`pd-rebuild-kc` list) and `brand.sh` installs it into the image like the other own kexts.
+Checked with a full `brand.sh` desktop build (`CLOKE_NO_MACAPPS=1`): in a clone booted under TCG with
+`-audiodev wav,id=snd0,path=out.wav,out.frequency=48000 -device intel-hda -device hda-duplex,audiodev=snd0`, a
+480 Hz sine (peak 20000) written to `/dev/dsp0` was captured as peak 20000 / 479 Hz (zero-crossing estimate).
+Still untested: real hardware, arm64 (no driver there).
 
 ### Earlier attempts (kept for the record)
 

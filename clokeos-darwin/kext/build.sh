@@ -112,11 +112,55 @@ EOF
   echo "Treiber: $k"
 done
 
+# --- RavynHDAudio mit Verstärker-Patch ----------------------------------------------------------
+# PureDarwins Audiotreiber wird aus der Quelle neu gebaut (kext/audio/ravynhda-amp.patch): ohne Änderung
+# programmiert er Verstärkung 0 (Minimum, nicht 0 dB) und überschreibt sie am Pin, /dev/dsp0 bleibt stumm.
+# Der Patch verkleinert auch den Stapelpuffer in dsp0_write auf 2 KB: ab 4 KB ruft clang ___chkstk_darwin
+# auf, das es im Kernel nicht gibt (erster Schreibzugriff = GP-Fault). Ersetzt PureDarwins Kext gleichen Namens.
+fetch_file "$PDSRC_URL" "$PDSRC_SHA256" "$PDSRC_TGZ" >/dev/null
+hda="$WORK/tmp/hda-src"
+rm -rf "$hda"
+mkdir -p "$hda"
+tar -xzf "$PDSRC_TGZ" -C "$hda" --strip-components=1 '*/src/Kernel/Extensions/RavynHDAudio' \
+  '*/src/Kernel/Extensions/IOAudioFamily/*.h' '*/src/Kernel/Extensions/IOAudioFamily/IOKit' '*/src/Kernel/Extensions/IOPCIFamily/include'
+patch -s -p1 -d "$hda" < "$src/audio/ravynhda-amp.patch"
+hdir="$hda/src/Kernel/Extensions/RavynHDAudio"
+hobjs=()
+for c in "$hdir"/*.cpp; do
+  o="$tmp/hda-$(basename "$c" .cpp).o"
+  clang++ "${cflags[@]}" -I"$hda/src/Kernel/Extensions/IOAudioFamily" -I"$hda/src/Kernel/Extensions/IOPCIFamily/include" -fapple-kext -std=gnu++17 -fno-exceptions -fno-rtti -nostdinc++ -c "$c" -o "$o"
+  hobjs+=("$o")
+done
+stock="$base/root/Extensions/RavynHDAudio.kext/Contents/Info.plist"
+hid=$(plutil -extract CFBundleIdentifier raw "$stock")
+hver=$(plutil -extract CFBundleVersion raw "$stock")
+cat > "$tmp/hda-info.c" <<EOF
+#include <mach/mach_types.h>
+extern kern_return_t _start(kmod_info_t *ki, void *data);
+extern kern_return_t _stop(kmod_info_t *ki, void *data);
+__attribute__((visibility("default"))) KMOD_EXPLICIT_DECL($hid, "$hver", _start, _stop)
+__private_extern__ kmod_start_func_t *_realmain = 0;
+__private_extern__ kmod_stop_func_t *_antimain = 0;
+__private_extern__ int _kext_apple_cc = __APPLE_CC__;
+EOF
+clang "${cflags[@]}" -c "$tmp/hda-info.c" -o "$tmp/hda-info.o"
+k="$out/RavynHDAudio.kext"
+mkdir -p "$k/Contents/MacOS"
+cp "$stock" "$k/Contents/Info.plist"
+clang++ -target x86_64-apple-macos11 -bundle -undefined dynamic_lookup -nostdlib -Wl,-no_fixup_chains \
+  -L"$sdk/usr/lib" "${hobjs[@]}" "$tmp/hda-info.o" -lkmodc++ -lkmod "$base/libSystem.B.dylib" \
+  -o "$k/Contents/MacOS/RavynHDAudio" 2> >(grep -v 'built for newer' >&2)
+if nm -u "$k/Contents/MacOS/RavynHDAudio" | grep -q chkstk_darwin; then
+  echo "RavynHDAudio ruft ___chkstk_darwin (Stapelrahmen >= 4 KB)" >&2; exit 1
+fi
+kexts+=("$k")
+echo "Treiber: $k"
+
 # --- Kernel Collection --------------------------------------------------------------------------
 args=(-kernel "$base/root/Kernels/kernel")
 while read -r line; do
   k=$(printf '%s\n' "$line" | sed -n -E 's/.*-kext "\$KEXTS\/([^"]+)".*/\1/p')
-  [ -n "$k" ] && args+=(-kext "$base/root/Extensions/$k")
+  [ -n "$k" ] && [ "$k" != RavynHDAudio.kext ] && args+=(-kext "$base/root/Extensions/$k")  # kommt oben neu gebaut
 done < "$base/pd-rebuild-kc"
 for k in ${kexts[@]+"${kexts[@]}"}; do args+=(-kext "$k"); done
 # Zwei Kernel: kernel mit PureDarwins ACPI-Plattform PDACPIPlatform (uACPI-Interpreter, liest die MADT und startet die
