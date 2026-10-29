@@ -157,13 +157,14 @@ Later, "Restart in Recovery…" in the ClokeOS menu starts the recovery on the d
 
 ## New in $CLOKE_VERSION
 
-- Windows programs on x86_64 (Wine 11.0, 64-bit and 32-bit .exe through WoW64): drive C: is \`/NT\`, \`wine\` is on the PATH, a double-click on an .exe in Fundus starts it. arm64 cannot run Windows programs yet (no x86 translation)
-- Linux programs (\`tux\`, first version for arm64 and x86_64): an ELF loader that translates Linux system calls, with an Alpine userland in \`/TUX\` (BusyBox sh, ls, cat, pipes, fork/exec). Threads and sockets are missing
-- Disk Utility partitions disks (GPT with FAT32 and ext4) and opens .dmg images under /Volumes, also in the recovery
-- The second interface, NT (Windows style): Start menu, taskbar with tray and desktop icons, chosen in System Settings > Appearance > Interface
-- The installer gives the system the whole disk (ext4 is grown after the install)
-- bash 5.3 as optional login shell and Homebrew with Big Sur bottles (\`clokeos-install-homebrew\`)
-- Everything from 2.4 and 2.5: all CPU cores, I²C touchpads, the updater, the new design
+- Programs of the other CPU, a first version (a translation layer based on Unicorn, GPL-2.0): x86_64 Mac programs run on arm64 (\`ucrun\`) and arm64 Mac programs run on x86_64 (\`a64run\`), started by a double-click or from the Terminal. It is an interpreter, so it is slow; a faster block translator (\`UCRUN_JIT=1\`) is in an early state and only for simple programs
+- Linux programs (\`tux\`) are much further along: threads, \`epoll\`, \`inotify\`, sockets including \`SOCK_SEQPACKET\`, \`/proc\`, name resolution; BusyBox and Debian command line tools run on arm64 and x86_64. Linux.app has a penguin icon
+- Windows: Wine has its own icon; the Wine prefix still needs work, so Windows programs are not reliable yet
+- Sound on x86_64 (Intel HDA, measured in QEMU); first parts of the Mac audio and math frameworks (CoreAudio, AudioToolbox, Accelerate) for Mac programs
+- Files are recognized by their content (ELF, Mach-O, .exe, .dmg) and opened with the right program
+- Optional Darwin 20.6.0 kernel for arm64 (build option, not the default)
+- Everything from 2.6: Disk Utility with partitioning and .dmg, the NT interface, the whole disk after the install, Wine, Linux programs, bash and Homebrew
+- Everything from 2.4 and 2.5 as well: all CPU cores, I²C touchpads, the updater, the new design
 
 ## What is inside
 
