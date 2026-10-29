@@ -182,7 +182,7 @@ static void run_vdsp(void) {
     vDSP_fft_zip(su, &z, 1, lg, kFFTDirection_Forward);
     if (dumpmode) { char nm[32]; sprintf(nm, "fft_zip%d_r", lg); emitf(nm, re, n); sprintf(nm, "fft_zip%d_i", lg); emitf(nm, im, n); }
     else { double *rr = malloc(n * 8), *ri = malloc(n * 8);
-      for (int k = 0; k < n; k++) { long double sr = 0, si = 0; for (int j = 0; j < n; j++) { long double a = -2 * M_PIl * (long double)k * j / n; sr += r2[j] * cosl(a) - i2[j] * sinl(a); si += r2[j] * sinl(a) + i2[j] * cosl(a); } rr[k] = sr; ri[k] = si; }
+      for (int k = 0; k < n; k++) { long double sr = 0, si = 0; for (int j = 0; j < n; j++) { long double a = -2 * M_PIl * (long double)k * j / n; sr += r2[j] * cos((double)a) - i2[j] * sin((double)a); si += r2[j] * sin((double)a) + i2[j] * cos((double)a); } rr[k] = sr; ri[k] = si; }
       checkf("fft_zip_r", re, rr, n, 2e-5); checkf("fft_zip_i", im, ri, n, 2e-5); free(rr); free(ri); }
     vDSP_fft_zip(su, &z, 1, lg, kFFTDirection_Inverse);
     { double *ref = malloc(n * 16); for (int k = 0; k < n; k++) { ref[k] = (double)r2[k] * n; ref[n + k] = (double)i2[k] * n; }
@@ -194,7 +194,7 @@ static void run_vdsp(void) {
     vDSP_fft_zrip(su, &h, 1, lg, kFFTDirection_Forward);
     if (dumpmode) { char nm[32]; sprintf(nm, "fft_zrip%d_r", lg); emitf(nm, hr, n / 2); sprintf(nm, "fft_zrip%d_i", lg); emitf(nm, hi, n / 2); }
     else { double *rr = malloc(n * 8), *ri = malloc(n * 8);
-      for (int k = 0; k < n / 2; k++) { long double sr = 0, si = 0; for (int j = 0; j < n; j++) { long double a = -2 * M_PIl * (long double)k * j / n; sr += x[j] * cosl(a); si += x[j] * sinl(a); } rr[k] = 2 * sr; ri[k] = 2 * si; }
+      for (int k = 0; k < n / 2; k++) { long double sr = 0, si = 0; for (int j = 0; j < n; j++) { long double a = -2 * M_PIl * (long double)k * j / n; sr += x[j] * cos((double)a); si += x[j] * sin((double)a); } rr[k] = 2 * sr; ri[k] = 2 * si; }
       ri[0] = 0; { long double s = 0; for (int j = 0; j < n; j++) s += (j & 1 ? -x[j] : x[j]); ri[0] = 2 * s; }
       checkf("fft_zrip_r", hr, rr, n / 2, 2e-5); checkf("fft_zrip_i", hi, ri, n / 2, 2e-5); free(rr); free(ri); }
     vDSP_fft_zrip(su, &h, 1, lg, kFFTDirection_Inverse);
@@ -221,7 +221,7 @@ static void run_vdsp(void) {
     FFTSetupD su = vDSP_create_fftsetupD(8, kFFTRadix2); DSPDoubleSplitComplex z = {re, im};
     vDSP_fft_zipD(su, &z, 1, lg, kFFTDirection_Forward);
     if (dumpmode) { emitd("fftD_r", re, n); emitd("fftD_i", im, n); }
-    else { double rr[64], ri[64]; for (int k = 0; k < n; k++) { long double a = 0, b = 0; for (int j = 0; j < n; j++) { long double w = -2 * M_PIl * (long double)k * j / n; a += r2[j] * cosl(w) - i2[j] * sinl(w); b += r2[j] * sinl(w) + i2[j] * cosl(w); } rr[k] = a; ri[k] = b; }
+    else { double rr[64], ri[64]; for (int k = 0; k < n; k++) { long double a = 0, b = 0; for (int j = 0; j < n; j++) { long double w = -2 * M_PIl * (long double)k * j / n; a += r2[j] * cos((double)w) - i2[j] * sin((double)w); b += r2[j] * sin((double)w) + i2[j] * cos((double)w); } rr[k] = a; ri[k] = b; }
       check("fftD_r", re, rr, n, 1e-12); check("fftD_i", im, ri, n, 1e-12); }
     double hr[32], hi[32]; for (int k = 0; k < 32; k++) { hr[k] = r2[2 * k]; hi[k] = i2[2 * k]; }
     DSPDoubleSplitComplex h = {hr, hi}; vDSP_fft_zripD(su, &h, 1, lg, kFFTDirection_Forward);

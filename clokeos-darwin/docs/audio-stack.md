@@ -220,3 +220,51 @@ one CPU).
 Not tested: arm64 (no audio driver there), real hardware, other apps than `satest`, `kAudioObjectPropertyName`
 string retrieval (compiled, not called by `satest`), `SetPropertyData`, several IOProcs, run on the shipped desktop
 image (test used the plain PureDarwin image plus the amp-patched kernel collection from another session).
+
+## 5. Accelerate subset (`macapps/accelerate/`)
+
+`macapps/accelerate.sh` builds `Accelerate.framework` (own C code, no Apple code; x86_64 and arm64, plain C with
+`-O3`, no SIMD intrinsics; reductions use `#pragma clang fp reassociate`) into `/Library/ClokeOS/MacFrameworks`
+(also called from `macapps/install.sh`). It needs only PureDarwin's libSystem; `ccompat.c` supplies `__muldc3`,
+`__divdc3`, `cabs`, `csqrt`, which that libSystem lacks. Source files: `vdsp.c` (+ templates `vdsp_t.h`, `vdsp_c.h`
+for float/double), `vforce.c`, `blas.c` (32-bit CBLAS), `lapack.c` (`name$NEWLAPACK$ILP64` LAPACK + `cblas_dgemv`),
+`vimage.c`. Every file is compiled against the SDK headers, so signatures are checked by the compiler (the double
+variants are not all declared in the headers).
+
+**Logic Pro 12.3 imports** (`dyld_info -imports` over the 13 Mach-O files of the app that import Accelerate,
+x86_64): 179 symbols, 177 C symbols + 2 Swift overlay symbols. **Implemented: 161 of the 177 C symbols** (all
+`vDSP_*` but `wiener`, `vvexp/vvexpf/vvexp2f/vvlog/vvlog2f/vvlogf/vvsqrt/vvsqrtf/vvfloorf/vvfmodf`, `vfabsf`,
+`cblas_sgemv/scopy`, `cblas_dgemv$NEWLAPACK$ILP64`, `dgeev/dgesv/dgesvd/dgetrf/dgetri/dgetrs/dsysv/zcgesv`,
+five of the seven vImage functions). About 120 more symbols are exported (D variants, more vForce, cblas
+dot/axpy/gemm, biquad, `vDSP_fft_zropt`...), none checked against Logic.
+
+**Missing:** the 13 `BNNSGraph*` functions (Core ML graph runtime, not attempted), `vDSP_wiener`,
+`vImageBuffer_InitWithCGImage` / `vImageCreateCGImageFromBuffer` (need CoreGraphics), the 2 Swift symbols
+(`vDSP.maximumMagnitude`, `UnsafeBufferPointer` conformance, from the Swift overlay), FFT radix 3 and 5
+(`vDSP_create_fftsetup` returns NULL), `vDSP_biquadm*`, 2D FFT (`fft2d_*`), DCT, non-`NEWLAPACK` LAPACK names.
+
+**Semantics are not guessed:** `acctest` runs ~170 result groups; run on the Mac host once against Apple's
+Accelerate (`-framework Accelerate`) and once against our code, `acctest-cmp.py` finds **0 of 168 groups
+different** (float tolerance 2e-5, FFT 1e-4). The first run found real differences that were fixed from Apple's
+behaviour: `mmul` argument order (M,N,P = A is MxP), `nzcros` returns 0 as index if fewer than the requested count
+were found, `vqint` nodes (j-1,j,j+1), `imgfirD` leaves a P/2 border zero, real FFT scale (forward = 2x the DFT).
+Not a bit-for-bit match: rounding of float sums (order of the additions) and Bunch-Kaufman vs LU in `dsysv`.
+`dgesvd` (one-sided Jacobi), `dgeev` (complex Hessenberg QR + inverse iteration; eigenvalue order differs from
+LAPACK, left/right vectors in LAPACK's normalisation) and `dsysv` (LU, so `ipiv` is not Bunch-Kaufman) are
+checked by residuals, not against Apple output; `dgeev` is for small, non-defective matrices.
+
+**Speed** (`acctest bench`, 16384 floats; native Mac host M-series, our code vs a naive loop in the same compiler
+output; Apple's Accelerate for comparison): vadd 17.6 vs 18.7 GElem/s (memory bound), vsmul x2.1, dotpr 11.1 vs
+1.2 (x9), sve x20, conv with 64 taps x7.7, sgemm 128x128 3.9 vs 1.1 GFLOPS (x3.6), FFT 4096 complex 102 µs.
+Apple's version is much faster on the host (sgemm 626 GFLOPS via the matrix coprocessor, FFT 6.6 µs, dotpr 20
+GElem/s), so these are correctness-first numbers; a real-time DSP load needs SIMD kernels and a split-radix or
+radix-4 FFT. In the x86_64 QEMU TCG VM (`acctest bench`; absolute numbers say little): vadd x1.9, dotpr x1.8, sve
+x2.3, conv x1.7, sgemm x1.4 vs naive.
+
+**Tested:** native host (x86_64 and arm64 build against Apple's SDK; Mac run is arm64); `acctest` self-tests
+(naive references: elementwise ops, FFT vs direct DFT, mmul, conv, biquad, BLAS, LU/SVD/eigen residuals) in the
+x86_64 ClokeOS VM: **all pass** (plain PureDarwin minimal image plus the framework via `CLOKE_EXTRA_STAGE`, which
+`brand.sh` now accepts). Run: `DYLD_FRAMEWORK_PATH=/Library/ClokeOS/MacFrameworks /Library/ClokeOS/Probe/acctest`
+(`dump`, `bench` as arguments). **Not tested:** Logic itself, the `vDSP_*` calls with its real data and strides,
+thread safety of the FFT setup (read-only after creation, so it should be fine), the full dump comparison inside
+a VM (only the self-tests ran there), real hardware.

@@ -46,7 +46,7 @@ ln -s A "$d/Versions/Current"; ln -s Versions/Current/Accelerate "$d/Accelerate"
 
 # Prüfprogramm gegen Apples SDK gelinkt (wie ein Mac-Programm), zur Laufzeit gilt unser Framework
 mkdir -p "$root/Library/ClokeOS/Probe"
-clang -target "$TARGET" -isysroot "$SDK" -O2 ${ARCHCC[@]+"${ARCHCC[@]}"} -framework Accelerate \
-  -o "$root/Library/ClokeOS/Probe/acctest" "$M/accelerate/acctest.c" "$M/accelerate/acctest_lapack.c"
+clang -target "$TARGET" -isysroot "$SDK" -O2 -fno-stack-check -w -framework Accelerate \
+  -o "$root/Library/ClokeOS/Probe/acctest" "$M/accelerate/acctest.c" "$M/accelerate/acctest_lapack.c" "$M/accelerate/ccompat.c"
 echo "Fertig: $d"
 nm -gU "$d/Versions/A/Accelerate" | wc -l

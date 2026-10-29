@@ -8,6 +8,8 @@
 #include <stdio.h>
 #include <string.h>
 #define Ci _Complex_I
+double acc_cabs(double _Complex);
+#define cabs acc_cabs   // PureDarwins libSystem hat kein cabs (ccompat.c)
 extern int dumpmode, fails;
 double rnd(void); void filld(double *, int);
 void emitd(const char *, const double *, long);
