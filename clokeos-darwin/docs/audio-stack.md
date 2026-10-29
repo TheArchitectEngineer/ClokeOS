@@ -268,3 +268,71 @@ x86_64 and the arm64 ClokeOS VM: **all pass** (plain PureDarwin minimal image pl
 (`dump`, `bench` as arguments). **Not tested:** Logic itself, the `vDSP_*` calls with its real data and strides,
 thread safety of the FFT setup (read-only after creation, so it should be fine), the full dump comparison inside
 a VM (only the self-tests ran there; the arm64 VM used the minimal arm64 image the same way), real hardware.
+
+## 5. User-space AudioToolbox subset (`macapps/audiotoolbox/`)
+
+**Result: a Mac program linked against Apple's SDK `AudioToolbox.framework` writes a WAV/AIFF/CAF through
+`ExtAudioFile`, reads it back, loads an AUv2 plug-in from a `.component` bundle and plays through the
+DefaultOutput unit on an x86_64 ClokeOS VM; QEMU's `wav` backend captured 440.12 Hz with L peak 16384 and R peak
+8192 (written 0.5 and 0.25).** `macapps/audiotoolbox.sh` builds `AudioToolbox.framework` (own C code, no Apple
+code; `AudioToolbox.c` component registry + AudioUnit API + output unit, `convert.c` AudioConverter,
+`file.c` AudioFile/ExtAudioFile/AudioFormat), the test tool `attest` (public API only) and `ctgain.component`
+(a test AUv2 effect). It needs `foundation.sh` and `coreaudio.sh` first; x86_64 and arm64 build, arm64 was not run.
+Run in the VM: `zsh /Library/ClokeOS/Probe/at.sh self` (everything, output unit goes to the HAL) or
+`at.sh play 3`. A test program must link **Foundation** (or anything that triggers Darling's `CFInitialize`):
+with only `-framework CoreFoundation` the Darling CF is not initialised (`kCFAllocatorDefault == NULL`, every
+`CFURLCreate*`/`CFStringCreate*` returns NULL or crashes). Real Mac apps link Foundation, so this is a test-tool
+detail. VM test set-up: QEMU `-audiodev wav,... -device intel-hda -device hda-duplex` (the "Can not open adc"
+line is only a warning), and an image whose kernel collection contains the amp-patched `RavynHDAudio` (a
+desktop image built before 1dc2abd is silent: the 2.6 image tested first gave peak 0 for both `satest` and
+`attest`; swapping `EFI/BOOT/kernel` for the patched collection fixed it).
+
+Design: as in Apple's, a component is a factory returning an `AudioComponentPlugInInterface` (Open/Close/Lookup);
+every `AudioUnit*` call looks up the selector and calls the plug-in method, so built-in units and AUv2 bundles
+take the same path. Registry: built-ins + `Info.plist` `AudioComponents` (type/subtype/manufacturer as string or
+number, `name`, `version`, `factoryFunction`; the bundle executable is `dlopen`ed on first instance) scanned in
+`/Library/Audio/Plug-Ins/Components`, `/System/Library/Components`, `~/Library/Audio/Plug-Ins/Components` and
+`$CLOKE_AU_PATH` (colon list, tests).
+
+Implemented (62 of the 95 non-QuartzCore AudioToolbox/CoreAudio symbols Logic Pro 12.3 imports, counted with
+`nm -u` over its binary and frameworks): `AudioComponentFindNext/Count/GetDescription/GetVersion/CopyName/
+Register/Instantiate/InstanceNew/InstanceDispose/InstanceCanDo/CopyConfigurationInfo(stub)`,
+`AudioUnitInitialize/Uninitialize/GetPropertyInfo/GetProperty/SetProperty/GetParameter/SetParameter/Render/Reset/
+ScheduleParameters/AddPropertyListener/RemovePropertyListenerWithUserData/AddRenderNotify/RemoveRenderNotify`
+(all forwarded to the plug-in), `AudioOutputUnitStart/Stop`, `MusicDeviceMIDIEvent/SysEx`, `OpenDefaultAudioOutput`;
+built-in output unit for `DefaultOutput`, `SystemOutput` and `HALOutput` ('def ', 'sys ', 'ahal'): input format any
+PCM, render callback or `kAudioUnitProperty_MakeConnection` source, `MaximumFramesPerSlice`, `IsRunning`,
+`CurrentDevice` (only device 2), `EnableIO` (output on, input off), `kHALOutputParam_Volume`; not 48 kHz/Float32/
+stereo goes through an `AudioConverter`. `AudioConverterNew/Dispose/Reset/FillComplexBuffer/ConvertBuffer/
+GetProperty/GetPropertyInfo/SetProperty`: PCM to PCM, 8..32 bit int (packed or in a larger container, either
+endianness, unsigned 8) and Float32/64, interleaved or not, any channel count (mono to all, to mono = mean, else
+copy and zero), linear sample-rate conversion. `AudioFileCreateWithURL/OpenURL/OpenWithCallbacks/
+InitializeWithCallbacks/Close/Optimize/ReadBytes/WriteBytes/ReadPacketData/ReadPackets/WritePackets/
+Get/SetProperty/GetPropertyInfo` and (empty) user-data calls for WAV (PCM, float, extensible), AIFF, AIFC
+(`NONE`/`sowt`/`fl32`/`fl64`) and CAF (`lpcm`); `ExtAudioFileOpenURL/CreateWithURL/WrapAudioFileID/Read/Write/
+WriteAsync/Seek/Tell/Dispose/Get/SetProperty` with client data format conversion; `AudioFormatGetProperty(Info)`
+for PCM (FormatInfo, FormatName, IsVBR, IsExternallyFramed).
+
+Measured: all checks of `attest self` pass identically on the macOS host (also under AddressSanitizer, against
+the same sources) and in the x86_64 VM: 8 files (WAV 16/24/float32, AIFF 16/24 at 44.1 kHz, AIFC, CAF 16/float32)
+write, re-read with the right format, length, peak and 440 Hz; 48 kHz stereo to 44.1 kHz mono Int16 gives 22050
+frames for 0.5 s (peak 0.375 = mean of the two channels), to 96 kHz non-interleaved Float32 47999 of 48000 frames;
+big-endian Int16 `ConvertBuffer` exact; AAC is refused with `kAudioConverterErr_FormatNotSupported`; the AUv2 test
+plug-in is found by type/subtype/manufacturer, name and version read from the plist, parameter and render work and
+`Render` before `Initialize` returns `kAudioUnitErr_Uninitialized`. Output unit in the VM: 48 kHz Float32 and
+44.1 kHz mono Int16 input both reach the HAL (IOProc spacing in the second half 10.5 ms, as in section 4).
+
+Missing: AUv3/`AUAudioUnit`, `AUGraph`, `AudioQueue` (Logic imports 6 calls), `AudioFileStream`, `MusicSequence`/
+`MusicTrack`/`MusicPlayer`, `AUEventListener`/`AUParameter*`/`AUListener*`, `AudioServices`, `AudioComponentCopy
+ComponentURL`, `AudioFileOpen` (the older callback-less variant name Logic imports), `MusicDeviceMIDIEventList`,
+property listeners on built-in units, `AudioObjectAdd/RemovePropertyListener` (CoreAudio shim), the CAF/AIFF
+user-data chunks, `kAudioFilePropertyChannelLayout` (accepted, not stored), channel layouts in the converter,
+codecs (AAC, ALAC, MP3, FLAC; every non-PCM format), priming/dither, a better rate converter than linear (no
+anti-alias filter: downsampling aliases), mixer and effect units (`MultiChannelMixer`, `AUDelay`, ...; Logic ships
+no AUs, third-party AUv2 bundles bring their own), 64-bit-offset RF64/W64, the real-time safety of the IO path
+(`malloc` in `FillComplexBuffer` per call; fine for a test, not for a DAW with 64-frame blocks).
+
+Not tested: arm64 (builds only), real hardware, third-party AUv2 plug-ins (only our own `ctgain`), threads calling
+the unit API concurrently, `AudioComponentRegister` with an in-process factory (code path shared with the
+built-ins, no test), files over 2 GB, big-endian or 8-bit files other than via the round trip, the
+`AudioFileOpenWithCallbacks` path, `Seek` with sample-rate conversion.
