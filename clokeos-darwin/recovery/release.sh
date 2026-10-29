@@ -157,19 +157,13 @@ Later, "Restart in Recovery…" in the ClokeOS menu starts the recovery on the d
 
 ## New in $CLOKE_VERSION
 
-- System Settings like the prototype: user card, a symbol for every section, General (logo, version, computer), Wallpaper, Keyboard and Language & Region; the Xfce settings are gone
-- 18 wallpapers: the ClokeOS default, four drawn ones and 13 artworks by [Pixel Makes Art](https://www.instagram.com/pixelmakesart), used with permission (4K)
-- Languages: English, Deutsch, Français, Español and Italiano, also in the setup assistant, with date and clock formats
-- Keyboard layouts for the whole system (U.S., British, Deutsch, Français, Español, Italiano, Português, Nederlands, Swiss, Austrian, Polish, Swedish, Turkish, Russian), applied right away through XKB
-- Chinese, Japanese and Korean text (Noto Sans CJK, SIL Open Font License)
-- About 90 more symbolic GTK icons in the thin Mac style of the ClokeOS icon theme
-- Window bars as on macOS: Notes, Calendar and Activity Monitor carry their toolbar in the bar, with Back/Forward next to the traffic lights (Calendar months, Notes one by one) like Fundus and Search
-- Spotlight (magnifier in the menu bar or Ctrl+Space): calculator, apps, web search with Search, settings, files and folders
-- Notes, Calendar and Search like the prototype: title and buttons in the window bar, calendar with a month grid, day list and events (saved in ~/Library/Calendars), dark and light start page in Search
-- USB sticks and disks are mounted automatically under /Volumes (FAT12/16/32 read and write, HFS+ read-only; exFAT, NTFS, ext and ISO 9660 are detected but not mounted yet) and shown in Fundus as "Volumes"
-- Wi-Fi driver for the Realtek RTL8821CE in development (off by default; boot argument \`cloke_wifi\`): firmware runs and the radio receives, networks are not listed yet
-- Windows programs on x86_64 (Wine 11.0, 64-bit and 32-bit .exe through WoW64): drive C: is \`/NT\` (\`/NT/Windows\`, \`/NT/Program Files\`), the registry lives per user in \`~/Library/Wine\`, \`wine\` is on the PATH, a double-click on an .exe in Fundus starts it, and "Wine" in the Launchpad and the NT start menu opens Wine's file manager. arm64 cannot run Windows programs (there is no x86 translation yet). The first start of a user sets up the Windows environment and takes a while
-- Everything from 2.4: all CPU cores, I²C touchpads, the updater, new apps look and icons
+- Windows programs on x86_64 (Wine 11.0, 64-bit and 32-bit .exe through WoW64): drive C: is \`/NT\`, \`wine\` is on the PATH, a double-click on an .exe in Fundus starts it. arm64 cannot run Windows programs yet (no x86 translation)
+- Linux programs (\`tux\`, first version for arm64 and x86_64): an ELF loader that translates Linux system calls, with an Alpine userland in \`/TUX\` (BusyBox sh, ls, cat, pipes, fork/exec). Threads and sockets are missing
+- Disk Utility partitions disks (GPT with FAT32 and ext4) and opens .dmg images under /Volumes, also in the recovery
+- The second interface, NT (Windows style): Start menu, taskbar with tray and desktop icons, chosen in System Settings > Appearance > Interface
+- The installer gives the system the whole disk (ext4 is grown after the install)
+- bash 5.3 as optional login shell and Homebrew with Big Sur bottles (\`clokeos-install-homebrew\`)
+- Everything from 2.4 and 2.5: all CPU cores, I²C touchpads, the updater, the new design
 
 ## What is inside
 
