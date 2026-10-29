@@ -48,5 +48,5 @@ set(PD_DARWIN ON) # ClokeOS: Mach-O-Ziel (von WebKit-Patches abgefragt)
 set(CLOKEOS_COMPAT_DIR "${CMAKE_CURRENT_LIST_DIR}/compat")
 # libpdcompat.a (compat/pdcompat.c, baut configure.sh) liegt im Sysroot
 set(CMAKE_C_STANDARD_LIBRARIES "-lSystem -lpdcompat")
-set(CMAKE_CXX_STANDARD_LIBRARIES "-lc++ -lSystem -lpdcompat")
+set(CMAKE_CXX_STANDARD_LIBRARIES "-lc++ -lSystem -lintl -lsharpyuv -lpdcompat")
 set(CMAKE_PROJECT_INCLUDE "${CMAKE_CURRENT_LIST_DIR}/after-project.cmake")

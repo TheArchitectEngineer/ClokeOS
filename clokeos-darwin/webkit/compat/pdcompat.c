@@ -22,3 +22,12 @@ char* readline(const char* prompt)
     return strdup(buf);
 }
 int add_history(const char* line) { (void)line; return 0; }
+
+/* Apples libc hat timingsafe_bcmp, PureDarwins nicht. */
+int timingsafe_bcmp(const void* a, const void* b, size_t n)
+{
+    const volatile unsigned char *p = a, *q = b;
+    unsigned char r = 0;
+    while (n--) r |= *p++ ^ *q++;
+    return r != 0;
+}

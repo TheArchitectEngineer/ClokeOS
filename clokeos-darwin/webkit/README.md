@@ -1,8 +1,8 @@
 # WebKit for ClokeOS (cross-build on the Mac, target PureDarwin 20.5 arm64)
 
 Status 2026-10-29: **JavaScriptCore (`jsc`) builds and runs in the arm64 VM** (C-loop interpreter, no JIT, no WebAssembly yet).
-The GTK port configures and compiles to ~99% (`gtk-options.sh`, GTK3, no GStreamer/GBM/WebGL); last known open errors: EGL native-display types
-(`EGLNativeDisplayType` is `int`, needs `-D__unix__`/`EGL_NO_X11`), then the final link of libWebKit/MiniBrowser, then a VM run. Needs `libgpg-error`
+The GTK port (`gtk-options.sh`: GTK3, no JIT/WASM, no GStreamer/GBM/WebGL) **builds and links** (`MiniBrowser`, libwebkit2gtk, libjavascriptcoregtk);
+first run in the VM is the next step. Needs `libgpg-error`
 (built from source into the sysroot, not in the image) and stub `.pc` files for packages the image lacks (see `stubpc` note in sysroot.sh). See `../docs/browser-study.md`.
 
 ```

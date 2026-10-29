@@ -33,3 +33,7 @@ for _ in 1 2 3 4 5; do
   for m in $miss; do printf 'Name: %s\nDescription: Platzhalter (Paket nicht im Image)\nVersion: 99.0\n' "$m" > "$sr/lib/pkgconfig/$m.pc"; done
 done
 # libgpg-error fehlt im Image (libgcrypt braucht es): selbst bauen, siehe README
+# EGL: eglplatform.h kennt Darwin nicht (EGLNativeDisplayType wäre int); PD verhält sich wie Unix
+sed -i "" "s/^#elif defined(__unix__)\$/#elif defined(__unix__) || defined(__APPLE__)/" "$sr/usr/include/EGL/eglplatform.h"
+# libintl.h: glibs gi18n-lib.h definiert gettext & Co. als Makros, bevor WebKit libintl.h einbindet; dann scheitern dessen Inline-Funktionen
+sed -i "" 's/^#define _LIBINTL_H 1$/#define _LIBINTL_H 1\n#undef gettext\n#undef dgettext\n#undef dcgettext\n#undef ngettext\n#undef dngettext\n#undef dcngettext\n#undef textdomain\n#undef bindtextdomain\n#undef bind_textdomain_codeset/' "$sr/include/libintl.h"

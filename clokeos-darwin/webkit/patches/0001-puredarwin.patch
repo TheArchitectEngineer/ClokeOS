@@ -1,3 +1,22 @@
+diff -ruN webkitgtk-2.54.2/Source/ThirdParty/skia/CMakeLists.txt webkitgtk-2.54.2/Source/ThirdParty/skia/CMakeLists.txt
+--- webkitgtk-2.54.2/Source/ThirdParty/skia/CMakeLists.txt	2026-09-11 07:47:59
++++ webkitgtk-2.54.2/Source/ThirdParty/skia/CMakeLists.txt	2026-10-29 14:28:47
+@@ -175,6 +175,7 @@
+     src/core/SkPaint.cpp
+     src/core/SkPaintPriv.cpp
+     src/core/SkPath.cpp
++    src/core/SkPathDump.cpp
+     src/core/SkPathBuilder.cpp
+     src/core/SkPathData.cpp
+     src/core/SkPathEffect.cpp
+@@ -238,6 +239,7 @@
+     src/core/SkStream.cpp
+     src/core/SkStrike.cpp
+     src/core/SkStrikeCache.cpp
++    src/core/SkStrikeRef.cpp
+     src/core/SkStrikeSpec.cpp
+     src/core/SkString.cpp
+     src/core/SkStringUtils.cpp
 File webkitgtk-2.54.2/Source/ThirdParty/skia/src/ports/fontations/Cargo.toml is a unknown type while file webkitgtk-2.54.2/Source/ThirdParty/skia/src/ports/fontations/Cargo.toml is a unknown type
 diff -ruN webkitgtk-2.54.2/Source/WTF/wtf/PlatformGTK.cmake webkitgtk-2.54.2/Source/WTF/wtf/PlatformGTK.cmake
 --- webkitgtk-2.54.2/Source/WTF/wtf/PlatformGTK.cmake	2026-10-02 10:27:01
@@ -66,6 +85,420 @@ diff -ruN webkitgtk-2.54.2/Source/WTF/wtf/generic/MemoryFootprintGeneric.cpp web
  }
  
  } // namespace WTF
+diff -ruN webkitgtk-2.54.2/Source/WebCore/PlatformGTK.cmake webkitgtk-2.54.2/Source/WebCore/PlatformGTK.cmake
+--- webkitgtk-2.54.2/Source/WebCore/PlatformGTK.cmake	2026-07-24 10:02:54
++++ webkitgtk-2.54.2/Source/WebCore/PlatformGTK.cmake	2026-10-29 14:28:47
+@@ -101,6 +101,10 @@
+ 
+ # We don't build most Cairo sources, but since Cairo is still needed in the
+ # UI process API we need to include here the Cairo sources required.
++if (PD_DARWIN)
++    list(APPEND WebCore_SOURCES ${CLOKEOS_COMPAT_DIR}/DMABufStubPD.cpp)
++endif ()
++
+ list(APPEND WebCore_SOURCES
+     platform/graphics/cairo/IntRectCairo.cpp
+     platform/graphics/cairo/RefPtrCairo.cpp
+diff -ruN webkitgtk-2.54.2/Source/WebKit/NetworkProcess/NetworkConnectionToWebProcess.cpp webkitgtk-2.54.2/Source/WebKit/NetworkProcess/NetworkConnectionToWebProcess.cpp
+--- webkitgtk-2.54.2/Source/WebKit/NetworkProcess/NetworkConnectionToWebProcess.cpp	2026-10-02 10:27:01
++++ webkitgtk-2.54.2/Source/WebKit/NetworkProcess/NetworkConnectionToWebProcess.cpp	2026-10-29 14:22:14
+@@ -492,7 +492,7 @@
+     // Protect ourself as we might be otherwise be deleted during this function.
+     Ref<NetworkConnectionToWebProcess> protector(*this);
+ 
+-#if OS(DARWIN)
++#if PLATFORM(COCOA)
+     CONNECTION_RELEASE_LOG(Loading, "didClose: WebProcess (%d) closed its connection. Aborting related loaders.", connection.remoteProcessID());
+ #else
+     CONNECTION_RELEASE_LOG(Loading, "didClose: WebProcess closed its connection. Aborting related loaders.");
+diff -ruN webkitgtk-2.54.2/Source/WebKit/NetworkProcess/NetworkProcess.cpp webkitgtk-2.54.2/Source/WebKit/NetworkProcess/NetworkProcess.cpp
+--- webkitgtk-2.54.2/Source/WebKit/NetworkProcess/NetworkProcess.cpp	2026-10-02 10:27:01
++++ webkitgtk-2.54.2/Source/WebKit/NetworkProcess/NetworkProcess.cpp	2026-10-29 14:22:14
+@@ -1924,7 +1924,7 @@
+         if (connection->sessionID() != sessionID || activeWebProcesses.contains(identifier))
+             continue;
+ 
+-#if OS(DARWIN)
++#if PLATFORM(COCOA)
+         Ref ipcConnection = connection->connection();
+         auto remoteProcessID = ipcConnection->remoteProcessID();
+         // Connection is not available.
+diff -ruN webkitgtk-2.54.2/Source/WebKit/NetworkProcess/webrtc/NetworkMDNSRegister.cpp webkitgtk-2.54.2/Source/WebKit/NetworkProcess/webrtc/NetworkMDNSRegister.cpp
+--- webkitgtk-2.54.2/Source/WebKit/NetworkProcess/webrtc/NetworkMDNSRegister.cpp	2026-07-24 10:02:55
++++ webkitgtk-2.54.2/Source/WebKit/NetworkProcess/webrtc/NetworkMDNSRegister.cpp	2026-10-29 14:22:14
+@@ -33,7 +33,7 @@
+ #include <wtf/UUID.h>
+ #include <wtf/text/MakeString.h>
+ 
+-#if OS(DARWIN)
++#if PLATFORM(COCOA)
+ #include <wtf/darwin/DispatchExtras.h>
+ #endif
+ 
+diff -ruN webkitgtk-2.54.2/Source/WebKit/Platform/IPC/Attachment.h webkitgtk-2.54.2/Source/WebKit/Platform/IPC/Attachment.h
+--- webkitgtk-2.54.2/Source/WebKit/Platform/IPC/Attachment.h	2026-07-24 10:02:55
++++ webkitgtk-2.54.2/Source/WebKit/Platform/IPC/Attachment.h	2026-10-29 14:22:14
+@@ -26,7 +26,7 @@
+ 
+ #pragma once
+ 
+-#if OS(DARWIN)
++#if PLATFORM(COCOA)
+ #include <wtf/MachSendRight.h>
+ #endif
+ 
+@@ -43,7 +43,7 @@
+ 
+ // IPC::Attachment is a type representing objects that cannot be transferred as data,
+ // rather they are transferred via operating system cross-process communication primitives.
+-#if OS(DARWIN)
++#if PLATFORM(COCOA)
+ using Attachment = MachSendRight;
+ #elif OS(WINDOWS)
+ struct Attachment { }; // Windows does not need attachments at the moment.
+diff -ruN webkitgtk-2.54.2/Source/WebKit/Platform/IPC/Connection.cpp webkitgtk-2.54.2/Source/WebKit/Platform/IPC/Connection.cpp
+--- webkitgtk-2.54.2/Source/WebKit/Platform/IPC/Connection.cpp	2026-07-24 10:02:55
++++ webkitgtk-2.54.2/Source/WebKit/Platform/IPC/Connection.cpp	2026-10-29 14:22:14
+@@ -669,7 +669,7 @@
+     }
+ 
+     if (shouldNotifyOfQueueGrowingLarge) {
+-#if OS(DARWIN)
++#if PLATFORM(COCOA)
+         RELEASE_LOG_ERROR(IPC, "Connection::sendMessage(): Too many messages (%zu) in the queue to remote PID: %d (most common: %u %" PUBLIC_LOG_STRING " messages), notifying client", outgoingMessagesCount, remoteProcessID(), maxOutgoingMessageNameCount, maxOutgoingMessageName.characters());
+ #else
+         RELEASE_LOG_ERROR(IPC, "Connection::sendMessage(): Too many messages (%zu) in the queue, notifying client (most common: %u %" PUBLIC_LOG_STRING " messages)", outgoingMessagesCount, maxOutgoingMessageNameCount, maxOutgoingMessageName.characters());
+@@ -999,7 +999,7 @@
+         timedOut = !protect(m_syncState)->wait(timeout);
+     }
+ 
+-#if OS(DARWIN)
++#if PLATFORM(COCOA)
+     RELEASE_LOG_ERROR(IPC, "Connection::waitForSyncReply: Timed-out while waiting for reply for %" PUBLIC_LOG_STRING " from process %d, id=%" PRIu64, description(messageName).characters(), remoteProcessID(), syncRequestID.toUInt64());
+ #else
+     RELEASE_LOG_ERROR(IPC, "Connection::waitForSyncReply: Timed-out while waiting for reply for %s, id=%" PRIu64, description(messageName).characters(), syncRequestID.toUInt64());
+@@ -1715,7 +1715,7 @@
+     dispatcher()->dispatch(WTF::move(clientRunLoopTask));
+ }
+ 
+-#if !USE(UNIX_DOMAIN_SOCKETS) && !OS(DARWIN) && !OS(WINDOWS)
++#if !USE(UNIX_DOMAIN_SOCKETS) && !PLATFORM(COCOA) && !OS(WINDOWS)
+ std::optional<Connection::ConnectionIdentifierPair> Connection::createConnectionIdentifierPair()
+ {
+     notImplemented();
+diff -ruN webkitgtk-2.54.2/Source/WebKit/Platform/IPC/Connection.h webkitgtk-2.54.2/Source/WebKit/Platform/IPC/Connection.h
+--- webkitgtk-2.54.2/Source/WebKit/Platform/IPC/Connection.h	2026-07-24 10:02:55
++++ webkitgtk-2.54.2/Source/WebKit/Platform/IPC/Connection.h	2026-10-29 14:22:14
+@@ -76,7 +76,7 @@
+ #include <wtf/android/RefPtrAndroid.h>
+ #endif
+ 
+-#if OS(DARWIN)
++#if PLATFORM(COCOA)
+ #include <mach/mach_port.h>
+ #include <wtf/darwin/DispatchOSObject.h>
+ #include <wtf/darwin/XPCObjectPtr.h>
+@@ -84,7 +84,7 @@
+ #if HAVE(XPC_API)
+ #include <xpc/xpc.h>
+ #endif
+-#endif // OS(DARWIN)
++#endif // PLATFORM(COCOA)
+ 
+ #if USE(GLIB)
+ #include <wtf/glib/GSocketMonitor.h>
+@@ -323,7 +323,7 @@
+         }
+         operator bool() const { return !!handle; }
+         HANDLE handle { 0 };
+-#elif OS(DARWIN)
++#elif PLATFORM(COCOA)
+         explicit Identifier(Handle&& handle)
+             : Identifier(handle.leakSendRight())
+         {
+@@ -343,7 +343,7 @@
+ #endif
+     };
+ 
+-#if OS(DARWIN)
++#if PLATFORM(COCOA)
+     xpc_connection_t xpcConnection() const { return m_xpcConnection.get(); }
+     std::optional<audit_token_t> getAuditToken();
+     pid_t remoteProcessID() const;
+@@ -798,7 +798,7 @@
+ #if PLATFORM(PLAYSTATION)
+     RefPtr<WTF::Thread> m_socketMonitor;
+ #endif
+-#elif OS(DARWIN)
++#elif PLATFORM(COCOA)
+     // Called on the connection queue.
+     void receiveSourceEventHandler();
+     void initializeSendSource();
+diff -ruN webkitgtk-2.54.2/Source/WebKit/Platform/IPC/ConnectionHandle.h webkitgtk-2.54.2/Source/WebKit/Platform/IPC/ConnectionHandle.h
+--- webkitgtk-2.54.2/Source/WebKit/Platform/IPC/ConnectionHandle.h	2026-07-24 10:02:55
++++ webkitgtk-2.54.2/Source/WebKit/Platform/IPC/ConnectionHandle.h	2026-10-29 14:22:14
+@@ -31,7 +31,7 @@
+ 
+ #if USE(UNIX_DOMAIN_SOCKETS)
+ #include <wtf/unix/UnixFileDescriptor.h>
+-#elif OS(DARWIN)
++#elif PLATFORM(COCOA)
+ #include <mach/mach.h>
+ #include <wtf/MachSendRight.h>
+ #include <wtf/StdLibExtras.h>
+@@ -62,7 +62,7 @@
+     { }
+     explicit operator bool() const { return !!m_handle; }
+     [[nodiscard]] HANDLE leak() { return m_handle.leak(); }
+-#elif OS(DARWIN)
++#elif PLATFORM(COCOA)
+     ConnectionHandle(MachSendRight&& sendRight)
+         : m_handle(WTF::move(sendRight))
+     { }
+@@ -77,7 +77,7 @@
+     UnixFileDescriptor m_handle;
+ #elif OS(WINDOWS)
+     Win32Handle m_handle;
+-#elif OS(DARWIN)
++#elif PLATFORM(COCOA)
+     MachSendRight m_handle;
+ #endif
+ };
+diff -ruN webkitgtk-2.54.2/Source/WebKit/Platform/IPC/ConnectionHandle.serialization.in webkitgtk-2.54.2/Source/WebKit/Platform/IPC/ConnectionHandle.serialization.in
+--- webkitgtk-2.54.2/Source/WebKit/Platform/IPC/ConnectionHandle.serialization.in	2026-07-24 10:02:55
++++ webkitgtk-2.54.2/Source/WebKit/Platform/IPC/ConnectionHandle.serialization.in	2026-10-29 14:22:14
+@@ -28,7 +28,7 @@
+ #if OS(WINDOWS)
+     Win32Handle m_handle;
+ #endif
+-#if OS(DARWIN)
++#if PLATFORM(COCOA)
+     MachSendRight m_handle;
+ #endif
+ }
+diff -ruN webkitgtk-2.54.2/Source/WebKit/Platform/IPC/Encoder.cpp webkitgtk-2.54.2/Source/WebKit/Platform/IPC/Encoder.cpp
+--- webkitgtk-2.54.2/Source/WebKit/Platform/IPC/Encoder.cpp	2026-07-24 10:02:55
++++ webkitgtk-2.54.2/Source/WebKit/Platform/IPC/Encoder.cpp	2026-10-29 14:22:14
+@@ -35,7 +35,7 @@
+ #include <wtf/TZoneMallocInlines.h>
+ #include <wtf/UniqueRef.h>
+ 
+-#if OS(DARWIN)
++#if PLATFORM(COCOA)
+ #include <wtf/MmapSpan.h>
+ #endif
+ 
+diff -ruN webkitgtk-2.54.2/Source/WebKit/Platform/IPC/Encoder.h webkitgtk-2.54.2/Source/WebKit/Platform/IPC/Encoder.h
+--- webkitgtk-2.54.2/Source/WebKit/Platform/IPC/Encoder.h	2026-07-24 10:02:55
++++ webkitgtk-2.54.2/Source/WebKit/Platform/IPC/Encoder.h	2026-10-29 14:22:14
+@@ -35,7 +35,7 @@
+ #include <wtf/TZoneMalloc.h>
+ #include <wtf/Vector.h>
+ 
+-#if OS(DARWIN)
++#if PLATFORM(COCOA)
+ #include <wtf/MmapSpan.h>
+ #else
+ #include <wtf/MallocSpan.h>
+@@ -117,7 +117,7 @@
+     MessageName m_messageName;
+     uint64_t m_destinationID;
+ 
+-#if OS(DARWIN)
++#if PLATFORM(COCOA)
+     using OutOfLineBufferSpan = MmapSpan<uint8_t>;
+ #else
+     using OutOfLineBufferSpan = MallocSpan<uint8_t>;
+diff -ruN webkitgtk-2.54.2/Source/WebKit/Shared/API/c/WKBase.h webkitgtk-2.54.2/Source/WebKit/Shared/API/c/WKBase.h
+--- webkitgtk-2.54.2/Source/WebKit/Shared/API/c/WKBase.h	2026-07-24 10:02:55
++++ webkitgtk-2.54.2/Source/WebKit/Shared/API/c/WKBase.h	2026-10-29 14:25:57
+@@ -34,7 +34,7 @@
+ #include <WebKit/WKBaseGtk.h>
+ #elif defined(BUILDING_WPE__)
+ #include <WebKit/WKBaseWPE.h>
+-#elif defined(__APPLE__)
++#elif (defined(__APPLE__) && !defined(CLOKEOS_PD))
+ #include <WebKit/WKBaseMac.h>
+ #elif defined(_WIN32)
+ #include <WebKit/WKBaseWin.h>
+diff -ruN webkitgtk-2.54.2/Source/WebKit/Shared/WebCoreArgumentCoders.serialization.in webkitgtk-2.54.2/Source/WebKit/Shared/WebCoreArgumentCoders.serialization.in
+--- webkitgtk-2.54.2/Source/WebKit/Shared/WebCoreArgumentCoders.serialization.in	2026-07-27 10:28:18
++++ webkitgtk-2.54.2/Source/WebKit/Shared/WebCoreArgumentCoders.serialization.in	2026-10-29 14:22:14
+@@ -1653,7 +1653,7 @@
+ #if USE(UNIX_DOMAIN_SOCKETS)
+ headers: <wtf/unix/UnixFileDescriptor.h> "ArgumentCodersUnix.h"
+ #endif
+-#if OS(DARWIN)
++#if PLATFORM(COCOA)
+ header: <wtf/MachSendRight.h>
+ #endif
+ 
+@@ -1661,7 +1661,7 @@
+ #if USE(UNIX_DOMAIN_SOCKETS)
+     [Validator='!!m_handle && *m_handle'] UnixFileDescriptor m_handle;
+ #endif
+-#if OS(DARWIN)
++#if PLATFORM(COCOA)
+     [Validator='!!m_handle && *m_handle'] MachSendRight m_handle;
+ #endif
+ #if OS(WINDOWS)
+diff -ruN webkitgtk-2.54.2/Source/WebKit/UIProcess/API/C/WKNativeEvent.h webkitgtk-2.54.2/Source/WebKit/UIProcess/API/C/WKNativeEvent.h
+--- webkitgtk-2.54.2/Source/WebKit/UIProcess/API/C/WKNativeEvent.h	2026-07-24 10:02:55
++++ webkitgtk-2.54.2/Source/WebKit/UIProcess/API/C/WKNativeEvent.h	2026-10-29 14:25:57
+@@ -26,7 +26,7 @@
+ #ifndef WKNativeEvent_h
+ #define WKNativeEvent_h
+ 
+-#ifdef __APPLE__
++#if (defined(__APPLE__) && !defined(CLOKEOS_PD))
+ #include <TargetConditionals.h>
+ #endif
+ 
+@@ -34,7 +34,7 @@
+ extern "C" {
+ #endif
+ 
+-#if defined(__APPLE__) && !TARGET_OS_IPHONE && !defined(BUILDING_GTK__)
++#if (defined(__APPLE__) && !defined(CLOKEOS_PD)) && !TARGET_OS_IPHONE && !defined(BUILDING_GTK__)
+ #ifdef __OBJC__
+ @class NSEvent;
+ #elif __cplusplus
+diff -ruN webkitgtk-2.54.2/Source/WebKit/UIProcess/API/C/WKOpenPanelResultListener.h webkitgtk-2.54.2/Source/WebKit/UIProcess/API/C/WKOpenPanelResultListener.h
+--- webkitgtk-2.54.2/Source/WebKit/UIProcess/API/C/WKOpenPanelResultListener.h	2026-07-24 10:02:55
++++ webkitgtk-2.54.2/Source/WebKit/UIProcess/API/C/WKOpenPanelResultListener.h	2026-10-29 14:25:57
+@@ -26,7 +26,7 @@
+ #ifndef WKOpenPanelResultListener_h
+ #define WKOpenPanelResultListener_h
+ 
+-#ifdef __APPLE__
++#if (defined(__APPLE__) && !defined(CLOKEOS_PD))
+ #include <TargetConditionals.h>
+ #endif
+ 
+@@ -38,7 +38,7 @@
+ 
+ WK_EXPORT WKTypeID WKOpenPanelResultListenerGetTypeID(void);
+ 
+-#if defined(__APPLE__) && TARGET_OS_IPHONE
++#if (defined(__APPLE__) && !defined(CLOKEOS_PD)) && TARGET_OS_IPHONE
+ WK_EXPORT void WKOpenPanelResultListenerChooseMediaFiles(WKOpenPanelResultListenerRef listenerRef, WKArrayRef fileURLsRef, WKStringRef displayString, WKDataRef iconImageDataRef);
+ #endif
+ WK_EXPORT void WKOpenPanelResultListenerChooseFiles(WKOpenPanelResultListenerRef listener, WKArrayRef fileURLs, WKArrayRef allowedMimeTypesRef);
+diff -ruN webkitgtk-2.54.2/Source/WebKit/UIProcess/API/C/WKPagePrivate.h webkitgtk-2.54.2/Source/WebKit/UIProcess/API/C/WKPagePrivate.h
+--- webkitgtk-2.54.2/Source/WebKit/UIProcess/API/C/WKPagePrivate.h	2026-07-24 10:02:55
++++ webkitgtk-2.54.2/Source/WebKit/UIProcess/API/C/WKPagePrivate.h	2026-10-29 14:25:57
+@@ -244,7 +244,7 @@
+ typedef void (*WKPageDoAfterProcessingAllPendingMouseEventsFunction)(void* functionContext);
+ WK_EXPORT void WKPageDoAfterProcessingAllPendingMouseEvents(WKPageRef page, void* context, WKPageDoAfterProcessingAllPendingMouseEventsFunction function);
+ 
+-#if !defined(__APPLE__)
++#if !(defined(__APPLE__) && !defined(CLOKEOS_PD))
+ typedef void (*WKPageDoAfterProcessingAllPendingKeyEventsFunction)(void* functionContext);
+ WK_EXPORT void WKPageDoAfterProcessingAllPendingKeyEvents(WKPageRef page, void* context, WKPageDoAfterProcessingAllPendingKeyEventsFunction function);
+ 
+diff -ruN webkitgtk-2.54.2/Source/WebKit/UIProcess/API/C/WebKit2_C.h webkitgtk-2.54.2/Source/WebKit/UIProcess/API/C/WebKit2_C.h
+--- webkitgtk-2.54.2/Source/WebKit/UIProcess/API/C/WebKit2_C.h	2026-07-24 10:02:55
++++ webkitgtk-2.54.2/Source/WebKit/UIProcess/API/C/WebKit2_C.h	2026-10-29 14:25:57
+@@ -64,7 +64,7 @@
+ 
+ #if defined(__OBJC__) && __OBJC__
+ #import <WebKit/WKView.h>
+-#elif !(defined(__APPLE__) && __APPLE__)
++#elif !((defined(__APPLE__) && !defined(CLOKEOS_PD)) && __APPLE__)
+ #include <WebKit/WKView.h>
+ #endif
+ 
+diff -ruN webkitgtk-2.54.2/Source/WebKit/UIProcess/API/glib/WebKitProtocolHandler.cpp webkitgtk-2.54.2/Source/WebKit/UIProcess/API/glib/WebKitProtocolHandler.cpp
+--- webkitgtk-2.54.2/Source/WebKit/UIProcess/API/glib/WebKitProtocolHandler.cpp	2026-07-24 10:02:55
++++ webkitgtk-2.54.2/Source/WebKit/UIProcess/API/glib/WebKitProtocolHandler.cpp	2026-10-29 14:26:06
+@@ -203,6 +203,9 @@
+     return buffers.toString();
+ }
+ 
++#if !USE(LIBDRM)
++static String renderBufferDescription(WebKitURISchemeRequest*) { return { }; }
++#endif
+ #if USE(LIBDRM)
+ 
+ // Base on function 'drmGetFormatName' from 'https://gitlab.freedesktop.org/mesa/drm/-/blob/main/xf86drm.c'.
+diff -ruN webkitgtk-2.54.2/Source/WebKit/UIProcess/Launcher/ProcessLauncher.cpp webkitgtk-2.54.2/Source/WebKit/UIProcess/Launcher/ProcessLauncher.cpp
+--- webkitgtk-2.54.2/Source/WebKit/UIProcess/Launcher/ProcessLauncher.cpp	2026-07-24 10:02:56
++++ webkitgtk-2.54.2/Source/WebKit/UIProcess/Launcher/ProcessLauncher.cpp	2026-10-29 14:22:14
+@@ -30,7 +30,7 @@
+ #include <wtf/SystemTracing.h>
+ #include <wtf/WorkQueue.h>
+ 
+-#if OS(DARWIN)
++#if PLATFORM(COCOA)
+ #include <mach/mach_init.h>
+ #include <mach/mach_traps.h>
+ #endif
+@@ -68,7 +68,7 @@
+ 
+     RefPtr client = m_client.get();
+     if (!client) {
+-#if OS(DARWIN) && !USE(UNIX_DOMAIN_SOCKETS)
++#if PLATFORM(COCOA) && !USE(UNIX_DOMAIN_SOCKETS)
+         // FIXME: Release port rights/connections in the Connection::Identifier destructor.
+         if (identifier.port)
+             mach_port_mod_refs(mach_task_self(), identifier.port, MACH_PORT_RIGHT_RECEIVE, -1);
+diff -ruN webkitgtk-2.54.2/Source/WebKit/UIProcess/Network/NetworkProcessProxy.cpp webkitgtk-2.54.2/Source/WebKit/UIProcess/Network/NetworkProcessProxy.cpp
+--- webkitgtk-2.54.2/Source/WebKit/UIProcess/Network/NetworkProcessProxy.cpp	2026-10-02 10:27:01
++++ webkitgtk-2.54.2/Source/WebKit/UIProcess/Network/NetworkProcessProxy.cpp	2026-10-29 14:22:14
+@@ -360,7 +360,7 @@
+ 
+ #if USE(UNIX_DOMAIN_SOCKETS) || OS(WINDOWS)
+         reply(NetworkProcessConnectionInfo { WTF::move(*identifier), cookieAcceptPolicy });
+-#elif OS(DARWIN)
++#elif PLATFORM(COCOA)
+         Ref connection = protectedThis->connection();
+         MESSAGE_CHECK_COMPLETION_WITH_CONNECTION(*identifier, connection.get(), reply({ }));
+         reply(NetworkProcessConnectionInfo { WTF::move(*identifier) , cookieAcceptPolicy, connection->getAuditToken() });
+@@ -510,7 +510,7 @@
+ 
+ void NetworkProcessProxy::didClose(IPC::Connection& connection)
+ {
+-#if OS(DARWIN)
++#if PLATFORM(COCOA)
+     RELEASE_LOG_ERROR(Process, "%p - NetworkProcessProxy::didClose (Network Process %d crash)", this, connection.remoteProcessID());
+ #else
+     RELEASE_LOG_ERROR(Process, "%p - NetworkProcessProxy::didClose (Network Process crash)", this);
+diff -ruN webkitgtk-2.54.2/Source/WebKit/UIProcess/WebProcessProxy.cpp webkitgtk-2.54.2/Source/WebKit/UIProcess/WebProcessProxy.cpp
+--- webkitgtk-2.54.2/Source/WebKit/UIProcess/WebProcessProxy.cpp	2026-10-02 10:27:01
++++ webkitgtk-2.54.2/Source/WebKit/UIProcess/WebProcessProxy.cpp	2026-10-29 14:22:14
+@@ -1445,7 +1445,7 @@
+ 
+ void WebProcessProxy::didClose(IPC::Connection& connection)
+ {
+-#if OS(DARWIN)
++#if PLATFORM(COCOA)
+     WEBPROCESSPROXY_RELEASE_LOG_ERROR(Process, "didClose: (web process %d crash)", connection.remoteProcessID());
+ #else
+     WEBPROCESSPROXY_RELEASE_LOG_ERROR(Process, "didClose (web process crash)");
+diff -ruN webkitgtk-2.54.2/Source/WebKit/UIProcess/WebsiteData/WebsiteDataStore.cpp webkitgtk-2.54.2/Source/WebKit/UIProcess/WebsiteData/WebsiteDataStore.cpp
+--- webkitgtk-2.54.2/Source/WebKit/UIProcess/WebsiteData/WebsiteDataStore.cpp	2026-07-24 10:02:56
++++ webkitgtk-2.54.2/Source/WebKit/UIProcess/WebsiteData/WebsiteDataStore.cpp	2026-10-29 14:22:14
+@@ -85,7 +85,7 @@
+ #include <wtf/RunLoop.h>
+ #include <wtf/text/MakeString.h>
+ 
+-#if OS(DARWIN)
++#if PLATFORM(COCOA)
+ #include <wtf/spi/darwin/OSVariantSPI.h>
+ #endif
+ 
+diff -ruN webkitgtk-2.54.2/Source/WebKit/WebProcess/WebProcess.cpp webkitgtk-2.54.2/Source/WebKit/WebProcess/WebProcess.cpp
+--- webkitgtk-2.54.2/Source/WebKit/WebProcess/WebProcess.cpp	2026-10-22 14:54:12
++++ webkitgtk-2.54.2/Source/WebKit/WebProcess/WebProcess.cpp	2026-10-29 14:22:14
+@@ -1450,7 +1450,7 @@
+ 
+ void WebProcess::networkProcessConnectionClosed(NetworkProcessConnection* connection)
+ {
+-#if OS(DARWIN)
++#if PLATFORM(COCOA)
+     WEBPROCESS_RELEASE_LOG(Loading, "networkProcessConnectionClosed: NetworkProcess (%d) closed its connection (Crashed)", connection ? connection->connection().remoteProcessID() : 0);
+ #else
+     WEBPROCESS_RELEASE_LOG(Loading, "networkProcessConnectionClosed: NetworkProcess closed its connection (Crashed)");
 diff -ruN webkitgtk-2.54.2/Source/bmalloc/CMakeLists.txt webkitgtk-2.54.2/Source/bmalloc/CMakeLists.txt
 --- webkitgtk-2.54.2/Source/bmalloc/CMakeLists.txt	2026-09-11 07:39:27
 +++ webkitgtk-2.54.2/Source/bmalloc/CMakeLists.txt	2026-10-29 09:34:38
