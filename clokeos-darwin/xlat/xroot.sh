@@ -16,4 +16,5 @@ done
 # ein paar echte x86_64-Programme des Images zum Ausprobieren von ucrun (toybox ist ein Multi-Call-Programm: ls, find, sed, sort, date ...)
 mkdir -p "$root/bin"
 for f in echo cat uname wc true toybox; do "$DEBUGFS" -R "dump /bin/$f $root/bin/$f" "$fs" >/dev/null 2>&1; done
+chmod +x "$root"/bin/* "$root"/usr/lib/dyld 2>/dev/null || true
 echo "$root"

@@ -18,7 +18,10 @@
 #include <sys/syscall.h>
 #include <sys/time.h>
 #include <unistd.h>
+#include <mach-o/dyld.h>
+#include <signal.h>
 #include <pthread.h>
+#include <sys/wait.h>
 #include <unicorn/unicorn.h>
 
 #define STACK_TOP 0x7ffee0100000ULL
@@ -173,6 +176,36 @@ static void mig_reply_port(uc_engine *u, uint64_t addr, uint32_t id, uint32_t po
 	r[38] = 17; r[39] = 0;  // disposition MOVE_SEND, type PORT_DESCRIPTOR
 	uc_mem_write(u, addr, r, 40);
 }
+
+// --- Prozesse: fork, execve, wait4, pipe ---
+static int gstr(uint64_t a, char *b, size_t n);
+static char self_exe[1024];
+static int is_foreign_macho(const char *p) {
+	uint32_t h[8]; int fd = open(p, O_RDONLY); if (fd < 0) return 0;
+	ssize_t n = read(fd, h, sizeof h); close(fd); if (n < 8) return 0;
+	return (h[0] == 0xfeedfacf && h[1] == 0x01000007) || h[0] == 0xbebafeca;  // x86_64-Mach-O oder fat (ucrun sucht die Scheibe)
+}
+static char *gdup(uc_engine *u, uint64_t a) { char b[4096]; if (gstr(a, b, sizeof b)) return 0; return strdup(b); }
+static int do_execve(uc_engine *u, uint64_t pa, uint64_t av, uint64_t ev) {
+	char *path = gdup(u, pa); if (!path) return EFAULT;
+	char rp[1200]; strncpy(rp, path, sizeof rp - 1); rp[sizeof rp - 1] = 0;
+	if (*xroot && path[0] == '/') { char alt[1200]; snprintf(alt, sizeof alt, "%s%s", xroot, path); if (access(alt, F_OK) == 0) strncpy(rp, alt, sizeof rp - 1); }
+	char *argvv[256], *envv[1024]; int na = 0, ne = 0; uint64_t p;
+	for (; na < 250 && !uc_mem_read(u, av + 8 * na, &p, 8) && p; na++) argvv[na + 1] = gdup(u, p);
+	for (; ne < 1000 && ev && !uc_mem_read(u, ev + 8 * ne, &p, 8) && p; ne++) envv[ne] = gdup(u, p);
+	envv[ne] = 0;
+	if (access(rp, X_OK)) return errno;
+	char *nv[260]; int k = 0;
+	if (is_foreign_macho(rp)) {  // x86_64: ucrun <datei> <argv[1]...> (das Gast-argv[0] ist dort die Datei)
+		nv[k++] = self_exe; nv[k++] = rp; for (int i = 2; i <= na; i++) nv[k++] = argvv[i]; nv[k] = 0;
+		execve(self_exe, nv, envv);
+	} else {  // Host-Programm (arm64) oder #!-Skript: der Kernel erledigt es
+		for (int i = 1; i <= na; i++) nv[k++] = argvv[i]; nv[k] = 0;
+		execve(rp, nv, envv);
+	}
+	return errno;
+}
+
 static double now(void) { struct timeval t; gettimeofday(&t, 0); return t.tv_sec + t.tv_usec / 1e6; }
 
 static int gstr(uint64_t a, char *b, size_t n) {  // C-String aus dem Gast
@@ -206,6 +239,13 @@ static const Sc tab[] = {
 	{346, "fstatfs64", {{1, 'o', 2168, 0}, NONE}},
 	{345, "statfs64", {{0, 's', 0, 0}, {1, 'o', 2168, 0}}},
 	{60, "umask", {NONE, NONE}},
+	{12, "chdir", {{0, 's', 0, 0}, NONE}},
+	{13, "fchdir", {NONE, NONE}},
+	{15, "chmod", {{0, 's', 0, 0}, NONE}},
+	{128, "rename", {{0, 's', 0, 0}, {1, 's', 0, 0}}},
+	{57, "symlink", {{0, 's', 0, 0}, {1, 's', 0, 0}}},
+	{81, "getpgrp", {NONE, NONE}},
+	{82, "setpgid", {NONE, NONE}},
 	{194, "getrlimit", {{1, 'o', 16, 0}, NONE}},
 	{220, "getattrlist", {{0, 's', 0, 0}, {1, 'i', 24, 0}, {2, 'o', 0, 3}}},
 };
@@ -332,6 +372,25 @@ static void do_syscall(uc_engine *u, void *ud) {
 		if (a[3] && (res == 0 || err == ENOMEM)) uc_mem_write(u, a[3], &ol, 8);
 		free(ob); free(nb); goto done;
 	}
+	if (nr == 2 || nr == 66) {  // fork/vfork: Host-fork; der Gastspeicher (private anonyme Seiten) wird kopiert. Kind: rdx = 1 (Darwin-Konvention)
+		fflush(0); pid_t pid = fork();
+		if (pid < 0) { err = errno; res = errno; goto done; }
+		res = pid; rdx = pid == 0 ? 1 : 0;
+		if (pid == 0) { nsys = 0; }
+		goto done;
+	}
+	if (nr == 59) { int r = do_execve(u, a[0], a[1], a[2]); err = r; res = r; goto done; }  // execve kehrt nur bei Fehler zurück
+	if (nr == 7) {  // wait4(pid, *status, options, *rusage)
+		int st = 0; struct rusage ru; BLOCKING_BEGIN; pid_t r = wait4((pid_t)a[0], &st, (int)a[2], a[3] ? &ru : 0); BLOCKING_END;
+		if (r < 0) { err = errno; res = errno; goto done; }
+		if (a[1]) uc_mem_write(u, a[1], &st, 4);
+		if (a[3]) uc_mem_write(u, a[3], &ru, sizeof ru);
+		res = r; goto done;
+	}
+	if (nr == 42) { int fds[2]; if (pipe(fds)) { err = errno; res = errno; goto done; } res = fds[0]; rdx = fds[1]; goto done; }  // pipe: rax = Lese-, rdx = Schreibende
+	if (nr == 90) { res = dup2((int)a[0], (int)a[1]); if (res < 0) { err = errno; res = errno; } goto done; }
+	if (nr == 39) { res = getppid(); goto done; }
+	if (nr == 37) { res = kill((pid_t)a[0], (int)a[1]); if (res < 0) { err = errno; res = errno; } goto done; }
 	if (nr == 372) { res = 1; goto done; }  // thread_selfid
 	if (nr == 73) { unmap_all(a[0], (a[1] + 0xfff) & ~0xfffULL); res = 0; goto done; }
 	if (nr == 74) { res = 0; goto done; }  // mprotect: Gastspeicher bleibt RWX (Eigenschaft von ucrun, siehe Studie)
@@ -382,6 +441,7 @@ done:;
 int main(int argc, char **argv) {
 	if (argc < 2) { fprintf(stderr, "usage: ucrun <x86_64 Mach-O> [args]\n"); return 2; }
 	trace = getenv("UCRUN_TRACE") != 0;
+	{ uint32_t sz = sizeof self_exe; if (_NSGetExecutablePath(self_exe, &sz)) strcpy(self_exe, argv[0]); }
 	if (getenv("XLAT_ROOT")) xroot = getenv("XLAT_ROOT");
 	FILE *f = fopen(argv[1], "rb"); if (!f) { perror(argv[1]); return 127; }
 	fseek(f, 0, SEEK_END); long fl = ftell(f); fseek(f, 0, SEEK_SET);
